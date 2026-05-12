@@ -27,10 +27,18 @@ type Adapter interface {
 }
 
 // New returns the single multipart adapter backed by cfg.Inference.
+//
+// We deliberately do NOT set http.Client.Timeout here: that hard-caps every
+// request to the same value, which forced operators to set a single global
+// timeout suitable for the slowest possible operation. Instead, each Call
+// derives a per-request context.WithTimeout from cfg.Inference.TimeoutFor
+// (multipart.go), so an operator can run a fast service (whisper, ~120s)
+// and a slow one (pyannote diarization on 2h audio, ~3600s) behind the same
+// relay binary with different per-operation overrides.
 func New(cfg *config.Config) (Adapter, error) {
 	return &multipartAdapter{
 		inf:    cfg.Inference,
-		client: &http.Client{Timeout: cfg.Inference.TimeoutDuration()},
+		client: &http.Client{},
 	}, nil
 }
 

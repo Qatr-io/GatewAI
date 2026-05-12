@@ -25,6 +25,16 @@ func (a *multipartAdapter) Call(ctx context.Context, input CallInput) ([]byte, e
 		return nil, fmt.Errorf("cannot build endpoint URL: inference.base_url or InferenceURL is empty")
 	}
 
+	// Per-operation timeout (e.g. diarization needs longer than transcription
+	// on the same audio). Applied as a context deadline so we cancel both the
+	// upload-streaming and the read of the response when it fires.
+	timeout := a.inf.TimeoutFor(input.InferenceURL)
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
+
 	pr, pw := io.Pipe()
 	mw := multipart.NewWriter(pw)
 

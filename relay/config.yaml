@@ -35,7 +35,21 @@ s3:
 inference:
   base_url: "http://127.0.0.1:${INFERENCE_PORT:-9000}"
   api_key:  ""
+  # Default timeout, applied to any operation not listed in operation_timeouts
+  # below. Keep this conservative — explicit per-operation overrides are
+  # preferred over raising the global default for every endpoint.
   timeout:  "300s"
+  # Per-operation timeout override (optional). Key = inference URL path
+  # (matches InputEvent.inference_url), value = time.ParseDuration string
+  # ("3600s", "1h", "45m", …). Falls back to `timeout` above for any path
+  # not listed.
+  #
+  # Use when a single relay binary serves multiple operations with very
+  # different processing times — for example a pyannote-audio-3.1 relay
+  # that handles both VAD (fast) and full diarization (slow on long audio).
+  # operation_timeouts:
+  #   "/v1/audio/diarizations":   "3600s"   # pyannote diarization on 2h audio
+  #   "/v1/audio/transcriptions": "1200s"   # whisper-large-v3 long audio
   extra_fields:
     response_format: "json"
     # language: "fr"

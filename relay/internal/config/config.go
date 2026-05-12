@@ -25,18 +25,40 @@ type Config struct {
 //
 // extra_fields contains optional form fields sent with every multipart request
 // (e.g. response_format, language, prompt). Empty values are skipped.
+//
+// operation_timeouts is an optional per-operation override: the key is the
+// inference path (e.g. "/v1/audio/diarizations") and the value is a
+// time.ParseDuration-compatible string ("3600s", "1h", "45m"). Falls back to
+// Timeout (or 300s default) for any path not listed. Useful because some
+// inference operations (diarization on long audio, large batch embeddings…)
+// can run an order of magnitude longer than others.
 type InferenceConfig struct {
-	BaseURL     string            `yaml:"base_url"`
-	APIKey      string            `yaml:"api_key"`
-	Timeout     string            `yaml:"timeout"`
-	ExtraFields map[string]string `yaml:"extra_fields"`
+	BaseURL           string            `yaml:"base_url"`
+	APIKey            string            `yaml:"api_key"`
+	Timeout           string            `yaml:"timeout"`
+	OperationTimeouts map[string]string `yaml:"operation_timeouts"`
+	ExtraFields       map[string]string `yaml:"extra_fields"`
 }
 
+// TimeoutDuration returns the default timeout for this relay (used when no
+// per-operation override applies). Falls back to 300s if not configured.
 func (c InferenceConfig) TimeoutDuration() time.Duration {
 	if d, err := time.ParseDuration(c.Timeout); err == nil && d > 0 {
 		return d
 	}
 	return 300 * time.Second
+}
+
+// TimeoutFor returns the timeout for the given inference path, honoring
+// the operation_timeouts override if set and parseable, otherwise the
+// relay-wide default.
+func (c InferenceConfig) TimeoutFor(inferencePath string) time.Duration {
+	if raw, ok := c.OperationTimeouts[inferencePath]; ok {
+		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
+			return d
+		}
+	}
+	return c.TimeoutDuration()
 }
 
 type EncryptionConfig struct {

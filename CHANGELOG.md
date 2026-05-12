@@ -428,6 +428,19 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Relay
 
+### [Unreleased]
+
+#### Added
+- `inference.operation_timeouts` map in `relay/config.yaml` — per-operation timeout override keyed by inference URL path (e.g. `"/v1/audio/diarizations": "3600s"`). Operators can run fast and slow operations on the same relay binary without forcing a single global timeout suitable for the slowest. New helper `InferenceConfig.TimeoutFor(path)` falls back to `inference.timeout` (then 300s) when no override matches.
+
+#### Changed
+- Adapter no longer pins `http.Client.Timeout` at startup. Each `Call(ctx, input)` now derives a per-request `context.WithTimeout(ctx, TimeoutFor(input.InferenceURL))`. This unblocks long-running operations (pyannote diarization on multi-hour audio) without relaxing the timeout for fast operations on the same pod.
+
+#### Fixed
+- Pyannote diarization on long audio (>~5 min processing time) failed with `context deadline exceeded` because the relay's hard-coded `http.Client.Timeout: 300s` could not be overridden per operation. Operators can now set `operation_timeouts."/v1/audio/diarizations": "3600s"` (or whatever fits the workload) without affecting transcription or other endpoints.
+
+---
+
 ### [v0.5.1] — 2026-04-03
 
 #### Fixed
