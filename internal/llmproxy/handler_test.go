@@ -105,7 +105,7 @@ func TestServeJSON_CacheMiss_ThenHit(t *testing.T) {
 
 	mc, filled := newMemCacheWithNotify()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -151,7 +151,7 @@ func TestServeJSON_NoCacheHeader_BypassesCache(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -177,7 +177,7 @@ func TestServeJSON_Non200NotCached(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -202,7 +202,7 @@ func TestServeJSON_CacheDisabled_WhenTTLZero(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 0) // TTL=0 → no cache
 	setBackend(def, backend.URL)
@@ -229,7 +229,7 @@ func TestServeJSON_BackendModel_RewrittenInRequest(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "meta-llama/Meta-Llama-3-8B-Instruct", 0)
 	setBackend(def, backend.URL)
@@ -256,7 +256,7 @@ func TestServeJSON_BackendModel_NotRewritten_WhenEmpty(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 0) // no backend_model
 	setBackend(def, backend.URL)
@@ -284,7 +284,7 @@ func TestServeJSON_CacheHit_ReturnsCachedBody(t *testing.T) {
 	}, 60*time.Second)
 
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 
@@ -302,7 +302,7 @@ func TestServeJSON_CacheHit_ReturnsCachedBody(t *testing.T) {
 
 func TestServeJSON_UnknownProvider_Returns500(t *testing.T) {
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{})
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
 
 	def := &service.Def{
 		Type:     "llm",
@@ -385,7 +385,7 @@ func TestServeJSON_ConsumerMetrics_EmittedOnBackendResponse(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker)
+	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, nil)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -408,7 +408,7 @@ func TestServeJSON_ConsumerMetrics_EmittedOnCacheHit(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", tracker)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 
@@ -433,7 +433,7 @@ func TestServeJSON_Streaming_PipedToClient(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{})
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -466,7 +466,7 @@ func TestServeJSON_Streaming_SkipsCache(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{})
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -497,7 +497,7 @@ func TestServeJSON_Streaming_BackendModel_Rewritten(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{})
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, nil)
 
 	def := llmDef("passthrough", "real-model-id", 0)
 	setBackend(def, backend.URL)
@@ -523,7 +523,7 @@ func TestServeJSON_ConsumerMetrics_SkippedWhenNoConsumer(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, nil)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -534,5 +534,233 @@ func TestServeJSON_ConsumerMetrics_SkippedWhenNoConsumer(t *testing.T) {
 	}
 	if len(tracker.calls) != 0 {
 		t.Errorf("expected no tracker calls for empty consumer, got %d", len(tracker.calls))
+	}
+}
+
+// ── Semantic cache mock & tests ───────────────────────────────────────────────
+
+// mockSemanticCache is a controllable in-memory semanticCacher for testing.
+type mockSemanticCache struct {
+	mu       sync.Mutex
+	entry    *cache.Entry // returned on Get if hitBody matches
+	hitBody  []byte       // body that triggers a hit (nil = never hit)
+	sets     [][]byte     // recorded Set() call bodies
+	setCh    chan struct{} // closed on first Set; nil = no notify
+}
+
+func newMockSemCache(hitBody []byte, entry *cache.Entry) *mockSemanticCache {
+	return &mockSemanticCache{hitBody: hitBody, entry: entry}
+}
+
+func newMockSemCacheWithNotify(hitBody []byte, entry *cache.Entry) (*mockSemanticCache, <-chan struct{}) {
+	ch := make(chan struct{})
+	return &mockSemanticCache{hitBody: hitBody, entry: entry, setCh: ch}, ch
+}
+
+func (m *mockSemanticCache) Get(_ context.Context, body []byte) (*cache.Entry, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.hitBody != nil && string(body) == string(m.hitBody) {
+		return m.entry, true, nil
+	}
+	return nil, false, nil
+}
+
+func (m *mockSemanticCache) Set(_ context.Context, body []byte, _ *cache.Entry, _ time.Duration) error {
+	m.mu.Lock()
+	ch := m.setCh
+	m.sets = append(m.sets, body)
+	m.setCh = nil
+	m.mu.Unlock()
+	if ch != nil {
+		close(ch)
+	}
+	return nil
+}
+
+const semCacheResponse = `{"id":"sem-1","object":"chat.completion","model":"my-alias","choices":[{"index":0,"message":{"role":"assistant","content":"cached"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":3}}`
+
+func llmDefWithSemCache(provider, backendModel string, semCacheTTL time.Duration) *service.Def {
+	d := llmDef(provider, backendModel, 0)
+	d.SemanticCacheTTL = semCacheTTL
+	return d
+}
+
+// TestServeJSON_SemanticCache_Hit_SkipsBackend verifies that a semantic cache hit
+// returns the cached response without calling the backend.
+func TestServeJSON_SemanticCache_Hit_SkipsBackend(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	semEntry := &cache.Entry{StatusCode: 200, ContentType: "application/json", Body: []byte(semCacheResponse)}
+	sem := newMockSemCache([]byte(chatBody), semEntry)
+
+	reg := provider.NewRegistry()
+	h := &Handler{
+		cache:      cache.NewNoop(),
+		semCache:   sem,
+		providers:  reg,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		tracker:    metrics.NoopTracker{},
+	}
+
+	def := llmDefWithSemCache("openai", "", 60*time.Second)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", rr.Code)
+	}
+	if backendCalled {
+		t.Error("backend must not be called on semantic cache hit")
+	}
+	if rr.Header().Get("X-Cache") != "SEMANTIC-HIT" {
+		t.Errorf("expected X-Cache: SEMANTIC-HIT, got %q", rr.Header().Get("X-Cache"))
+	}
+	if !strings.Contains(rr.Body.String(), "cached") {
+		t.Errorf("expected cached response body, got: %s", rr.Body.String())
+	}
+}
+
+// TestServeJSON_SemanticCache_Miss_ForwardsToBackend verifies that a semantic miss
+// forwards the request to the backend and triggers an async cache fill.
+func TestServeJSON_SemanticCache_Miss_ForwardsToBackend(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	// miss: hitBody does not match chatBody
+	sem, setCh := newMockSemCacheWithNotify([]byte("other body"), nil)
+
+	reg := provider.NewRegistry()
+	h := &Handler{
+		cache:      cache.NewNoop(),
+		semCache:   sem,
+		providers:  reg,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		tracker:    metrics.NoopTracker{},
+	}
+
+	def := llmDefWithSemCache("openai", "", 60*time.Second)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200 from backend, got %d", rr.Code)
+	}
+	if rr.Header().Get("X-Cache") == "SEMANTIC-HIT" {
+		t.Error("expected no semantic hit header on a miss")
+	}
+
+	// Wait for async Set to complete.
+	select {
+	case <-setCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("semantic cache Set was not called after backend response")
+	}
+	sem.mu.Lock()
+	defer sem.mu.Unlock()
+	if len(sem.sets) == 0 {
+		t.Error("expected semantic cache Set to be called")
+	}
+}
+
+// TestServeJSON_SemanticCache_Disabled_WhenTTLZero verifies that the semantic cache
+// is bypassed when SemanticCacheTTL is 0.
+func TestServeJSON_SemanticCache_Disabled_WhenTTLZero(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	// Would hit if semantic cache were consulted.
+	sem := newMockSemCache([]byte(chatBody), &cache.Entry{StatusCode: 200, Body: []byte(semCacheResponse)})
+
+	reg := provider.NewRegistry()
+	h := &Handler{
+		cache:      cache.NewNoop(),
+		semCache:   sem,
+		providers:  reg,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		tracker:    metrics.NoopTracker{},
+	}
+
+	def := llmDefWithSemCache("openai", "", 0) // TTL=0 → disabled
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, chatBody)
+
+	if !backendCalled {
+		t.Error("backend should be called when SemanticCacheTTL=0")
+	}
+}
+
+// TestServeJSON_SemanticCache_Streaming_Skipped verifies that streaming requests
+// skip the semantic cache entirely and go directly to the backend.
+func TestServeJSON_SemanticCache_Streaming_Skipped(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	streamBody := `{"model":"my-alias","messages":[{"role":"user","content":"Hello"}],"stream":true}`
+	// Would hit if semantic cache were consulted.
+	sem := newMockSemCache([]byte(streamBody), &cache.Entry{StatusCode: 200, Body: []byte(semCacheResponse)})
+
+	reg := provider.NewRegistry()
+	h := &Handler{
+		cache:      cache.NewNoop(),
+		semCache:   sem,
+		providers:  reg,
+		httpClient: &http.Client{Timeout: 5 * time.Second},
+		tracker:    metrics.NoopTracker{},
+	}
+
+	def := llmDefWithSemCache("openai", "", 60*time.Second)
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, streamBody)
+
+	if !backendCalled {
+		t.Error("streaming request must reach the backend, not be served from semantic cache")
+	}
+}
+
+// TestServeJSON_SemanticCache_NilCache_Passthrough verifies that a nil semCache
+// field does not cause a panic and falls through to the backend.
+func TestServeJSON_SemanticCache_NilCache_Passthrough(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, nil)
+
+	def := llmDefWithSemCache("openai", "", 60*time.Second)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+	if rr.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d (nil semCache should not panic)", rr.Code)
 	}
 }
