@@ -31,7 +31,8 @@ type Def struct {
 	Provider         string
 	BackendModel     string        // real model name sent to backend; empty = use Model (the alias)
 	ResponseCacheTTL time.Duration
-	Retries          int // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
+	Retries          int           // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
+	SemanticCacheTTL time.Duration // TTL for semantic cache entries; 0 = semantic caching disabled for this service
 }
 
 // OperationPath returns the first path for the given operation name.
@@ -181,6 +182,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			BackendModel:     cfg.BackendModel,
 			ResponseCacheTTL: time.Duration(cfg.ResponseCacheTTL) * time.Second,
 			Retries:          cfg.Retries,
+			SemanticCacheTTL: time.Duration(cfg.SemanticCacheTTL) * time.Second,
 		}
 
 		if r.byTypeModel[cfg.Type] == nil {

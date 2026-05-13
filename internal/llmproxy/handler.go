@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"kevent/gateway/internal/cache"
+	"kevent/gateway/internal/cache/semantic"
 	"kevent/gateway/internal/llmproxy/provider"
 	"kevent/gateway/internal/metrics"
 	"kevent/gateway/internal/service"
@@ -28,6 +29,7 @@ type providerLookup interface {
 // Handler orchestrates LLM requests: cache → provider → translate → cache-fill.
 type Handler struct {
 	cache          cache.Cache
+	semCache       *semantic.Cache // nil = semantic caching disabled
 	providers      providerLookup
 	httpClient     *http.Client
 	userTypeHeader string // HTTP header carrying consumer type (e.g. "X-User-Type")
@@ -37,9 +39,11 @@ type Handler struct {
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
 // userTypeHeader is the request header name for the consumer type (e.g. "X-User-Type");
 // empty disables user_type labelling. tracker records per-consumer token usage.
-func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker) *Handler {
+// semCache may be nil to disable semantic caching.
+func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, semCache *semantic.Cache) *Handler {
 	return &Handler{
 		cache:          c,
+		semCache:       semCache,
 		providers:      p,
 		httpClient:     hc,
 		userTypeHeader: userTypeHeader,
@@ -108,6 +112,32 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			return
 		}
 		metrics.CacheMissesTotal.WithLabelValues(def.Type, def.Model).Inc()
+	}
+
+	// ── Semantic cache lookup (after exact miss, before backend) ─────────────
+	if h.semCache != nil && def.SemanticCacheTTL > 0 && !isStreamingRequest(body) {
+		if semEntry, semHit, semErr := h.semCache.Get(r.Context(), body); semErr != nil {
+			slog.WarnContext(r.Context(), "semantic cache get error", "error", semErr)
+		} else if semHit {
+			metrics.CacheHitsTotal.WithLabelValues(def.Type, def.Model).Inc()
+			usage := emitTokenMetrics(def, "", userType, semEntry.Body)
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "semantic-cache", userType, "200").Inc()
+			metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "semantic-cache", userType).Observe(time.Since(start).Seconds())
+			if consumer != "" && usage != nil {
+				tCtx := context.WithoutCancel(r.Context())
+				h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
+				h.tracker.Track(tCtx, consumer, userType, "completion", usage.CompletionTokens)
+			}
+			ct := semEntry.ContentType
+			if ct == "" {
+				ct = "application/json"
+			}
+			w.Header().Set("Content-Type", ct)
+			w.Header().Set("X-Cache", "SEMANTIC-HIT")
+			w.WriteHeader(semEntry.StatusCode)
+			_, _ = w.Write(semEntry.Body)
+			return
+		}
 	}
 
 	// ── Forward to provider (with backend retry) ─────────────────────────────
@@ -218,21 +248,34 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	_, _ = w.Write(finalBody)
 
 	// ── Cache-fill async (only 200 responses, non-streaming) ─────────────────
-	if cacheable && cacheKey != "" && finalStatus == http.StatusOK {
-		entry := &cache.Entry{
+	if finalStatus == http.StatusOK {
+		fillEntry := &cache.Entry{
 			Body:        finalBody,
 			ContentType: "application/json",
 			StatusCode:  finalStatus,
 		}
-		ttl := def.ResponseCacheTTL
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			if err := h.cache.Set(ctx, cacheKey, entry, ttl); err != nil {
-				slog.Warn("llm cache set error", "error", err)
-				metrics.CacheErrorsTotal.WithLabelValues(def.Type, def.Model, "set").Inc()
-			}
-		}()
+		if cacheable && cacheKey != "" {
+			ttl := def.ResponseCacheTTL
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				if err := h.cache.Set(ctx, cacheKey, fillEntry, ttl); err != nil {
+					slog.Warn("llm cache set error", "error", err)
+					metrics.CacheErrorsTotal.WithLabelValues(def.Type, def.Model, "set").Inc()
+				}
+			}()
+		}
+		if h.semCache != nil && def.SemanticCacheTTL > 0 {
+			reqBody := body
+			semTTL := def.SemanticCacheTTL
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+				defer cancel()
+				if err := h.semCache.Set(ctx, reqBody, fillEntry, semTTL); err != nil {
+					slog.Warn("semantic cache set error", "error", err)
+				}
+			}()
+		}
 	}
 }
 

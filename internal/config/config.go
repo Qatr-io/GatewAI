@@ -10,18 +10,36 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig                          `yaml:"server"`
-	Kafka      KafkaConfig                           `yaml:"kafka"`
-	S3         S3Config                              `yaml:"s3"`
-	Redis      RedisConfig                           `yaml:"redis"`
-	Services   []ServiceConfig                       `yaml:"services"`
-	Encryption EncryptionConfig                      `yaml:"encryption"`
-	Metrics    MetricsConfig                         `yaml:"metrics"`
+	Server        ServerConfig                          `yaml:"server"`
+	Kafka         KafkaConfig                           `yaml:"kafka"`
+	S3            S3Config                              `yaml:"s3"`
+	Redis         RedisConfig                           `yaml:"redis"`
+	Services      []ServiceConfig                       `yaml:"services"`
+	Encryption    EncryptionConfig                      `yaml:"encryption"`
+	Metrics       MetricsConfig                         `yaml:"metrics"`
+	SemanticCache SemanticCacheConfig                   `yaml:"semantic_cache"`
 	// RateLimits maps service type → user type → limit.
 	// User type "*" is the fallback applied when the user_type_header is absent
 	// or the specific type has no entry.
 	// Leave empty to disable rate limiting.
 	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
+}
+
+// SemanticCacheConfig configures the global semantic (vector-similarity) cache.
+// Requires Redis Stack (RediSearch module) and an embedding service.
+// Disabled when EmbeddingServiceURL is empty.
+type SemanticCacheConfig struct {
+	// EmbeddingServiceURL is the base URL of an OpenAI-compatible embeddings
+	// service (e.g. "http://gateway.svc:8080" to self-call the gateway).
+	EmbeddingServiceURL string `yaml:"embedding_service_url"`
+	// EmbeddingModel is the model name passed to the embeddings endpoint.
+	EmbeddingModel string `yaml:"embedding_model"`
+	// Threshold is the minimum cosine similarity to consider a semantic hit (0–1).
+	// Defaults to 0.95 when not set.
+	Threshold float64 `yaml:"threshold"`
+	// EmbeddingDim is the vector dimension returned by the embedding model.
+	// Defaults to 1024 (bge-m3) when not set.
+	EmbeddingDim int `yaml:"embedding_dim"`
 }
 
 // RateLimitConfig defines the allowed request rate for a (service, user-type) pair.
@@ -192,6 +210,10 @@ type ServiceConfig struct {
 	// Only applies to the sync-direct proxy path (not Kafka-based flows).
 	// A 500ms exponential backoff is applied between each cycle.
 	Retries int `yaml:"retries"`
+	// SemanticCacheTTL is the TTL in seconds for storing LLM responses in the
+	// semantic (vector-similarity) cache. 0 = semantic caching disabled for this
+	// service. Requires the global semantic_cache to be configured.
+	SemanticCacheTTL int `yaml:"semantic_cache_ttl"`
 }
 
 // Load reads and validates the YAML config file at path.

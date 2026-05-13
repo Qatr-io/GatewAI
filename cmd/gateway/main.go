@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"kevent/gateway/internal/cache"
+	"kevent/gateway/internal/cache/semantic"
 	"kevent/gateway/internal/config"
 	"kevent/gateway/internal/handler"
 	"kevent/gateway/internal/kafka"
@@ -188,8 +189,31 @@ func main() {
 		consumerTracker = gmetrics.NewRedisTracker(redisClient.Raw())
 	}
 
+	var semCache *semantic.Cache
+	if cfg.SemanticCache.EmbeddingServiceURL != "" {
+		threshold := cfg.SemanticCache.Threshold
+		if threshold == 0 {
+			threshold = 0.95
+		}
+		dim := cfg.SemanticCache.EmbeddingDim
+		if dim == 0 {
+			dim = 1024
+		}
+		embedder := semantic.NewHTTPEmbedder(
+			cfg.SemanticCache.EmbeddingServiceURL,
+			cfg.SemanticCache.EmbeddingModel,
+			nil,
+		)
+		semCache = semantic.New(redisClient.Raw(), embedder, threshold, dim)
+		slog.Info("semantic cache enabled",
+			"service", cfg.SemanticCache.EmbeddingServiceURL,
+			"model", cfg.SemanticCache.EmbeddingModel,
+			"threshold", threshold,
+		)
+	}
+
 	llmHandler := llmproxy.New(responseCache, providerRegistry, &http.Client{Timeout: 15 * time.Minute},
-		cfg.Server.UserTypeHeader, consumerTracker)
+		cfg.Server.UserTypeHeader, consumerTracker, semCache)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
