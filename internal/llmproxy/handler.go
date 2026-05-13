@@ -26,10 +26,17 @@ type providerLookup interface {
 	Get(name string) (provider.Provider, error)
 }
 
+// semanticCacher is the subset of *semantic.Cache used by Handler.
+// Extracted as an interface so tests can inject fakes without Redis Stack.
+type semanticCacher interface {
+	Get(ctx context.Context, body []byte) (*cache.Entry, bool, error)
+	Set(ctx context.Context, body []byte, entry *cache.Entry, ttl time.Duration) error
+}
+
 // Handler orchestrates LLM requests: cache → provider → translate → cache-fill.
 type Handler struct {
 	cache          cache.Cache
-	semCache       *semantic.Cache // nil = semantic caching disabled
+	semCache       semanticCacher // nil = semantic caching disabled
 	providers      providerLookup
 	httpClient     *http.Client
 	userTypeHeader string // HTTP header carrying consumer type (e.g. "X-User-Type")
@@ -41,9 +48,13 @@ type Handler struct {
 // empty disables user_type labelling. tracker records per-consumer token usage.
 // semCache may be nil to disable semantic caching.
 func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, semCache *semantic.Cache) *Handler {
+	var sc semanticCacher
+	if semCache != nil {
+		sc = semCache
+	}
 	return &Handler{
 		cache:          c,
-		semCache:       semCache,
+		semCache:       sc,
 		providers:      p,
 		httpClient:     hc,
 		userTypeHeader: userTypeHeader,
