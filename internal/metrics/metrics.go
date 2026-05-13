@@ -154,4 +154,12 @@ var (
 		Name: "kevent_llm_consumer_tokens_top",
 		Help: "Token usage for top consumers (refreshed from Redis sorted set).",
 	}, []string{"consumer", "user_type", "type"})
+
+	// BackendEffectiveWeight tracks the effective routing weight for each LLM
+	// backend after health-penalty adjustment. A value of 0 means the backend
+	// is excluded from primary selection due to a high error rate.
+	BackendEffectiveWeight = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "kevent_backend_effective_weight",
+		Help: "Effective routing weight for each LLM backend after health adjustment (0 = excluded).",
+	}, []string{"url"})
 )

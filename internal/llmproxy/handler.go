@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"kevent/gateway/internal/cache"
+	"kevent/gateway/internal/health"
 	"kevent/gateway/internal/llmproxy/provider"
 	"kevent/gateway/internal/metrics"
 	"kevent/gateway/internal/service"
@@ -32,18 +33,21 @@ type Handler struct {
 	httpClient     *http.Client
 	userTypeHeader string // HTTP header carrying consumer type (e.g. "X-User-Type")
 	tracker        metrics.ConsumerTracker
+	health         *health.BackendHealth // nil = health-aware routing disabled
 }
 
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
 // userTypeHeader is the request header name for the consumer type (e.g. "X-User-Type");
 // empty disables user_type labelling. tracker records per-consumer token usage.
-func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker) *Handler {
+// bh may be nil to disable health-aware routing.
+func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, bh *health.BackendHealth) *Handler {
 	return &Handler{
 		cache:          c,
 		providers:      p,
 		httpClient:     hc,
 		userTypeHeader: userTypeHeader,
 		tracker:        tracker,
+		health:         bh,
 	}
 }
 
@@ -114,7 +118,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	// Model rewrite happens per-backend: backend.Model overrides def.BackendModel.
 	// Cache key is derived from the alias (def.Model) above, before any rewrite,
 	// so cache hits are keyed on the alias regardless of backend model name.
-	backends := service.OrderedBackends(def.Backends)
+	backends := service.OrderedBackends(h.health.AdjustedBackends(def.Backends))
 	var resp *http.Response
 	var respBody []byte
 	var lastBackendErr string
@@ -147,6 +151,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			slog.WarnContext(r.Context(), "llm backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			h.recordBackendResult(backend, false)
 			lastBackendErr = doErr.Error()
 			resp = nil
 			continue
@@ -156,12 +161,14 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
 				strconv.Itoa(resp.StatusCode)).Inc()
+			h.recordBackendResult(backend, false)
 			lastBackendErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		h.recordBackendResult(backend, true)
 		winningBackendModel = effectiveModel
 		break // success or 4xx — do not retry
 	}
@@ -293,7 +300,7 @@ func isStreamingRequest(body []byte) bool {
 // Backend retry is possible before w.WriteHeader; once the SSE stream starts,
 // switching backends is no longer possible.
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, prov provider.Provider, userType string, start time.Time) {
-	backends := service.OrderedBackends(def.Backends)
+	backends := service.OrderedBackends(h.health.AdjustedBackends(def.Backends))
 	var resp *http.Response
 	var lastErr string
 	var winningBackendModel string
@@ -325,6 +332,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			slog.WarnContext(r.Context(), "llm stream backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			h.recordBackendResult(backend, false)
 			lastErr = doErr.Error()
 			resp = nil
 			continue
@@ -334,12 +342,14 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
 				strconv.Itoa(resp.StatusCode)).Inc()
+			h.recordBackendResult(backend, false)
 			lastErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		h.recordBackendResult(backend, true)
 		winningBackendModel = effectiveModel
 		break
 	}
@@ -382,6 +392,19 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if readErr != nil {
 			break
 		}
+	}
+}
+
+// recordBackendResult updates the health EWMA for backend and emits the
+// effective-weight metric. No-ops when health tracking is disabled (h.health == nil).
+func (h *Handler) recordBackendResult(backend service.Backend, success bool) {
+	if h.health == nil {
+		return
+	}
+	h.health.RecordResult(backend.URL, success)
+	if backend.Weight > 0 {
+		ew := h.health.EffectiveWeight(backend.URL, backend.Weight)
+		metrics.BackendEffectiveWeight.WithLabelValues(backend.URL).Set(float64(ew))
 	}
 }
 

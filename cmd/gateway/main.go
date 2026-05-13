@@ -18,6 +18,7 @@ import (
 	"kevent/gateway/internal/cache"
 	"kevent/gateway/internal/config"
 	"kevent/gateway/internal/handler"
+	"kevent/gateway/internal/health"
 	"kevent/gateway/internal/kafka"
 	"kevent/gateway/internal/llmproxy"
 	"kevent/gateway/internal/llmproxy/provider"
@@ -188,8 +189,9 @@ func main() {
 		consumerTracker = gmetrics.NewRedisTracker(redisClient.Raw())
 	}
 
+	backendHealth := health.New()
 	llmHandler := llmproxy.New(responseCache, providerRegistry, &http.Client{Timeout: 15 * time.Minute},
-		cfg.Server.UserTypeHeader, consumerTracker)
+		cfg.Server.UserTypeHeader, consumerTracker, backendHealth)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
