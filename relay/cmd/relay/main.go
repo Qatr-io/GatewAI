@@ -68,12 +68,15 @@ func main() {
 	}
 
 	annotator := lifecycle.New()
+	if annotator != nil {
+		if err := annotator.SetDeletionCost(context.Background(), lifecycle.CostIdle); err != nil {
+			slog.Warn("failed to initialise pod deletion cost annotation", "error", err)
+		}
+	}
 	disp := relay.New(adp, s3Client, publisher, cfg.Service.ResultTopic, annotator)
 
 	inferenceHealthURL := strings.TrimRight(cfg.Inference.BaseURL, "/") + "/health"
 	healthClient := &http.Client{Timeout: cfg.Inference.HealthCheckTimeoutDuration()}
-
-	waitForInference(inferenceHealthURL, healthClient, cfg.Inference.ReadyTimeoutDuration(), cfg.Inference.ReadyIntervalDuration())
 
 	mux := http.NewServeMux()
 	mux.Handle("/metrics", promhttp.Handler())
@@ -154,31 +157,6 @@ func main() {
 	}
 
 	slog.Info("server stopped")
-}
-
-// waitForInference polls the inference service's /health endpoint until it
-// returns 200 or the configured deadline is exceeded. Exits the process on
-// timeout so Kubernetes restarts the pod.
-func waitForInference(healthURL string, client *http.Client, timeout, interval time.Duration) {
-	slog.Info("waiting for inference service", "health_url", healthURL, "timeout", timeout, "interval", interval)
-	deadline := time.Now().Add(timeout)
-	for {
-		resp, err := client.Get(healthURL)
-		if err == nil {
-			io.Copy(io.Discard, resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusOK {
-				slog.Info("inference service ready")
-				return
-			}
-		}
-		if time.Now().After(deadline) {
-			slog.Error("inference service did not become ready within timeout", "health_url", healthURL, "timeout", timeout)
-			os.Exit(1)
-		}
-		slog.Info("inference not ready yet, retrying", "health_url", healthURL, "interval", interval)
-		time.Sleep(interval)
-	}
 }
 
 // newInferenceProxy returns a reverse proxy that forwards requests to the local
