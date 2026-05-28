@@ -82,6 +82,12 @@ func (d *Dispatcher) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "sync job in progress, retry later", http.StatusServiceUnavailable)
 		return
 	}
+	if d.activeJobs.Load() > 0 {
+		slog.Info("async job deferred: job already in progress")
+		metrics.DeferredTotal.Inc()
+		http.Error(w, "pod busy, retry later", http.StatusServiceUnavailable)
+		return
+	}
 	d.serveHTTP(w, r)
 }
 
