@@ -76,6 +76,19 @@ func (p *Publisher) PublishResultEvent(ctx context.Context, topic string, event 
 	return nil
 }
 
+// PublishRaw writes raw bytes to topic with jobID as the message key.
+// Used for DLQ publishing — preserves the original InputEvent payload verbatim.
+func (p *Publisher) PublishRaw(ctx context.Context, topic, jobID string, payload []byte) error {
+	if err := p.writerFor(topic).WriteMessages(ctx, kafkago.Message{
+		Key:   []byte(jobID),
+		Value: payload,
+	}); err != nil {
+		metrics.KafkaPublishErrorsTotal.Inc()
+		return fmt.Errorf("writing to topic %q: %w", topic, err)
+	}
+	return nil
+}
+
 // Close flushes and closes all active writers.
 func (p *Publisher) Close() {
 	p.mu.Lock()

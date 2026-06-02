@@ -9,9 +9,10 @@ import (
 	"kevent/relay/internal/config"
 )
 
-// Consumer wraps a kafka-go Reader for manual-commit message consumption.
-// Each pod holds one Consumer; Kafka's consumer group protocol distributes
-// partitions across pods automatically on scale-up/down.
+// Consumer wraps a kafka-go Reader with auto-commit semantics (at-most-once).
+// ReadMessage commits the offset before returning the message, so no other pod
+// can receive the same message after a consumer group rebalance.
+// Infra failures that occur after commit are handled via the DLQ.
 type Consumer struct {
 	reader *kafkago.Reader
 }
@@ -28,22 +29,17 @@ func NewConsumer(cfg config.KafkaConfig) (*Consumer, error) {
 		Topic:    cfg.InputTopic,
 		Dialer:   dialer,
 		MinBytes: 1,
-		MaxBytes: 10 << 20, // 10 MB
+		MaxBytes: 10 << 20,
 		MaxWait:  5 * time.Second,
 	})
 	return &Consumer{reader: r}, nil
 }
 
-// FetchMessage blocks until a message is available or ctx is cancelled.
-// The message is NOT committed until CommitMessages is called.
-func (c *Consumer) FetchMessage(ctx context.Context) (kafkago.Message, error) {
-	return c.reader.FetchMessage(ctx)
-}
-
-// CommitMessages marks msg as processed in the consumer group.
-// Call only after successful processing.
-func (c *Consumer) CommitMessages(ctx context.Context, msg kafkago.Message) error {
-	return c.reader.CommitMessages(ctx, msg)
+// ReadMessage blocks until a message is available, commits its offset
+// immediately, then returns it. Guaranteed at-most-once delivery per consumer
+// group — no rebalance can cause another pod to re-receive the same message.
+func (c *Consumer) ReadMessage(ctx context.Context) (kafkago.Message, error) {
+	return c.reader.ReadMessage(ctx)
 }
 
 // Close closes the underlying reader and leaves the consumer group.

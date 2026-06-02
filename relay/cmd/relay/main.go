@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -81,7 +82,7 @@ func main() {
 	)
 
 	for {
-		msg, err := consumer.FetchMessage(ctx)
+		msg, err := consumer.ReadMessage(ctx)
 		if err != nil {
 			if errors.Is(err, context.Canceled) {
 				slog.Info("relay shutting down")
@@ -91,8 +92,8 @@ func main() {
 			break
 		}
 
-		if err := handleMessage(proc, consumer, msg); err != nil {
-			slog.Error("fatal job error, exiting for Kafka redeliver", "error", err)
+		if err := handleMessage(proc, publisher, cfg.Kafka.DLQTopic, msg); err != nil {
+			slog.Error("fatal infra error, exiting", "error", err)
 			os.Exit(1)
 		}
 
@@ -104,29 +105,34 @@ func main() {
 	}
 }
 
-// handleMessage processes one Kafka message.
-// Returns an error only for transient infra failures that warrant pod restart.
-// Malformed/invalid messages are skipped (committed without processing).
-func handleMessage(proc *relay.Processor, consumer *kafka.Consumer, msg kafkago.Message) error {
+// handleMessage processes one Kafka message whose offset is already committed
+// (ReadMessage auto-commits before returning). Infra errors are routed to the
+// DLQ so the job can be retried without blocking the main consumer loop.
+// Returns an error only when DLQ publishing also fails — caller exits the pod.
+func handleMessage(proc *relay.Processor, publisher *kafka.Publisher, dlqTopic string, msg kafkago.Message) error {
 	event, err := relay.ParseInputEvent(msg.Value)
 	if err != nil || event.JobID == "" {
 		slog.Error("skipping unparseable message", "error", err, "offset", msg.Offset, "partition", msg.Partition)
-		// Use Background context: upstream ctx may be cancelled (SIGTERM).
-		return consumer.CommitMessages(context.Background(), msg)
+		return nil // offset already committed, nothing to recover
 	}
 
 	slog.Info("processing job", "job_id", event.JobID, "service_type", event.ServiceType, "offset", msg.Offset)
 
-	// Use Background context so SIGTERM does not interrupt an in-flight inference job.
 	if err := proc.Process(context.Background(), event); err != nil {
-		return err // transient infra error — caller will os.Exit(1)
+		// Offset is already committed — we cannot let Kafka redeliver the message.
+		// Route to DLQ for retry; exit so Kubernetes restarts the pod.
+		slog.Error("infra error after commit, routing to DLQ", "job_id", event.JobID, "error", err)
+		if dlqTopic != "" {
+			if dlqErr := publisher.PublishRaw(context.Background(), dlqTopic, event.JobID, msg.Value); dlqErr != nil {
+				slog.Error("DLQ publish failed, job may be lost", "job_id", event.JobID, "error", dlqErr)
+				return fmt.Errorf("infra error %w; DLQ publish: %w", err, dlqErr)
+			}
+			slog.Warn("job sent to DLQ", "job_id", event.JobID, "dlq_topic", dlqTopic)
+		}
+		return err // caller will os.Exit(1) — pod restarts, DLQ holds the job
 	}
 
-	if err := consumer.CommitMessages(context.Background(), msg); err != nil {
-		return err
-	}
-
-	slog.Info("job committed", "job_id", event.JobID)
+	slog.Info("job completed", "job_id", event.JobID)
 	return nil
 }
 

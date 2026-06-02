@@ -100,6 +100,10 @@ type KafkaConfig struct {
 	TLS           TLSConfig  `yaml:"tls"`
 	InputTopic    string     `yaml:"input_topic"`
 	ConsumerGroup string     `yaml:"consumer_group"`
+	// DLQTopic is the topic where failed jobs are published when an infra error
+	// occurs after the offset has already been committed. Empty = no DLQ (infra
+	// errors cause os.Exit(1) without re-queuing the job).
+	DLQTopic string `yaml:"dlq_topic"`
 }
 
 type SASLConfig struct {
