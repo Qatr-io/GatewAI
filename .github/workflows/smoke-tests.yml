@@ -56,7 +56,7 @@ on:
 jobs:
   smoke:
     name: Smoke tests
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     environment: dev
     permissions:
       issues: write        # reactions on issue comments + gh pr comment

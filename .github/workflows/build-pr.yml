@@ -39,7 +39,7 @@ jobs:
 
   gateway:
     name: Gateway — build & push rc image
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.gateway == 'true'
     permissions:
@@ -117,7 +117,7 @@ jobs:
 
   relay:
     name: Relay — build & push rc image
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.relay == 'true'
     permissions:

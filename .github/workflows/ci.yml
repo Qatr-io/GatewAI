@@ -33,7 +33,7 @@ jobs:
 
   test-gateway:
     name: Gateway — test & vet
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.gateway == 'true'
     steps:
@@ -47,7 +47,7 @@ jobs:
 
   test-relay:
     name: Relay — test & vet
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.relay == 'true'
     steps:
@@ -64,7 +64,7 @@ jobs:
 
   lint-helm:
     name: Helm — lint
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.helm == 'true'
     steps:

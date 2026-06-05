@@ -11,7 +11,7 @@ env:
 jobs:
   release:
     name: Build, push image & create release
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     permissions:
       contents: write
       packages: write
