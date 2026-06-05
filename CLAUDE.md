@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository overview
 
-**GatewAI** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Kafka jobs, and returns results asynchronously. A relay Deployment runs alongside each inference pod, pulling jobs from Kafka, calling the local inference model, and publishing results back.
+**GatewAI** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Redis jobs, and returns results asynchronously. A relay Deployment runs alongside each inference pod, pulling jobs from a Redis queue, calling the local inference model, and publishing results back.
 
 Two independent Go modules (separate `go.mod`, separate Docker images):
 - **Gateway** — root module `gatewai/gateway`, entry point `cmd/gateway/main.go`
@@ -73,17 +73,17 @@ Client
 Gateway (:8080)
   ├── Upload file → S3
   ├── Save job record → Redis (TTL 72h)
-  └── Publish InputEvent → Kafka jobs.<model>.input
+  └── RPUSH job → Redis queue relay:<model>:pending
                                     │
                         Relay Deployment (pull consumer)
-                             ├── FetchMessage from Kafka
+                             ├── BLMOVE from relay:<model>:pending
                                     ▼
                               ├── Download file from S3
                               ├── POST to local inference model (127.0.0.1:9000/<inference_url>)
                               ├── Upload result.json → S3
-                              └── Publish ResultEvent → jobs.<model>.results
+                              └── PUBLISH → Redis pub/sub jobs:<model>:completed
                                                                 │
-                                                         Gateway ConsumerManager
+                                                         Gateway Subscriber
                                                               ├── Update Redis
                                                               ├── Notify Redis pub/sub (job:<id>:done)
                                                               └── Trigger webhook (if callback_url set)
@@ -138,34 +138,6 @@ Both binaries use `config.Load(path)` which reads a YAML file and expands `${VAR
 
 **Adding a new service type** requires only a new entry in `config.yaml` (and `values.yaml` for Helm). No Go code change is needed — the service registry (`internal/service/registry.go`) is entirely config-driven.
 
-### Kafka authentication (SASL/TLS)
-
-`github.com/segmentio/kafka-go` v0.4.47 is used for both reading and writing.
-
-- Readers use `kafkago.Dialer` (built by `internal/kafka/auth.go:buildDialer`)
-- Writers use `kafkago.Transport` (built by `internal/kafka/auth.go:buildTransport`)
-
-**Critical**: `buildTransport` returns `(*kafkago.Transport, error)` where transport can be `nil` when SASL/TLS is not configured. Never assign the result directly to `w.Transport` (a `RoundTripper` interface) — a typed nil pointer produces a non-nil interface value and panics. Use:
-```go
-if p.transport != nil {
-    w.Transport = p.transport
-}
-```
-
-Broker: `default-kafka-bootstrap.infra-kafka.svc.cluster.local:9093` (SASL_SSL, SCRAM-SHA-512).
-
-### Strimzi KafkaUsers (`k8s/kafka-users.yaml`)
-
-- `gatewai-gateway` (namespace `infra-kafka`) — Write/Read on `jobs.*` topics, Read on `gatewai-gateway*` groups
-- `gatewai-relay` (namespace `infra-kafka`) — Read on `jobs.*` topics, **Read + Describe + Delete** on `inference-*` groups (Delete is required by the Knative controller for ConsumerGroup finalization), Write on `jobs.*` topics
-
-### Secret hygiene
-
-Strimzi-generated secrets (e.g. `gatewai-relay-kafka`) must not have trailing newlines in values. The Knative KafkaSource controller does exact string comparison on `sasl-type` — a `\n` suffix causes `[protocol SASL_SSL] unsupported SASL mechanism`. Verify with:
-```bash
-kubectl get secret gatewai-relay-kafka -n default \
-  -o jsonpath='{.data.sasl-type}' | base64 -d | xxd
-```
 
 ## Key files
 
@@ -175,30 +147,24 @@ kubectl get secret gatewai-relay-kafka -n default \
 | `relay/config.yaml` | Relay config template |
 | `values.yaml` | Helm values for production deployment |
 | `helm/gateway/` | Helm chart — generates ConfigMap, Secret, Deployment, Ingress |
-| `k8s/kafka-users.yaml` | Strimzi KafkaUser ACLs (apply in `infra-kafka` namespace) |
 | `k8s/deployment-transcription.yaml` | Deployment + Service + RBAC for whisper-large-v3 |
 | `internal/service/registry.go` | Config-driven service registry (routing, default model, operations map) |
 | `internal/handler/docs.go` | Dynamic OpenAPI spec generator + Swagger UI handler |
-| `internal/kafka/auth.go` | SASL/TLS dialer+transport construction for gateway |
-| `relay/internal/kafka/auth.go` | SASL/TLS transport construction for relay |
 
 ## Deployment
 
 Helm chart deploys the gateway with Redis-HA (HAProxy front-end). The relay runs as a standalone Deployment alongside the inference pod (see `k8s/deployment-transcription.yaml`), not managed by Helm.
 
-The Helm chart is published to GitHub Pages at `https://ia-generative.github.io/GatewAI` (auto-updated on push to `main` when `helm/` changes). The `gh-pages` branch must exist in the repository.
+The Helm chart is published to GitHub Pages at `https://qatr-io.github.io/GatewAI` (auto-updated on push to `main` when `helm/` changes). The `gh-pages` branch must exist in the repository.
 
 ```bash
 # Add Helm repo
-helm repo add GatewAI https://ia-generative.github.io/GatewAI
+helm repo add gatewai https://qatr-io.github.io/GatewAI
 helm repo update
-helm install gatewai-gateway GatewAI/gatewai-gateway -f values.yaml
+helm install gatewai-gateway gatewai/gatewai-gateway -f values.yaml
 
 # Or deploy from local sources
 helm upgrade --install gatewai-gateway ./helm/gateway -f values.yaml
-
-# Apply Strimzi users (namespace infra-kafka)
-kubectl apply -f k8s/kafka-users.yaml -n infra-kafka
 
 # Apply InferenceService + ServingRuntime
 kubectl apply -f k8s/deployment-transcription.yaml

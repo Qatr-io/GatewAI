@@ -100,7 +100,7 @@ Each entry in `services` registers one inference model with the gateway. Three o
 
 ```yaml
 services:
-  # Full mode: async + sync-over-Kafka
+  # Full mode: async (Redis queue) + sync direct proxy
   - type: audio
     model: "whisper-large-v3"
     default: true                 # fallback when request omits "model" field
@@ -247,9 +247,9 @@ extraEnvVars:
 
 ### Config hot reload
 
-The gateway exposes `POST /-/reload` to reload its configuration at runtime. Calling this endpoint re-reads `config.yaml`, rebuilds the service registry, Swagger specs, OpenAPI spec, and routing table, and reconciles Kafka consumers (stops consumers for removed topics, starts consumers for added topics) — without pod restart.
+The gateway exposes `POST /-/reload` to reload its configuration at runtime. Calling this endpoint re-reads `config.yaml`, rebuilds the service registry, Swagger specs, OpenAPI spec, and routing table — without pod restart.
 
-> **Note:** S3, Redis, and Kafka connection parameters are not reloaded. Adding a new Kafka service via hot reload will start its consumer immediately; removing one will stop it gracefully.
+> **Note:** S3 and Redis connection parameters are not reloaded on hot reload.
 
 The chart can deploy a [`configmap-reload`](https://github.com/jimmidyson/configmap-reload) sidecar that watches the ConfigMap volume and triggers `/-/reload` automatically whenever the ConfigMap is updated (e.g. via GitOps or `kubectl edit`).
 
@@ -350,8 +350,6 @@ metrics:
 | `GatewAI_sync_jobs_in_flight` | gauge | — |
 | `GatewAI_s3_operation_duration_seconds` | histogram | `operation` |
 | `GatewAI_s3_errors_total` | counter | `operation` |
-| `GatewAI_kafka_publish_duration_seconds` | histogram | `topic` |
-| `GatewAI_kafka_publish_errors_total` | counter | `topic` |
 | `GatewAI_redis_operation_duration_seconds` | histogram | `operation` |
 | `GatewAI_redis_errors_total` | counter | `operation` |
 | `GatewAI_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` |
@@ -380,33 +378,8 @@ The relay sidecar exposes its own `/metrics` endpoint (scraped separately, e.g. 
 | `GatewAI_relay_deferred_total` | counter | — |
 | `GatewAI_relay_s3_operation_duration_seconds` | histogram | `operation` |
 | `GatewAI_relay_s3_errors_total` | counter | `operation` |
-| `GatewAI_relay_kafka_publish_errors_total` | counter | — |
 | `GatewAI_relay_proxy_requests_total` | counter | `service_type`, `status` |
 | `GatewAI_relay_proxy_duration_seconds` | histogram | `service_type` |
-
-## Strimzi KafkaUser
-
-The gateway requires a `KafkaUser` in the `infra-kafka` namespace:
-
-```yaml
-# k8s/kafka-users.yaml
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaUser
-metadata:
-  name: gatewai-gateway
-spec:
-  authentication:
-    type: scram-sha-512
-  authorization:
-    type: simple
-    acls:
-      - resource: { type: topic, name: jobs., patternType: prefix }
-        operations: [Read, Write, Describe, Create]
-      - resource: { type: group, name: gatewai-gateway, patternType: prefix }
-        operations: [Read]
-```
-
-The generated secret (`gatewai-gateway` in `infra-kafka`) must be copied to the gateway namespace and referenced via `kafka.sasl.existingSecret`, or its password extracted and passed via `kafka.sasl.password`.
 
 ## Upgrade notes
 
@@ -414,13 +387,12 @@ The generated secret (`gatewai-gateway` in `infra-kafka`) must be copied to the 
 
 - `openai_path` (string) renamed to `openai_paths` (list) in service config
 - `inference_url` is now a base URL; the original request path is appended at runtime
-- Kafka topics renamed from `jobs.<type>.*` to `jobs.<model>.*`
 - At-rest AES-256-GCM encryption added (`encryption.key` / `encryption.existingSecret`)
 
 ### 0.2.x → 0.3.0
 
 - `openai_paths` (flat list) replaced by `operations` map (`operationName → [paths]`)
-- `syncTopic` field added per service (enables sync-over-Kafka for multipart `POST /v1/*`)
+- `syncTopic` field added per service (enables sync-direct proxy for multipart `POST /v1/*`)
 
 ### 0.3.x → 0.5.x
 

@@ -47,16 +47,6 @@ spec:
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.gatewayErrorRateCritical 100 }}% of gateway requests are returning 5xx errors."
             runbook_url: "{{ $runbookBase }}/KeventGatewayHighErrorRate"
 
-        - alert: KeventGatewayKafkaPublishErrors
-          expr: sum(increase(gatewai_kafka_publish_errors_total[5m])) > 0
-          for: 0m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Gateway Kafka publish errors"
-            description: "The gateway failed to publish input events to Kafka — async job submissions are failing."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayKafkaPublishErrors"
-
         - alert: KeventGatewayS3Errors
           expr: sum(increase(gatewai_s3_errors_total[5m])) > 0
           for: 0m
@@ -74,7 +64,7 @@ spec:
             severity: warning
           annotations:
             summary: "High number of sync jobs in flight ({{ "{{" }} $value {{ "}}" }})"
-            description: "More than {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }} sync-over-Kafka connections are open simultaneously."
+            description: "More than {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }} sync connections are open simultaneously."
             runbook_url: "{{ $runbookBase }}/KeventGatewaySyncJobsInFlightHigh"
 
         - alert: KeventGatewayRateLimitHighRejectionRate

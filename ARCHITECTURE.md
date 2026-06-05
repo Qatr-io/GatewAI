@@ -1,4 +1,8 @@
-# KEVENT — Architecture
+# GatewAI — Architecture
+
+> ⚠️ **Ce document est en cours de mise à jour.** Les diagrammes ci-dessous reflètent l'ancienne architecture Kafka.
+> L'architecture actuelle utilise Redis (listes `relay:<model>:pending` via BLMOVE/RPUSH) à la place de Kafka.
+> Voir `CLAUDE.md` pour la description à jour du flux de données.
 
 ## Vue d'ensemble
 
@@ -275,7 +279,7 @@ Plusieurs services peuvent partager le même `openai_path` (ex: deux modèles su
 
 ## Sémantique des codes HTTP du dispatcher (mode async)
 
-| Code | Signification | Comportement KafkaSource |
+| Code | Signification | Comportement relay |
 |---|---|---|
 | `200` | Job traité (succès ou échec métier publié via ResultEvent) | Offset commité, pas de retry |
 | `400` | Message malformé (JSON invalide, job_id manquant) | Pas de retry |
@@ -283,221 +287,10 @@ Plusieurs services peuvent partager le même `openai_path` (ex: deux modèles su
 
 ---
 
-## Kafka — authentification SASL/TLS
-
-Le cluster Kafka (Strimzi) écoute sur le port **9093** (`SASL_SSL`). Le gateway et le dispatcher s'authentifient avec SCRAM-SHA-512.
-
-### Mécanismes supportés
-
-| Mécanisme | `sasl.mechanism` | Notes |
-|---|---|---|
-| `SCRAM-SHA-512` | `SCRAM-SHA-512` | Utilisé en production (Strimzi) |
-| `SCRAM-SHA-256` | `SCRAM-SHA-256` | Supporté |
-| `PLAIN` | `PLAIN` | Pour les environnements de dev/test |
-
-### ACLs Strimzi requises
-
-**`gatewai-gateway`** :
-
-| Ressource | Pattern | Opérations |
-|---|---|---|
-| topic `jobs.*` | prefix | `Read`, `Write`, `Create`, `Describe` |
-| group `gatewai-gateway` | prefix | `Read`, `Describe`, `Delete` |
-
-**`GatewAI-dispatcher`** :
-
-| Ressource | Pattern | Opérations |
-|---|---|---|
-| topic `jobs.*` | prefix | `Read`, `Write`, `Create`, `Describe` |
-| group `inference-*` | prefix | `Read`, `Describe`, `Delete` |
-
-> `Delete` sur les groupes est requis par le contrôleur Knative pour la finalisation du ConsumerGroup lors de la suppression ou mise à jour d'un KafkaSource.
-
-### Piège courant — newline dans les secrets
-
-Les valeurs de secrets Kubernetes créées via `echo` ou heredoc incluent souvent un newline final (`\n`). Pour `sasl-type`, le contrôleur Knative fait une comparaison exacte de chaîne — un newline rend le mécanisme non reconnu et provoque l'erreur :
-
-```
-[protocol SASL_SSL] unsupported SASL mechanism (key: sasl.mechanism)
-```
-
-Toujours créer les secrets avec `printf` (pas `echo`) :
-
-```bash
-kubectl create secret generic GatewAI-dispatcher-kafka \
-  --from-literal=username=GatewAI-dispatcher \
-  --from-literal=password=<mot-de-passe> \
-  --from-literal=sasl-type=SCRAM-SHA-512
-# kubectl create secret --from-literal n'ajoute pas de newline
-```
 
 ---
 
 ## Déploiement Kubernetes
 
-### ServingRuntime (dispatcher sidecar)
-
-```yaml
-apiVersion: serving.kserve.io/v1alpha1
-kind: ServingRuntime
-metadata:
-  name: whisper-runtime
-spec:
-  containers:
-    - name: kserve-container     # container modèle (whisper)
-      image: ghcr.io/ia-generative/whisper-api:latest-gpu
-      # ...
-
-    - name: dispatcher           # sidecar GatewAI
-      image: tcheksa62/side-event:v0.2.4
-      ports:
-        - name: http1
-          containerPort: 8080
-      env:
-        - name: SERVICE_TYPE
-          value: transcription
-        - name: INFERENCE_PORT
-          value: "9000"
-        - name: KAFKA_BROKERS
-          value: "default-kafka-bootstrap.infra-kafka.svc.cluster.local:9093"
-        - name: KAFKA_SASL_MECHANISM
-          value: "SCRAM-SHA-512"
-        - name: KAFKA_TLS_ENABLED
-          value: "true"
-        - name: KAFKA_CA_CERT_PATH
-          value: "/etc/kafka-tls/ca.crt"
-        - name: KAFKA_SASL_USERNAME
-          valueFrom:
-            secretKeyRef:
-              name: GatewAI-dispatcher-kafka
-              key: username
-        - name: KAFKA_SASL_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: GatewAI-dispatcher-kafka
-              key: password
-        - name: S3_ACCESS_KEY
-          valueFrom:
-            secretKeyRef:
-              name: GatewAI-s3-credentials
-              key: access-key
-        - name: S3_SECRET_KEY
-          valueFrom:
-            secretKeyRef:
-              name: GatewAI-s3-credentials
-              key: secret-key
-        - name: CONFIG_PATH
-          value: /etc/GatewAI/config.yaml
-        - name: S3_BUCKET
-          value: GatewAI-jobs
-      volumeMounts:
-        - name: GatewAI-sidecar
-          mountPath: /etc/GatewAI/
-        - name: kafka-tls
-          mountPath: /etc/kafka-tls
-          readOnly: true
-  volumes:
-    - name: GatewAI-sidecar
-      configMap:
-        name: GatewAI-sidecar
-    - name: kafka-tls
-      secret:
-        secretName: kafka-cluster-ca-cert   # CA Strimzi (clé : ca.crt)
-```
-
-### KafkaSource
-
-```yaml
-apiVersion: sources.knative.dev/v1
-kind: KafkaSource
-metadata:
-  name: kafka-source
-  namespace: default
-spec:
-  bootstrapServers:
-    - "default-kafka-bootstrap.infra-kafka.svc.cluster.local:9093"
-  topics:
-    - "jobs.transcription.input"
-  consumerGroup: "inference-transcription"
-  initialOffset: latest
-  net:
-    sasl:
-      enable: true
-      type:
-        secretKeyRef:
-          name: GatewAI-dispatcher-kafka
-          key: sasl-type       # valeur : SCRAM-SHA-512 (sans newline)
-      user:
-        secretKeyRef:
-          name: GatewAI-dispatcher-kafka
-          key: username
-      password:
-        secretKeyRef:
-          name: GatewAI-dispatcher-kafka
-          key: password
-    tls:
-      enable: true
-      caCert:
-        secretKeyRef:
-          name: kafka-cluster-ca-cert
-          key: ca.crt
-  delivery:
-    timeout: "PT600S"
-    retry: 10
-    backoffPolicy: exponential
-    backoffDelay: "PT0.3S"
-    ordering: ordered
-  sink:
-    ref:
-      apiVersion: serving.knative.dev/v1
-      kind: Service
-      name: GatewAI-transcription-predictor
-      namespace: default
-```
-
-### KafkaUser Strimzi
-
-Défini dans `k8s/kafka-users.yaml` :
-
-```yaml
-apiVersion: kafka.strimzi.io/v1beta2
-kind: KafkaUser
-metadata:
-  name: GatewAI-dispatcher
-  namespace: infra-kafka
-  labels:
-    strimzi.io/cluster: default
-spec:
-  authentication:
-    type: scram-sha-512
-  authorization:
-    type: simple
-    acls:
-      - resource: { type: topic, name: jobs., patternType: prefix }
-        operations: [Read, Describe]
-      - resource: { type: group, name: inference-, patternType: prefix }
-        operations: [Read, Describe, Delete]
-      - resource: { type: topic, name: jobs., patternType: prefix }
-        operations: [Write, Create, Describe]
-```
-
----
-
-## Images Docker
-
-| Composant | Image | Tag actuel |
-|---|---|---|
-| Gateway | `tcheksa62/GatewAI` | `v0.2.4` |
-| Dispatcher sidecar | `tcheksa62/side-event` | `v0.2.4` |
-
-Build et push :
-
-```bash
-# Gateway
-docker build -t tcheksa62/GatewAI:vX.Y.Z .
-docker push tcheksa62/GatewAI:vX.Y.Z
-
-# Dispatcher
-docker build -t tcheksa62/side-event:vX.Y.Z ./dispatcher
-docker push tcheksa62/side-event:vX.Y.Z
-```
+> **TODO** — Cette section est à réécrire pour refléter l'architecture Redis-based actuelle.
+> Voir `k8s/deployment-transcription.yaml` et `k8s/inference-transcription.yaml` pour les manifests à jour.
