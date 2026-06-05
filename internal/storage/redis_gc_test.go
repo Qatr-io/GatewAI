@@ -6,8 +6,8 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/storage"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/storage"
 )
 
 func newTestRedisClient(t *testing.T) (*storage.RedisClient, *miniredis.Miniredis) {

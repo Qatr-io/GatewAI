@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"kevent/gateway/internal/model"
+	"gatewai/gateway/internal/model"
 )
 
 func TestSaveJobPushesToRelayQueue(t *testing.T) {

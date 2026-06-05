@@ -14,11 +14,11 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/model"
-	"kevent/gateway/internal/ratelimit"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/model"
+	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
 )
 
 // s3Store is the subset of storage.S3Client used by JobHandler.

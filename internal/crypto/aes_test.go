@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"kevent/gateway/internal/crypto"
+	"gatewai/gateway/internal/crypto"
 )
 
 // ── ParseKey ─────────────────────────────────────────────────────────────────

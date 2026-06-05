@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"kevent/relay/internal/crypto"
+	"gatewai/relay/internal/crypto"
 )
 
 // ── ParseKey ─────────────────────────────────────────────────────────────────

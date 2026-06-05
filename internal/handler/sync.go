@@ -14,12 +14,12 @@ import (
 	"strings"
 	"time"
 
-	"kevent/gateway/internal/concurrency"
-	"kevent/gateway/internal/guardrails"
-	"kevent/gateway/internal/llmproxy"
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/ratelimit"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/concurrency"
+	"gatewai/gateway/internal/guardrails"
+	"gatewai/gateway/internal/llmproxy"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
 )
 
 // SyncHandler handles OpenAI-compatible POST /v1/* requests.

@@ -15,10 +15,10 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/model"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/model"
+	"gatewai/gateway/internal/service"
 )
 
 // ── Mocks ────────────────────────────────────────────────────────────────────

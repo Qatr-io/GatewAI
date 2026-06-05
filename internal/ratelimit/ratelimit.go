@@ -31,8 +31,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/metrics"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
 )
 
 // CheckResult holds the outcome of a rate-limit check together with the

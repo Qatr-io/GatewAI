@@ -9,7 +9,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // GenerateSpec builds an OpenAPI 3.0.3 spec dynamically from the service registry.

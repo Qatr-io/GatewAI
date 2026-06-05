@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 type anthropicProvider struct{}

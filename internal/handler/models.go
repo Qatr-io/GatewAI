@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sort"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // modelCapabilities describes what a model supports.

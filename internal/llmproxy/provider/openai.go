@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 type openAIProvider struct{}

@@ -10,8 +10,8 @@ import (
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
 
-	"kevent/relay/internal/adapter"
-	"kevent/relay/internal/model"
+	"gatewai/relay/internal/adapter"
+	"gatewai/relay/internal/model"
 )
 
 // ── test doubles ─────────────────────────────────────────────────────────────

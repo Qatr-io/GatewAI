@@ -8,8 +8,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/ratelimit"
 )
 
 func newLimiter(t *testing.T, limits map[string]map[string]config.RateLimitConfig, consumerHeader, userTypeHeader string) (*ratelimit.Limiter, *miniredis.Miniredis) {

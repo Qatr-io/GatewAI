@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"sort"
 
-	"kevent/relay/internal/config"
+	"gatewai/relay/internal/config"
 )
 
 // multipartAdapter streams a file to any multipart/form-data inference endpoint.

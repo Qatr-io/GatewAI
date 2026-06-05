@@ -10,10 +10,10 @@ import (
 	"path/filepath"
 	"time"
 
-	"kevent/relay/internal/adapter"
-	"kevent/relay/internal/metrics"
-	"kevent/relay/internal/model"
-	"kevent/relay/internal/storage"
+	"gatewai/relay/internal/adapter"
+	"gatewai/relay/internal/metrics"
+	"gatewai/relay/internal/model"
+	"gatewai/relay/internal/storage"
 )
 
 type objectStore interface {

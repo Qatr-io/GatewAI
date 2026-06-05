@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"strings"
 
-	"kevent/relay/internal/config"
+	"gatewai/relay/internal/config"
 )
 
 // CallInput contains the data passed to the adapter for inference.

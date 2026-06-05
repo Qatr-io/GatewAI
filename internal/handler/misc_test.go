@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/service"
 )
 
 // ── Health ────────────────────────────────────────────────────────────────────

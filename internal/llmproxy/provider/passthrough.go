@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // passthroughProvider forwards requests verbatim to inference_url with
