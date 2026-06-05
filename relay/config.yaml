@@ -14,7 +14,7 @@ s3:
   region:     "${S3_REGION:-fr-par}"
   access_key: "${S3_ACCESS_KEY}"
   secret_key: "${S3_SECRET_KEY}"
-  bucket:     "${S3_BUCKET:-kevent-jobs}"
+  bucket:     "${S3_BUCKET:-gatewai-jobs}"
 
 # Inference service endpoint. For Job deployments, set INFERENCE_BASE_URL to the InferenceService cluster URL.
 # INFERENCE_PORT is the port of the model server in the pod.
