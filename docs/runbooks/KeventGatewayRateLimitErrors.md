@@ -15,11 +15,11 @@ Rate limiting is silently disabled for the affected service type. Consumers can 
 
 ```promql
 # Error rate per service type
-rate(kevent_ratelimit_errors_total[5m])
+rate(GatewAI_ratelimit_errors_total[5m])
 
 # Is Redis reachable?
 # Check gateway pod logs for connection errors
-kubectl logs -l app.kubernetes.io/name=kevent-gateway -n <namespace> --tail=100 | grep "rate limit"
+kubectl logs -l app.kubernetes.io/name=gatewai-gateway -n <namespace> --tail=100 | grep "rate limit"
 ```
 
 Common causes:

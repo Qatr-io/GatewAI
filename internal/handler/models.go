@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"sort"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // modelCapabilities describes what a model supports.
@@ -19,7 +19,7 @@ type modelCapabilities struct {
 }
 
 // modelObject mirrors the OpenAI model object returned by GET /v1/models,
-// extended with kevent-specific capability metadata.
+// extended with GatewAI-specific capability metadata.
 type modelObject struct {
 	ID           string            `json:"id"`
 	Object       string            `json:"object"`
@@ -45,7 +45,7 @@ func ListModels(registry *service.Registry) http.HandlerFunc {
 			data = append(data, modelObject{
 				ID:          d.Model,
 				Object:      "model",
-				OwnedBy:     "kevent",
+				OwnedBy:     "gatewai",
 				ServiceType: d.Type,
 				Provider:    d.Provider,
 				Capabilities: modelCapabilities{

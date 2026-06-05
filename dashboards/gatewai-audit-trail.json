@@ -1,9 +1,9 @@
 {
   "id": null,
-  "uid": "kevent-audit-trail",
-  "title": "kevent — Audit Trail LLM",
+  "uid": "gatewai-audit-trail",
+  "title": "GatewAI — Audit Trail LLM",
   "description": "Supervision des requêtes LLM : flux audit, guardrails PII, cache, backend health, tokens par consumer.",
-  "tags": ["kevent", "llm", "audit", "guardrails"],
+  "tags": ["GatewAI", "llm", "audit", "guardrails"],
   "timezone": "browser",
   "schemaVersion": 37,
   "version": 1,
@@ -12,8 +12,8 @@
   "timepicker": {},
   "links": [
     {
-      "title": "kevent — LLM Proxy",
-      "url": "/d/kevent-llm",
+      "title": "GatewAI — LLM Proxy",
+      "url": "/d/gatewai-llm",
       "type": "link",
       "icon": "external link",
       "targetBlank": false
@@ -59,7 +59,7 @@
         "multi": false,
         "options": [],
         "refresh": 2,
-        "regex": ".*kevent.*",
+        "regex": ".*gatewai.*",
         "sort": 1
       },
       {
@@ -68,7 +68,7 @@
         "label": "Service type",
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
         "query": {
-          "query": "label_values(kevent_llm_requests_total, service_type)",
+          "query": "label_values(gatewai_llm_requests_total, service_type)",
           "refId": "StandardVariableQuery"
         },
         "current": {},
@@ -86,7 +86,7 @@
         "label": "Modèle",
         "datasource": { "type": "prometheus", "uid": "${datasource}" },
         "query": {
-          "query": "label_values(kevent_llm_requests_total{service_type=~\"$service_type\"}, model)",
+          "query": "label_values(gatewai_llm_requests_total{service_type=~\"$service_type\"}, model)",
           "refId": "StandardVariableQuery"
         },
         "current": {},
@@ -138,7 +138,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[$__range]))",
+          "expr": "sum(increase(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[$__range]))",
           "legendFormat": "total",
           "refId": "A"
         }
@@ -177,7 +177,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "100 * sum(rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m])) / (sum(rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) > 0)",
+          "expr": "100 * sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) > 0)",
           "legendFormat": "erreurs 5xx %",
           "refId": "A"
         }
@@ -216,7 +216,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "100 * sum(rate(kevent_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(kevent_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) + sum(rate(kevent_cache_misses_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
+          "expr": "100 * sum(rate(gatewai_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(gatewai_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) + sum(rate(gatewai_cache_misses_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
           "legendFormat": "exact hit %",
           "refId": "A"
         }
@@ -255,7 +255,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "100 * sum(rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider=\"semantic-cache\"}[5m])) / (sum(rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache\"}[5m])) > 0)",
+          "expr": "100 * sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider=\"semantic-cache\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache\"}[5m])) > 0)",
           "legendFormat": "semantic hit %",
           "refId": "A"
         }
@@ -294,7 +294,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(increase(kevent_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[$__range]))",
+          "expr": "sum(increase(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[$__range]))",
           "legendFormat": "bloquées",
           "refId": "A"
         }
@@ -322,7 +322,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (provider) (rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
+          "expr": "sum by (provider) (rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
@@ -350,19 +350,19 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le) (rate(kevent_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le) (rate(kevent_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.99, sum by (le) (rate(kevent_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
@@ -399,7 +399,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (service_type, model) (rate(kevent_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
+          "expr": "sum by (service_type, model) (rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{service_type}}/{{model}}",
           "refId": "A"
         }
@@ -427,7 +427,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "100 * sum(rate(kevent_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) + sum(rate(kevent_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
+          "expr": "100 * sum(rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) + sum(rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
           "legendFormat": "% bloquées",
           "refId": "A"
         }
@@ -499,7 +499,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "kevent_backend_effective_weight",
+          "expr": "gatewai_backend_effective_weight",
           "legendFormat": "{{url}}",
           "refId": "A"
         }
@@ -527,7 +527,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (backend_model, provider) (rate(kevent_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m]))",
+          "expr": "sum by (backend_model, provider) (rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m]))",
           "legendFormat": "{{provider}}/{{backend_model}}",
           "refId": "A"
         }
@@ -588,7 +588,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by (user_type, type) (rate(kevent_llm_tokens_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
+          "expr": "sum by (user_type, type) (rate(gatewai_llm_tokens_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{user_type}} — {{type}}",
           "refId": "A"
         }
@@ -617,13 +617,13 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.50, sum by (le, service_type) (rate(kevent_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
+          "expr": "histogram_quantile(0.50, sum by (le, service_type) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "{{service_type}} p50",
           "refId": "A"
         },
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "histogram_quantile(0.95, sum by (le, service_type) (rate(kevent_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
+          "expr": "histogram_quantile(0.95, sum by (le, service_type) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "{{service_type}} p95",
           "refId": "B"
         }
@@ -668,7 +668,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sort_desc(kevent_llm_consumer_tokens_top{type=\"prompt\"})",
+          "expr": "sort_desc(gatewai_llm_consumer_tokens_top{type=\"prompt\"})",
           "legendFormat": "{{consumer}} ({{user_type}})",
           "refId": "A"
         }
@@ -705,7 +705,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sort_desc(kevent_llm_consumer_tokens_top{type=\"completion\"})",
+          "expr": "sort_desc(gatewai_llm_consumer_tokens_top{type=\"completion\"})",
           "legendFormat": "{{consumer}} ({{user_type}})",
           "refId": "A"
         }

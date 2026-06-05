@@ -39,7 +39,7 @@ jobs:
 
   gateway:
     name: Gateway — build & push rc image
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.gateway == 'true'
     permissions:
@@ -55,7 +55,7 @@ jobs:
           SHA="${GITHUB_SHA::7}"
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "tag=rc-${SHA}"                                >> $GITHUB_OUTPUT
-          echo "image=ghcr.io/${OWNER}/kevent-ai/gateway"    >> $GITHUB_OUTPUT
+          echo "image=ghcr.io/${OWNER}/gatewai/gateway"    >> $GITHUB_OUTPUT
 
       - uses: docker/setup-buildx-action@v3
 
@@ -117,7 +117,7 @@ jobs:
 
   relay:
     name: Relay — build & push rc image
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.relay == 'true'
     permissions:
@@ -133,7 +133,7 @@ jobs:
           SHA="${GITHUB_SHA::7}"
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
           echo "tag=rc-${SHA}"                             >> $GITHUB_OUTPUT
-          echo "image=ghcr.io/${OWNER}/kevent-ai/relay"   >> $GITHUB_OUTPUT
+          echo "image=ghcr.io/${OWNER}/gatewai/relay"   >> $GITHUB_OUTPUT
 
       - uses: docker/setup-buildx-action@v3
 

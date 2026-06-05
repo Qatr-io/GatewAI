@@ -3,8 +3,8 @@ package service_test
 import (
 	"testing"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/service"
 )
 
 func baseServiceConfig() config.ServiceConfig {

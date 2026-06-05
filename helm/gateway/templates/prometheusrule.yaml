@@ -2,28 +2,28 @@
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: {{ include "kevent-gateway.fullname" . }}
+  name: {{ include "gatewai-gateway.fullname" . }}
   {{- if .Values.alerting.prometheusRule.namespace }}
   namespace: {{ .Values.alerting.prometheusRule.namespace }}
   {{- else }}
   namespace: {{ .Release.Namespace }}
   {{- end }}
   labels:
-    {{- include "kevent-gateway.labels" . | nindent 4 }}
+    {{- include "gatewai-gateway.labels" . | nindent 4 }}
     {{- with .Values.alerting.prometheusRule.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
 spec:
   groups:
-    - name: kevent-gateway
+    - name: gatewai-gateway
       rules:
         {{- $runbookBase := .Values.alerting.prometheusRule.runbookBaseURL }}
 
         - alert: KeventGatewayHighErrorRate
           expr: |
             (
-              sum(rate(kevent_requests_total{status=~"5.."}[5m])) /
-              sum(rate(kevent_requests_total[5m]))
+              sum(rate(gatewai_requests_total{status=~"5.."}[5m])) /
+              sum(rate(gatewai_requests_total[5m]))
             ) > {{ .Values.alerting.prometheusRule.thresholds.gatewayErrorRateWarning }}
           for: 5m
           labels:
@@ -36,8 +36,8 @@ spec:
         - alert: KeventGatewayHighErrorRate
           expr: |
             (
-              sum(rate(kevent_requests_total{status=~"5.."}[5m])) /
-              sum(rate(kevent_requests_total[5m]))
+              sum(rate(gatewai_requests_total{status=~"5.."}[5m])) /
+              sum(rate(gatewai_requests_total[5m]))
             ) > {{ .Values.alerting.prometheusRule.thresholds.gatewayErrorRateCritical }}
           for: 5m
           labels:
@@ -47,18 +47,8 @@ spec:
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.gatewayErrorRateCritical 100 }}% of gateway requests are returning 5xx errors."
             runbook_url: "{{ $runbookBase }}/KeventGatewayHighErrorRate"
 
-        - alert: KeventGatewayKafkaPublishErrors
-          expr: sum(increase(kevent_kafka_publish_errors_total[5m])) > 0
-          for: 0m
-          labels:
-            severity: critical
-          annotations:
-            summary: "Gateway Kafka publish errors"
-            description: "The gateway failed to publish input events to Kafka — async job submissions are failing."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayKafkaPublishErrors"
-
         - alert: KeventGatewayS3Errors
-          expr: sum(increase(kevent_s3_errors_total[5m])) > 0
+          expr: sum(increase(gatewai_s3_errors_total[5m])) > 0
           for: 0m
           labels:
             severity: warning
@@ -68,20 +58,20 @@ spec:
             runbook_url: "{{ $runbookBase }}/KeventGatewayS3Errors"
 
         - alert: KeventGatewaySyncJobsInFlightHigh
-          expr: kevent_sync_jobs_in_flight > {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }}
+          expr: gatewai_sync_jobs_in_flight > {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }}
           for: 5m
           labels:
             severity: warning
           annotations:
             summary: "High number of sync jobs in flight ({{ "{{" }} $value {{ "}}" }})"
-            description: "More than {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }} sync-over-Kafka connections are open simultaneously."
+            description: "More than {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }} sync connections are open simultaneously."
             runbook_url: "{{ $runbookBase }}/KeventGatewaySyncJobsInFlightHigh"
 
         - alert: KeventGatewayRateLimitHighRejectionRate
           expr: |
             (
-              sum by (service_type) (rate(kevent_ratelimit_requests_total{result="rejected"}[5m])) /
-              sum by (service_type) (rate(kevent_ratelimit_requests_total[5m]))
+              sum by (service_type) (rate(gatewai_ratelimit_requests_total{result="rejected"}[5m])) /
+              sum by (service_type) (rate(gatewai_ratelimit_requests_total[5m]))
             ) > {{ .Values.alerting.prometheusRule.thresholds.rateLimitRejectionRateWarning }}
           for: 5m
           labels:
@@ -92,7 +82,7 @@ spec:
             runbook_url: "{{ $runbookBase }}/KeventGatewayRateLimitHighRejectionRate"
 
         - alert: KeventGatewayRateLimitErrors
-          expr: sum(increase(kevent_ratelimit_errors_total[5m])) > 0
+          expr: sum(increase(gatewai_ratelimit_errors_total[5m])) > 0
           for: 0m
           labels:
             severity: warning
@@ -101,15 +91,15 @@ spec:
             description: "The rate limiter encountered Redis errors — requests are being allowed through (fail-open). Check Redis connectivity."
             runbook_url: "{{ $runbookBase }}/KeventGatewayRateLimitErrors"
 
-    - name: kevent-relay
+    - name: gatewai-relay
       rules:
         {{- $runbookBase := .Values.alerting.prometheusRule.runbookBaseURL }}
 
         - alert: KeventRelayJobFailureRate
           expr: |
             (
-              sum by (service_type) (rate(kevent_relay_jobs_total{status="failed"}[5m])) /
-              sum by (service_type) (rate(kevent_relay_jobs_total[5m]))
+              sum by (service_type) (rate(gatewai_relay_jobs_total{status="failed"}[5m])) /
+              sum by (service_type) (rate(gatewai_relay_jobs_total[5m]))
             ) > {{ .Values.alerting.prometheusRule.thresholds.relayJobFailureRateWarning }}
           for: 5m
           labels:
@@ -122,8 +112,8 @@ spec:
         - alert: KeventRelayJobFailureRate
           expr: |
             (
-              sum by (service_type) (rate(kevent_relay_jobs_total{status="failed"}[5m])) /
-              sum by (service_type) (rate(kevent_relay_jobs_total[5m]))
+              sum by (service_type) (rate(gatewai_relay_jobs_total{status="failed"}[5m])) /
+              sum by (service_type) (rate(gatewai_relay_jobs_total[5m]))
             ) > {{ .Values.alerting.prometheusRule.thresholds.relayJobFailureRateCritical }}
           for: 5m
           labels:
@@ -137,7 +127,7 @@ spec:
           expr: |
             histogram_quantile(0.95,
               sum by (service_type, le) (
-                rate(kevent_relay_inference_duration_seconds_bucket[10m])
+                rate(gatewai_relay_inference_duration_seconds_bucket[10m])
               )
             ) > {{ .Values.alerting.prometheusRule.thresholds.relayInferenceP95Seconds }}
           for: 10m
@@ -149,7 +139,7 @@ spec:
             runbook_url: "{{ $runbookBase }}/KeventRelayInferenceSlow"
 
         - alert: KeventRelayS3Errors
-          expr: sum(increase(kevent_relay_s3_errors_total[5m])) > 0
+          expr: sum(increase(gatewai_relay_s3_errors_total[5m])) > 0
           for: 0m
           labels:
             severity: warning

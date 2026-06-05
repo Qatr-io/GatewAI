@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"kevent/relay/internal/config"
+	"gatewai/relay/internal/config"
 )
 
 func newTestAdapter(backendURL string, clientTimeout time.Duration) *multipartAdapter {

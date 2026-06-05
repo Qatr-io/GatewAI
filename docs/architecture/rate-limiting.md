@@ -94,21 +94,21 @@ Retry-After: 42
 
 | Metric | Labels | Description |
 |---|---|---|
-| `kevent_ratelimit_requests_total` | `service_type, user_type, result` | All rate-limit checks (`allowed` / `rejected`) |
-| `kevent_ratelimit_consumer_hits_total` | `service_type, user_type` | Consumers that hit their limit |
-| `kevent_ratelimit_errors_total` | `service_type` | Redis errors during rate-limit check |
+| `GatewAI_ratelimit_requests_total` | `service_type, user_type, result` | All rate-limit checks (`allowed` / `rejected`) |
+| `GatewAI_ratelimit_consumer_hits_total` | `service_type, user_type` | Consumers that hit their limit |
+| `GatewAI_ratelimit_errors_total` | `service_type` | Redis errors during rate-limit check |
 
 ### Example queries
 
 ```promql
 # Rejection rate per service (should stay below 20% in normal operation)
-sum by (service_type) (rate(kevent_ratelimit_requests_total{result="rejected"}[5m]))
+sum by (service_type) (rate(GatewAI_ratelimit_requests_total{result="rejected"}[5m]))
 /
-sum by (service_type) (rate(kevent_ratelimit_requests_total[5m]))
+sum by (service_type) (rate(GatewAI_ratelimit_requests_total[5m]))
 
 # Number of distinct consumers hitting their limit (user type = "user")
 count(group by (consumer) (
-  kevent_ratelimit_consumer_hits_total{user_type="user"}
+  GatewAI_ratelimit_consumer_hits_total{user_type="user"}
 ))
 ```
 

@@ -3,7 +3,7 @@ package guardrails_test
 import (
 	"testing"
 
-	"kevent/gateway/internal/guardrails"
+	"gatewai/gateway/internal/guardrails"
 )
 
 var checker = guardrails.New()

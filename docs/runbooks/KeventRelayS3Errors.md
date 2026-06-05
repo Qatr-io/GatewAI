@@ -17,14 +17,14 @@ Relay sidecars encountered S3 errors (get/put/delete) in the last 5 minutes.
 
 ```bash
 # Errors by operation
-sum by (operation) (increase(kevent_relay_s3_errors_total[5m]))
+sum by (operation) (increase(GatewAI_relay_s3_errors_total[5m]))
 
 # Relay logs
 kubectl logs -l serving.kserve.io/inferenceservice=<name> -c kserve-container -n <namespace> \
   | grep -E "s3|S3"
 
 # Check if gateway S3 errors also firing (shared credentials issue)
-increase(kevent_s3_errors_total[5m])
+increase(GatewAI_s3_errors_total[5m])
 ```
 
 Common causes:

@@ -14,14 +14,14 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"kevent/relay/internal/adapter"
-	"kevent/relay/internal/config"
-	"kevent/relay/internal/metrics"
-	"kevent/relay/internal/model"
-	"kevent/relay/internal/queue"
-	relayproc "kevent/relay/internal/relay"
-	"kevent/relay/internal/store"
-	"kevent/relay/internal/storage"
+	"gatewai/relay/internal/adapter"
+	"gatewai/relay/internal/config"
+	"gatewai/relay/internal/metrics"
+	"gatewai/relay/internal/model"
+	"gatewai/relay/internal/queue"
+	relayproc "gatewai/relay/internal/relay"
+	"gatewai/relay/internal/store"
+	"gatewai/relay/internal/storage"
 )
 
 // redisPublisher implements relay.eventPublisher via the Redis store and queue.

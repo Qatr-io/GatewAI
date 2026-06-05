@@ -11,9 +11,9 @@ import (
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 
-	"kevent/relay/internal/config"
-	"kevent/relay/internal/crypto"
-	"kevent/relay/internal/metrics"
+	"gatewai/relay/internal/config"
+	"gatewai/relay/internal/crypto"
+	"gatewai/relay/internal/metrics"
 )
 
 // S3Client wraps the AWS SDK v2 S3 client for any S3-compatible object storage.

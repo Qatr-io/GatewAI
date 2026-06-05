@@ -1,4 +1,4 @@
-module kevent/gateway
+module gatewai/gateway
 
 go 1.24
 

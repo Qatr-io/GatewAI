@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"kevent/gateway/internal/config"
+	"gatewai/gateway/internal/config"
 )
 
 // ── helpers ───────────────────────────────────────────────────────────────────

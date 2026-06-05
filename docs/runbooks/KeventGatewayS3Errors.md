@@ -17,10 +17,10 @@ The gateway encountered S3 errors (upload, get, or delete) in the last 5 minutes
 
 ```bash
 # Errors by operation
-sum by (operation) (increase(kevent_s3_errors_total[5m]))
+sum by (operation) (increase(GatewAI_s3_errors_total[5m]))
 
 # Gateway logs
-kubectl logs -l app.kubernetes.io/name=kevent-gateway -n <namespace> | grep -E "s3 (upload|result fetch) failed"
+kubectl logs -l app.kubernetes.io/name=gatewai-gateway -n <namespace> | grep -E "s3 (upload|result fetch) failed"
 
 # Check S3 reachability
 kubectl exec -it <gateway-pod> -n <namespace> -- curl -I <s3-endpoint>

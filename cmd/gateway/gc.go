@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"time"
 
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/storage"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/storage"
 )
 
 // runGC executes one GC cycle:

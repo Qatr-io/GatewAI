@@ -1,6 +1,6 @@
-# kevent-ai
+# GatewAI
 
-**kevent-ai** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Redis jobs, and returns results asynchronously — or synchronously for low-latency use cases.
+**GatewAI** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Redis jobs, and returns results asynchronously — or synchronously for low-latency use cases.
 
 ## Quick start
 
@@ -43,8 +43,8 @@ Two independent Go binaries, two Docker images:
 
 | Component | Image | Entry point |
 |---|---|---|
-| **Gateway** | `ghcr.io/ia-generative/kevent-ai/gateway` | `cmd/gateway/main.go` |
-| **Relay** | `ghcr.io/ia-generative/kevent-ai/relay` | `relay/cmd/relay/main.go` |
+| **Gateway** | `ghcr.io/qatr-io/gatewai/gateway` | `cmd/gateway/main.go` |
+| **Relay** | `ghcr.io/qatr-io/gatewai/relay` | `relay/cmd/relay/main.go` |
 
 The **relay** runs as a standalone Kubernetes Deployment alongside the inference pod. Each pod pops one job from a Redis list (`BLMOVE`), calls the local inference model, and exits — KEDA scales on Redis queue depth and terminates idle pods.
 

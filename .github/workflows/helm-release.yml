@@ -10,7 +10,7 @@ on:
 jobs:
   release:
     name: Package & publish to GitHub Pages
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     permissions:
       contents: write   # push to gh-pages branch
 

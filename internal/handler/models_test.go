@@ -6,9 +6,9 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/service"
 )
 
 // modelsResponse mirrors the JSON structure returned by GET /v1/models.
@@ -71,8 +71,8 @@ func TestListModels_Capabilities_AsyncOnly(t *testing.T) {
 	if m.ID != "whisper-large-v3" {
 		t.Errorf("expected id='whisper-large-v3', got %q", m.ID)
 	}
-	if m.OwnedBy != "kevent" {
-		t.Errorf("expected owned_by='kevent', got %q", m.OwnedBy)
+	if m.OwnedBy != "gatewai" {
+		t.Errorf("expected owned_by='gatewai', got %q", m.OwnedBy)
 	}
 	if m.ServiceType != "transcription" {
 		t.Errorf("expected service_type='transcription', got %q", m.ServiceType)

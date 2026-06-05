@@ -2,9 +2,9 @@
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
-  name: {{ include "kevent-gateway.fullname" . }}
+  name: {{ include "gatewai-gateway.fullname" . }}
   labels:
-    {{- include "kevent-gateway.labels" . | nindent 4 }}
+    {{- include "gatewai-gateway.labels" . | nindent 4 }}
     {{- with .Values.metrics.serviceMonitor.additionalLabels }}
     {{- toYaml . | nindent 4 }}
     {{- end }}
@@ -14,7 +14,7 @@ metadata:
 spec:
   selector:
     matchLabels:
-      {{- include "kevent-gateway.selectorLabels" . | nindent 6 }}
+      {{- include "gatewai-gateway.selectorLabels" . | nindent 6 }}
   endpoints:
     - port: http
       path: /metrics

@@ -6,12 +6,12 @@ on:
       - "gateway/v*"
 
 env:
-  IMAGE: ghcr.io/${{ github.repository_owner }}/kevent-ai/gateway
+  IMAGE: ghcr.io/${{ github.repository_owner }}/gatewai/gateway
 
 jobs:
   release:
     name: Build, push image & create release
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     permissions:
       contents: write       # create GitHub release + upload assets
       packages: write       # push to ghcr.io
@@ -40,7 +40,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
             go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
-            -trimpath -o kevent-gateway-linux-amd64 ./cmd/gateway
+            -trimpath -o gatewai-gateway-linux-amd64 ./cmd/gateway
 
       # ── Docker image (multi-arch) ────────────────────────────────────────────
       - uses: docker/setup-buildx-action@v3
@@ -86,5 +86,5 @@ jobs:
 
             ## Changelog
             See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
-          files: kevent-gateway-linux-amd64
+          files: gatewai-gateway-linux-amd64
           generate_release_notes: false

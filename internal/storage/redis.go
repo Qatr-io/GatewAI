@@ -9,9 +9,9 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/model"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/model"
 )
 
 // RedisClient wraps go-redis with job-specific persistence helpers.

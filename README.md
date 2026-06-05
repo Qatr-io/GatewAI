@@ -1,4 +1,4 @@
-# kevent-gateway
+# gatewai-gateway
 
 API Gateway pour les services d'inférence KServe. Plusieurs modes de fonctionnement coexistent pour chaque service :
 
@@ -98,7 +98,7 @@ Gateway — LLM proxy
 ```bash
 # Gateway
 go build -ldflags "-X main.version=v0.4.11" -o gateway ./cmd/gateway
-CONFIG_PATH=/etc/kevent/config.yaml ./gateway
+CONFIG_PATH=/etc/GatewAI/config.yaml ./gateway
 
 # Relay
 cd relay
@@ -109,13 +109,13 @@ CONFIG_PATH=/etc/relay/config.yaml ./relay
 ### Docker
 
 ```bash
-docker build -t kevent-gateway .
+docker build -t gatewai-gateway .
 docker run \
   -e S3_ACCESS_KEY=... \
   -e S3_SECRET_KEY=... \
   -e REDIS_ADDR=redis:6379 \
   -p 8080:8080 \
-  kevent-gateway
+  gatewai-gateway
 ```
 
 ---
@@ -148,7 +148,7 @@ s3:
   region: "fr-par"
   access_key: "${S3_ACCESS_KEY}"
   secret_key: "${S3_SECRET_KEY}"
-  bucket: "kevent-jobs"
+  bucket: "GatewAI-jobs"
 
 encryption:
   key: "${ENCRYPTION_KEY:-}"    # AES-256-GCM at-rest, vide = désactivé
@@ -187,7 +187,7 @@ services:
         - "/v1/audio/transcriptions"
       translation:
         - "/v1/audio/translations"
-    inference_url: "http://kevent-transcription-predictor.default.svc.cluster.local"
+    inference_url: "http://GatewAI-transcription-predictor.default.svc.cluster.local"
     accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     max_file_size_mb: 500
 
@@ -198,7 +198,7 @@ services:
       ocr:
         - "/v1/ocr"
         - "/v1/vision/ocr"    # alias — toutes les paths d'une opération sont indexées
-    inference_url: "http://kevent-ocr-predictor.default.svc.cluster.local"
+    inference_url: "http://GatewAI-ocr-predictor.default.svc.cluster.local"
     accepted_exts: [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     max_file_size_mb: 50
 
@@ -209,7 +209,7 @@ services:
     operations:
       rerank:
         - "/rerank"
-    inference_url: "http://kevent-reranker-predictor.default.svc.cluster.local"
+    inference_url: "http://GatewAI-reranker-predictor.default.svc.cluster.local"
     # Pas de async (pas de relay queue) → sync-direct uniquement
 
   # LLM proxy — openai, anthropic, ollama ou passthrough (vLLM…)
@@ -284,7 +284,7 @@ s3:
   region:     "${S3_REGION:-fr-par}"
   access_key: "${S3_ACCESS_KEY}"
   secret_key: "${S3_SECRET_KEY}"
-  bucket:     "${S3_BUCKET:-kevent-jobs}"
+  bucket:     "${S3_BUCKET:-GatewAI-jobs}"
 
 encryption:
   key: "${ENCRYPTION_KEY:-}"
@@ -311,7 +311,7 @@ inference:
 | `S3_REGION` | `fr-par` | Région |
 | `S3_ACCESS_KEY` | — | Access Key ID (**requis**) |
 | `S3_SECRET_KEY` | — | Secret Key (**requis**) |
-| `S3_BUCKET` | `kevent-jobs` | Nom du bucket |
+| `S3_BUCKET` | `GatewAI-jobs` | Nom du bucket |
 | `REDIS_ADDR` | `redis:6379` | Adresse Redis |
 | `REDIS_PASSWORD` | _(vide)_ | Mot de passe Redis |
 | `ENCRYPTION_KEY` | _(vide)_ | Clé AES-256-GCM hex-encodée (32 octets) |
@@ -338,7 +338,7 @@ inference:
 ## Helm — déploiement du gateway
 
 ```bash
-helm upgrade --install kevent-gateway ./helm/gateway \
+helm upgrade --install gatewai-gateway ./helm/gateway \
   -f values.yaml \
   --namespace default
 ```
@@ -347,7 +347,7 @@ helm upgrade --install kevent-gateway ./helm/gateway \
 
 ```yaml
 image:
-  repository: ghcr.io/ia-generative/kevent-ai/gateway
+  repository: ghcr.io/qatr-io/gatewai/gateway
   tag: v0.14.0
 
 config:
@@ -355,7 +355,7 @@ config:
     addr: "redis:6379"
   s3:
     endpoint: "https://s3.fr-par.scw.cloud"
-    bucket: "kevent-jobs"
+    bucket: "GatewAI-jobs"
 
 services:
   - type: audio
@@ -366,7 +366,7 @@ services:
         - "/v1/audio/transcriptions"
       translation:
         - "/v1/audio/translations"
-    inferenceURL: "http://kevent-transcription-predictor.default.svc.cluster.local"
+    inferenceURL: "http://GatewAI-transcription-predictor.default.svc.cluster.local"
     acceptedExts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     maxFileSizeMB: 500
 ```
@@ -386,7 +386,7 @@ services:
     operations:
       diarization:
         - "/v1/audio/diarizations"
-    inference_url: "http://kevent-diarization-predictor.default.svc.cluster.local"
+    inference_url: "http://GatewAI-diarization-predictor.default.svc.cluster.local"
     accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     max_file_size_mb: 500
 ```
@@ -402,7 +402,7 @@ services:
     operations:
       rerank:
         - "/rerank"
-    inference_url: "http://kevent-reranker-predictor.default.svc.cluster.local"
+    inference_url: "http://GatewAI-reranker-predictor.default.svc.cluster.local"
     # Pas de relay → sync-direct uniquement
     # POST /jobs/reranker → 405  |  POST /rerank → proxy direct
 ```
@@ -447,7 +447,7 @@ Ces endpoints sont exposés dynamiquement d'après les `operations` configurées
 | `file` | file | oui | Fichier audio (.mp3, .wav, .m4a, .ogg, .flac) |
 
 ```bash
-curl https://api.kevent.example.com/v1/audio/transcriptions \
+curl https://api.GatewAI.example.com/v1/audio/transcriptions \
   -F model=whisper-large-v3 \
   -F file=@interview.wav
 ```
@@ -457,7 +457,7 @@ curl https://api.kevent.example.com/v1/audio/transcriptions \
 ```python
 from openai import OpenAI
 
-client = OpenAI(base_url="https://api.kevent.example.com", api_key="unused")
+client = OpenAI(base_url="https://api.GatewAI.example.com", api_key="unused")
 
 with open("interview.wav", "rb") as f:
     transcript = client.audio.transcriptions.create(
@@ -479,7 +479,7 @@ print(transcript.text)
 | `file` | file | oui | Document (.pdf, .jpg, .jpeg, .png, .tiff, .bmp) |
 
 ```bash
-curl https://api.kevent.example.com/v1/ocr \
+curl https://api.GatewAI.example.com/v1/ocr \
   -F model=deepseek-ocr \
   -F file=@document.pdf
 ```
@@ -693,48 +693,48 @@ Les deux composants exposent des métriques Prometheus sur `GET /metrics`.
 
 | Métrique | Type | Labels | Description |
 |---|---|---|---|
-| `kevent_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Requêtes traitées (mode `async` ou `sync`, code HTTP en `status`) |
-| `kevent_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | Latence bout-en-bout du handler |
-| `kevent_s3_operation_duration_seconds` | histogram | `operation` (upload/get/delete) | Latence des opérations S3 |
-| `kevent_s3_errors_total` | counter | `operation` | Erreurs S3 |
-| `kevent_redis_operation_duration_seconds` | histogram | `operation` (save_job/get_job/delete_job/update_job_result/push_queue) | Latence des opérations Redis |
-| `kevent_redis_errors_total` | counter | `operation` | Erreurs Redis |
-| `kevent_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs soumis par consumer (uniquement si `consumer_header` configuré) |
-| `kevent_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` | Requêtes LLM proxy |
-| `kevent_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | Latence LLM proxy |
-| `kevent_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` | Tokens consommés (`prompt`/`completion`) |
-| `kevent_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Distribution des tokens par requête |
-| `kevent_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Top-N consumers par tokens (Redis, si `metrics.top_consumers > 0`) |
-| `kevent_cache_hits_total` | counter | `service_type`, `model` | Cache hits LLM |
-| `kevent_cache_misses_total` | counter | `service_type`, `model` | Cache misses LLM |
-| `kevent_cache_errors_total` | counter | `service_type`, `model`, `op` | Erreurs cache LLM |
-| `kevent_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` | Checks rate limit (`allowed`/`rejected`) |
-| `kevent_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type` | Consumers ayant dépassé leur limite |
-| `kevent_ratelimit_errors_total` | counter | `service_type` | Erreurs Redis lors du rate limiting |
+| `GatewAI_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Requêtes traitées (mode `async` ou `sync`, code HTTP en `status`) |
+| `GatewAI_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | Latence bout-en-bout du handler |
+| `GatewAI_s3_operation_duration_seconds` | histogram | `operation` (upload/get/delete) | Latence des opérations S3 |
+| `GatewAI_s3_errors_total` | counter | `operation` | Erreurs S3 |
+| `GatewAI_redis_operation_duration_seconds` | histogram | `operation` (save_job/get_job/delete_job/update_job_result/push_queue) | Latence des opérations Redis |
+| `GatewAI_redis_errors_total` | counter | `operation` | Erreurs Redis |
+| `GatewAI_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs soumis par consumer (uniquement si `consumer_header` configuré) |
+| `GatewAI_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` | Requêtes LLM proxy |
+| `GatewAI_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | Latence LLM proxy |
+| `GatewAI_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` | Tokens consommés (`prompt`/`completion`) |
+| `GatewAI_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Distribution des tokens par requête |
+| `GatewAI_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Top-N consumers par tokens (Redis, si `metrics.top_consumers > 0`) |
+| `GatewAI_cache_hits_total` | counter | `service_type`, `model` | Cache hits LLM |
+| `GatewAI_cache_misses_total` | counter | `service_type`, `model` | Cache misses LLM |
+| `GatewAI_cache_errors_total` | counter | `service_type`, `model`, `op` | Erreurs cache LLM |
+| `GatewAI_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` | Checks rate limit (`allowed`/`rejected`) |
+| `GatewAI_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type` | Consumers ayant dépassé leur limite |
+| `GatewAI_ratelimit_errors_total` | counter | `service_type` | Erreurs Redis lors du rate limiting |
 
 ### Relay
 
 | Métrique | Type | Labels | Description |
 |---|---|---|---|
-| `kevent_relay_jobs_total` | counter | `service_type`, `status` (completed/failed) | Jobs traités |
-| `kevent_relay_inference_duration_seconds` | histogram | `service_type` | Durée de l'appel à l'API d'inférence locale |
-| `kevent_relay_input_size_bytes` | histogram | `service_type` | Taille des fichiers d'entrée téléchargés depuis S3 |
-| `kevent_relay_s3_operation_duration_seconds` | histogram | `operation` (get/put/delete) | Latence des opérations S3 |
-| `kevent_relay_s3_errors_total` | counter | `operation` | Erreurs S3 |
-| `kevent_relay_redis_publish_errors_total` | counter | — | Erreurs de publication Redis pub/sub (jobs completed) |
-| `kevent_relay_redis_done_errors_total` | counter | — | Erreurs lors de la suppression du job de la processing list |
+| `GatewAI_relay_jobs_total` | counter | `service_type`, `status` (completed/failed) | Jobs traités |
+| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type` | Durée de l'appel à l'API d'inférence locale |
+| `GatewAI_relay_input_size_bytes` | histogram | `service_type` | Taille des fichiers d'entrée téléchargés depuis S3 |
+| `GatewAI_relay_s3_operation_duration_seconds` | histogram | `operation` (get/put/delete) | Latence des opérations S3 |
+| `GatewAI_relay_s3_errors_total` | counter | `operation` | Erreurs S3 |
+| `GatewAI_relay_redis_publish_errors_total` | counter | — | Erreurs de publication Redis pub/sub (jobs completed) |
+| `GatewAI_relay_redis_done_errors_total` | counter | — | Erreurs lors de la suppression du job de la processing list |
 
 ### Exemple de configuration Prometheus
 
 ```yaml
 scrape_configs:
-  - job_name: kevent-gateway
+  - job_name: gatewai-gateway
     static_configs:
-      - targets: ["kevent-gateway.default.svc.cluster.local:8080"]
+      - targets: ["gatewai-gateway.default.svc.cluster.local:8080"]
 
-  - job_name: kevent-relay
+  - job_name: gatewai-relay
     static_configs:
-      - targets: ["kevent-relay.default.svc.cluster.local:8080"]
+      - targets: ["gatewai-relay.default.svc.cluster.local:8080"]
 ```
 
 ---
@@ -771,7 +771,7 @@ scrape_configs:
 │       ├── docs.go              # GET /docs (Swagger UI)  •  GET /openapi.yaml (spec généré dynamiquement)
 │       ├── health.go            # GET /health
 │       └── middleware.go        # Logger structuré (slog/JSON)
-├── relay/                       # Relay Deployment (module Go séparé : kevent/relay)
+├── relay/                       # Relay Deployment (module Go séparé : gatewai/relay)
 │   ├── cmd/relay/main.go
 │   ├── internal/
 │   │   ├── config/config.go     # Config relay : model, redis, inference.base_url + extra_fields

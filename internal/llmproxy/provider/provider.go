@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // Usage holds token counts parsed from a provider response.

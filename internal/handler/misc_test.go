@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/service"
 )
 
 // ── Health ────────────────────────────────────────────────────────────────────
@@ -166,8 +166,8 @@ func TestListModels_ReturnsAllModels(t *testing.T) {
 		if m.Object != "model" {
 			t.Errorf(`expected object "model", got %q`, m.Object)
 		}
-		if m.OwnedBy != "kevent" {
-			t.Errorf(`expected owned_by "kevent", got %q`, m.OwnedBy)
+		if m.OwnedBy != "gatewai" {
+			t.Errorf(`expected owned_by "gatewai", got %q`, m.OwnedBy)
 		}
 	}
 }

@@ -46,7 +46,7 @@ jobs:
   # ── Compute tag + lowercase image names ────────────────────────────────────
   meta:
     name: Compute image tag
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: changes
     outputs:
       tag:           ${{ steps.tag.outputs.tag }}
@@ -67,13 +67,13 @@ jobs:
         id: images
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "gateway=ghcr.io/${OWNER}/kevent-ai/gateway" >> $GITHUB_OUTPUT
-          echo "relay=ghcr.io/${OWNER}/kevent-ai/relay"    >> $GITHUB_OUTPUT
+          echo "gateway=ghcr.io/${OWNER}/gatewai/gateway" >> $GITHUB_OUTPUT
+          echo "relay=ghcr.io/${OWNER}/gatewai/relay"    >> $GITHUB_OUTPUT
 
   # ── Gateway dev image ──────────────────────────────────────────────────────
   gateway:
     name: Gateway — build & push :${{ needs.meta.outputs.tag }}
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: [meta, changes]
     if: needs.changes.outputs.gateway == 'true'
     permissions:
@@ -102,7 +102,7 @@ jobs:
   # ── Relay dev image ────────────────────────────────────────────────────────
   relay:
     name: Relay — build & push :${{ needs.meta.outputs.tag }}
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     needs: [meta, changes]
     if: needs.changes.outputs.relay == 'true'
     permissions:

@@ -16,7 +16,7 @@ server:
   #   - consumer name is stored in the job record and indexed in Redis
   #   - GET /jobs returns the consumer's job list
   #   - GET /jobs/{type}/{id} enforces ownership (404 on mismatch)
-  #   - kevent_jobs_by_consumer_total metric is emitted per consumer
+  #   - gatewai_jobs_by_consumer_total metric is emitted per consumer
   # Leave empty in deployments without upstream authentication.
   consumer_header: "${CONSUMER_HEADER:-}"
   # user_type_header: HTTP header injected by OPA to identify the user type for
@@ -33,7 +33,7 @@ s3:
   region: "${S3_REGION:-fr-par}"
   access_key: "${S3_ACCESS_KEY}"    # Scaleway API Access Key ID
   secret_key: "${S3_SECRET_KEY}"    # Scaleway API Secret Key
-  bucket: "${S3_BUCKET:-kevent-jobs}"
+  bucket: "${S3_BUCKET:-gatewai-jobs}"
 
 encryption:
   # AES-256-GCM at-rest encryption for S3 objects.
@@ -87,13 +87,13 @@ lifecycle:
 # ─────────────────────────────────────────────────────────────────────────────
 metrics:
   # top_consumers: expose les N meilleurs consommateurs LLM dans Prometheus via
-  # kevent_llm_consumer_tokens_top{consumer, user_type, type="prompt|completion"}.
+  # gatewai_llm_consumer_tokens_top{consumer, user_type, type="prompt|completion"}.
   # Stocké dans un sorted set Redis (ZINCRBY), rafraîchi toutes les 60s.
   # Nécessite que server.consumer_header soit configuré.
   # 0 = désactivé (défaut).
   top_consumers: ${METRICS_TOP_CONSUMERS:-0}
   # consumer_labels: émet des labels Prometheus directs par consumer
-  # (kevent_llm_tokens_total{consumer=...}).
+  # (gatewai_llm_tokens_total{consumer=...}).
   # Réservé aux déploiements avec un nombre borné de consumers (< 50).
   # Pour des deployments avec des consumers dynamiques, préférer top_consumers.
   # false = désactivé (défaut).
@@ -124,7 +124,7 @@ services:
         - "/v1/audio/transcriptions"
       translation:
         - "/v1/audio/translations"
-    inference_url: "${TRANSCRIPTION_WHISPER_LARGE_V3_URL:-http://kevent-transcription-predictor.default.svc.cluster.local}"
+    inference_url: "${TRANSCRIPTION_WHISPER_LARGE_V3_URL:-http://gatewai-transcription-predictor.default.svc.cluster.local}"
     accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     max_file_size_mb: 500
 
@@ -141,7 +141,7 @@ services:
       ocr:
         - "/v1/ocr"
         - "/v1/vision/ocr"
-    inference_url: "${OCR_LLAVA_URL:-http://kevent-ocr-predictor.default.svc.cluster.local}"
+    inference_url: "${OCR_LLAVA_URL:-http://gatewai-ocr-predictor.default.svc.cluster.local}"
     accepted_exts: [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     max_file_size_mb: 50
 
@@ -153,7 +153,7 @@ services:
   #       - "/v1/audio/transcriptions"
   #     translation:
   #       - "/v1/audio/translations"
-  #   inference_url: "http://kevent-transcription-turbo-predictor.default.svc.cluster.local"
+  #   inference_url: "http://gatewai-transcription-turbo-predictor.default.svc.cluster.local"
   #   accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
   #   max_file_size_mb: 500
 

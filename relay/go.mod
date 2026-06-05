@@ -1,4 +1,4 @@
-module kevent/relay
+module gatewai/relay
 
 go 1.24
 

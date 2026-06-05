@@ -13,7 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"kevent/gateway/internal/config"
+	"gatewai/gateway/internal/config"
 )
 
 // SwaggerSpec holds a fetched OpenAPI spec for one service.

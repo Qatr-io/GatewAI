@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"kevent/gateway/internal/config"
+	"gatewai/gateway/internal/config"
 )
 
 // Def describes a registered inference service type.

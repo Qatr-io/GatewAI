@@ -15,14 +15,14 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"kevent/gateway/internal/cache"
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/llmproxy"
-	"kevent/gateway/internal/llmproxy/provider"
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/ratelimit"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/llmproxy"
+	"gatewai/gateway/internal/llmproxy/provider"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
 )
 
 // mockRateLimiter is a configurable Checker stub for testing.

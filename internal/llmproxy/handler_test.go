@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"kevent/gateway/internal/cache"
-	"kevent/gateway/internal/llmproxy/provider"
-	"kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/llmproxy/provider"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/service"
 )
 
 // ── in-memory cache ──────────────────────────────────────────────────────────

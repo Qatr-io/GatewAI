@@ -9,8 +9,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"kevent/gateway/internal/model"
-	"kevent/gateway/internal/storage"
+	"gatewai/gateway/internal/model"
+	"gatewai/gateway/internal/storage"
 )
 
 const (

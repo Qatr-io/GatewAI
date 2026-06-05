@@ -9,7 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"kevent/gateway/internal/config"
+	"gatewai/gateway/internal/config"
 )
 
 //go:embed testdata/whisper-api-openapi.json

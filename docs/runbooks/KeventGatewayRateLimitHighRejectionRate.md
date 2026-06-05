@@ -15,15 +15,15 @@ Affected consumers receive `429 Too Many Requests` with a `Retry-After` header. 
 
 ```promql
 # Rejection rate per service type
-sum by (service_type) (rate(kevent_ratelimit_requests_total{result="rejected"}[5m]))
+sum by (service_type) (rate(GatewAI_ratelimit_requests_total{result="rejected"}[5m]))
 /
-sum by (service_type) (rate(kevent_ratelimit_requests_total[5m]))
+sum by (service_type) (rate(GatewAI_ratelimit_requests_total[5m]))
 
 # Which user types are hitting limits?
-sum by (service_type, user_type) (rate(kevent_ratelimit_consumer_hits_total[5m]))
+sum by (service_type, user_type) (rate(GatewAI_ratelimit_consumer_hits_total[5m]))
 
 # Total rejection volume
-rate(kevent_ratelimit_requests_total{result="rejected"}[5m])
+rate(GatewAI_ratelimit_requests_total{result="rejected"}[5m])
 ```
 
 Common causes:

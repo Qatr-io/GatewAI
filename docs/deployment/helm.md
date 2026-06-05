@@ -5,22 +5,22 @@ The gateway is packaged as a Helm chart and published to GitHub Pages.
 ## Install
 
 ```bash
-helm repo add kevent https://ia-generative.github.io/kevent-ai
+helm repo add GatewAI https://ia-generative.github.io/GatewAI
 helm repo update
 
-helm install kevent-gateway kevent/kevent-gateway -f values.yaml
+helm install gatewai-gateway GatewAI/gatewai-gateway -f values.yaml
 ```
 
 ## Upgrade
 
 ```bash
-helm upgrade kevent-gateway kevent/kevent-gateway -f values.yaml
+helm upgrade gatewai-gateway GatewAI/gatewai-gateway -f values.yaml
 ```
 
 ## Install from local sources
 
 ```bash
-helm upgrade --install kevent-gateway ./helm/gateway -f values.yaml
+helm upgrade --install gatewai-gateway ./helm/gateway -f values.yaml
 ```
 
 ## Minimal `values.yaml`
@@ -33,7 +33,7 @@ config:
   s3:
     endpoint: "https://s3.fr-par.scw.cloud"
     region: "fr-par"
-    bucket: "my-kevent-jobs"
+    bucket: "my-GatewAI-jobs"
   redis:
     addr: "redis:6379"
 
@@ -62,10 +62,10 @@ configReloader:
 ingress:
   enabled: true
   className: nginx
-  host: kevent.example.com
+  host: GatewAI.example.com
   tls:
     enabled: true
-    secretName: kevent-tls
+    secretName: GatewAI-tls
 ```
 
 ## Extra environment variables
@@ -75,7 +75,7 @@ extraEnvVars:
   - name: ENCRYPTION_KEY
     valueFrom:
       secretKeyRef:
-        name: kevent-encryption
+        name: GatewAI-encryption
         key: key
 ```
 

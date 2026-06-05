@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"kevent/gateway/internal/service"
+	"gatewai/gateway/internal/service"
 )
 
 // ollamaProvider proxies to an Ollama instance using its OpenAI-compatible API.

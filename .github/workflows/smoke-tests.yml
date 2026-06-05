@@ -16,7 +16,7 @@ name: Smoke tests — dev
 #     RERANK_ENDPOINT        /rerank           (optional, this is the default)
 #
 #   Secrets    (Settings → Environments → dev → Secrets)
-#     GATEWAY_URL            https://api.kevent-dev.example.com
+#     GATEWAY_URL            https://api.gatewai-dev.example.com
 #     WHISPER_API_KEY        Zitadel Bearer token for audio endpoints (Authorization: Bearer)
 #     RERANK_API_KEY         Zitadel Bearer token for rerank endpoint (Authorization: Bearer)
 #                            Note: rerank is not deployed in hprod — set SKIP_RERANK=1 in dev env vars
@@ -56,7 +56,7 @@ on:
 jobs:
   smoke:
     name: Smoke tests
-    runs-on: actions-runner-controller
+    runs-on: ubuntu-latest
     environment: dev
     permissions:
       issues: write        # reactions on issue comments + gh pr comment

@@ -5,8 +5,8 @@ import (
 	"log/slog"
 	"sync"
 
-	"kevent/gateway/internal/service"
-	"kevent/gateway/internal/storage"
+	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/storage"
 )
 
 // Manager subscribes to job completion events for all async models.

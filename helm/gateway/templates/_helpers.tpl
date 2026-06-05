@@ -1,14 +1,14 @@
 {{/*
 Expand the name of the chart.
 */}}
-{{- define "kevent-gateway.name" -}}
+{{- define "gatewai-gateway.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Create a default fully qualified app name.
 */}}
-{{- define "kevent-gateway.fullname" -}}
+{{- define "gatewai-gateway.fullname" -}}
 {{- if .Values.fullnameOverride }}
 {{- .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}
 {{- else }}
@@ -24,16 +24,16 @@ Create a default fully qualified app name.
 {{/*
 Create chart label.
 */}}
-{{- define "kevent-gateway.chart" -}}
+{{- define "gatewai-gateway.chart" -}}
 {{- printf "%s-%s" .Chart.Name .Chart.Version | replace "+" "_" | trunc 63 | trimSuffix "-" }}
 {{- end }}
 
 {{/*
 Common labels.
 */}}
-{{- define "kevent-gateway.labels" -}}
-helm.sh/chart: {{ include "kevent-gateway.chart" . }}
-{{ include "kevent-gateway.selectorLabels" . }}
+{{- define "gatewai-gateway.labels" -}}
+helm.sh/chart: {{ include "gatewai-gateway.chart" . }}
+{{ include "gatewai-gateway.selectorLabels" . }}
 app.kubernetes.io/version: {{ .Chart.AppVersion | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{- end }}
@@ -41,8 +41,8 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 {{/*
 Selector labels.
 */}}
-{{- define "kevent-gateway.selectorLabels" -}}
-app.kubernetes.io/name: {{ include "kevent-gateway.name" . }}
+{{- define "gatewai-gateway.selectorLabels" -}}
+app.kubernetes.io/name: {{ include "gatewai-gateway.name" . }}
 app.kubernetes.io/instance: {{ .Release.Name }}
 {{- end }}
 
@@ -51,7 +51,7 @@ Adresse Redis.
 HAProxy du subchart redis-ha expose le master actif sur un endpoint stable.
 Service créé par redis-ha : {{ .Release.Name }}-redis-ha-haproxy:6379
 */}}
-{{- define "kevent-gateway.redisAddr" -}}
+{{- define "gatewai-gateway.redisAddr" -}}
 {{- printf "%s-redis-ha-haproxy:6379" .Release.Name }}
 {{- end }}
 
@@ -59,11 +59,11 @@ Service créé par redis-ha : {{ .Release.Name }}-redis-ha-haproxy:6379
 Nom de la ConfigMap contenant la configuration du gateway.
 Utilise la ConfigMap existante si spécifiée, sinon celle créée par ce chart.
 */}}
-{{- define "kevent-gateway.configMapName" -}}
+{{- define "gatewai-gateway.configMapName" -}}
 {{- if .Values.config.existingConfigMap -}}
 {{- .Values.config.existingConfigMap -}}
 {{- else -}}
-{{- include "kevent-gateway.fullname" . -}}
+{{- include "gatewai-gateway.fullname" . -}}
 {{- end -}}
 {{- end }}
 
@@ -71,11 +71,11 @@ Utilise la ConfigMap existante si spécifiée, sinon celle créée par ce chart.
 Nom du Secret contenant les credentials S3.
 Utilise le Secret existant si spécifié, sinon celui créé par ce chart.
 */}}
-{{- define "kevent-gateway.s3SecretName" -}}
+{{- define "gatewai-gateway.s3SecretName" -}}
 {{- if .Values.s3.existingSecret -}}
 {{- .Values.s3.existingSecret -}}
 {{- else -}}
-{{- printf "%s-s3" (include "kevent-gateway.fullname" .) -}}
+{{- printf "%s-s3" (include "gatewai-gateway.fullname" .) -}}
 {{- end -}}
 {{- end }}
 
@@ -83,10 +83,10 @@ Utilise le Secret existant si spécifié, sinon celui créé par ce chart.
 Nom du Secret contenant la clé de chiffrement AES-256-GCM.
 Utilise le Secret existant si spécifié, sinon celui créé par ce chart.
 */}}
-{{- define "kevent-gateway.encryptionSecretName" -}}
+{{- define "gatewai-gateway.encryptionSecretName" -}}
 {{- if .Values.encryption.existingSecret -}}
 {{- .Values.encryption.existingSecret -}}
 {{- else -}}
-{{- printf "%s-encryption" (include "kevent-gateway.fullname" .) -}}
+{{- printf "%s-encryption" (include "gatewai-gateway.fullname" .) -}}
 {{- end -}}
 {{- end }}

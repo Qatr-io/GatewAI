@@ -11,7 +11,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"kevent/relay/internal/model"
+	"gatewai/relay/internal/model"
 )
 
 const defaultTTLSecs = 259200 // 72 hours

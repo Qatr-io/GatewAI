@@ -1,8 +1,8 @@
-site_name: kevent-ai
+site_name: GatewAI
 site_description: AI inference job gateway for Kubernetes
-site_url: https://ia-generative.github.io/kevent-ai/
-repo_url: https://github.com/IA-Generative/kevent-ai
-repo_name: IA-Generative/kevent-ai
+site_url: https://qatr-io.github.io/GatewAI/
+repo_url: https://github.com/Qatr-io/GatewAI
+repo_name: Qatr-io/GatewAI
 edit_uri: edit/main/docs/
 
 theme:
@@ -94,4 +94,4 @@ nav:
 extra:
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/IA-Generative/kevent-ai
+      link: https://github.com/Qatr-io/GatewAI

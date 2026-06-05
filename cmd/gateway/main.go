@@ -15,17 +15,17 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"kevent/gateway/internal/cache"
-	"kevent/gateway/internal/consumer"
-	"kevent/gateway/internal/concurrency"
-	"kevent/gateway/internal/config"
-	"kevent/gateway/internal/handler"
-	"kevent/gateway/internal/llmproxy"
-	"kevent/gateway/internal/llmproxy/provider"
-	gmetrics "kevent/gateway/internal/metrics"
-	"kevent/gateway/internal/ratelimit"
-	"kevent/gateway/internal/service"
-	"kevent/gateway/internal/storage"
+	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/consumer"
+	"gatewai/gateway/internal/concurrency"
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/llmproxy"
+	"gatewai/gateway/internal/llmproxy/provider"
+	gmetrics "gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/storage"
 )
 
 // version is set at build time via -ldflags "-X main.version=v0.4.1".
