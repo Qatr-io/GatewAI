@@ -16,6 +16,17 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.15.0] — 2026-06-05
+
+#### Changed
+
+- **Go module renamed**: `kevent/gateway` → `gatewai/gateway`
+- **Docker image moved**: `ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z` (first image published under the GatewAI name)
+- **Helm chart renamed**: `kevent-gateway` → `gatewai-gateway`
+- **CI runners**: all workflows migrated from `actions-runner-controller` to `ubuntu-latest`
+
+---
+
 ### [v0.14.1] — 2026-06-05
 
 #### Added
@@ -560,6 +571,15 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [v0.7.0] — 2026-06-05
+
+#### Changed
+
+- **Go module renamed**: `kevent/relay` → `gatewai/relay`
+- **Docker image moved**: `ghcr.io/qatr-io/gatewai/relay:vX.Y.Z` (first image published under the GatewAI name)
+
+---
 
 ### [v0.6.2] — 2026-06-05
 

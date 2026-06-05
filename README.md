@@ -1,16 +1,16 @@
-# gatewai-gateway
+# GatewAI
 
-API Gateway pour les services d'inférence KServe. Plusieurs modes de fonctionnement coexistent pour chaque service :
+API Gateway for KServe inference services. Each service supports multiple operating modes:
 
-| Mode | Endpoints | Quand l'utiliser |
+| Mode | Endpoints | When to use |
 |---|---|---|
-| **Async** (Redis queue) | `POST /jobs/{service_type}`, `GET /jobs/{service_type}/{id}`, `GET /jobs` | Fichiers lourds, traitements longs (>30s), besoin de webhook |
-| **Sync direct proxy** | `POST /v1/*` (JSON ou multipart) | Intégration SDK OpenAI, services sync-only (reranker, embeddings…) |
-| **LLM proxy** | `POST /v1/*` JSON + `provider` configuré | Proxying LLM (OpenAI, Anthropic, Ollama, vLLM) avec cache et métriques |
+| **Async** (Redis queue) | `POST /jobs/{service_type}`, `GET /jobs/{service_type}/{id}`, `GET /jobs` | Large files, long-running tasks (>30s), webhook delivery |
+| **Sync direct proxy** | `POST /v1/*` (JSON or multipart) | OpenAI SDK integration, sync-only services (reranker, embeddings…) |
+| **LLM proxy** | `POST /v1/*` JSON + `provider` configured | LLM proxying (OpenAI, Anthropic, Ollama, vLLM) with caching and metrics |
 
 ## Architecture
 
-### Mode async
+### Async mode
 
 ```
 Client
@@ -18,80 +18,80 @@ Client
   ▼
 POST /jobs/{service_type} (multipart: file, model, operation?)
   │
-  ├─ 1. Fichier → S3
+  ├─ 1. File → S3
   ├─ 2. Job record → Redis (status: pending)
   └─ 3. Job ID → Redis list relay:<model>:pending  (RPUSH)
                           │
                           ▼
-                    Relay Deployment (un job par cycle de vie du pod)
+                    Relay Deployment (one job per pod lifecycle)
                                               │
                                               ├─ BLMOVE relay:<model>:pending → relay:<model>:processing
-                                              ├─ Download fichier S3
-                                              ├─ POST multipart → modèle GPU (127.0.0.1:9000/<inference_url>)
+                                              ├─ Download file from S3
+                                              ├─ POST multipart → GPU model (127.0.0.1:9000/<inference_url>)
                                               ├─ Upload result.json → S3
                                               └─ PUBLISH jobs:<model>:completed  (Redis pub/sub)
                                                                     │
                                               ┌─────────────────────┘
-                                              │  (consumer.Manager interne gateway)
+                                              │  (gateway internal consumer.Manager)
                                               ▼
-                                       Redis mis à jour (status: completed/failed)
-                                       + Webhook POST si callback_url fourni
+                                       Redis updated (status: completed/failed)
+                                       + Webhook POST if callback_url provided
 Client
   │
   ▼
 GET /jobs/{service_type}/{id}  →  { status, result (inline JSON) }
 ```
 
-### Mode sync (proxy OpenAI-compatible)
+### Sync mode (OpenAI-compatible proxy)
 
-**Direct proxy** (requête `application/json` ou `multipart/form-data`) :
+**Direct proxy** (`application/json` or `multipart/form-data` request):
 ```
 Client  POST /v1/*
   │
   ▼
-Gateway → HTTP proxy → inference_url + chemin d'origine → modèle GPU
+Gateway → HTTP proxy → inference_url + original path → GPU model
   │
-  ▼ (réponse streamée directement)
+  ▼ (response streamed directly)
 Client
 ```
 
-**LLM proxy** (requête `application/json` + service avec `provider` configuré) :
+**LLM proxy** (`application/json` request + service with `provider` configured):
 ```
 Client  POST /v1/chat/completions  {"model": "my-alias", ...}
   │
   ▼
 Gateway — LLM proxy
-  ├── Vérification cache Redis (clé SHA-256 du body canonique)  ── HIT → réponse + X-Cache: HIT
-  │                                                                            ↑
-  ├── MISS → pour chaque backend (ordre weighted-random) :         (async goroutine, 5s)
-  │     ├── Réécriture model alias → backend.model (ou backend_model)
-  │     ├── Injection backend.headers (override inference_headers)
-  │     ├── Traduction requête (si anthropic : OpenAI → Messages API)
-  │     ├── Forwarding vers backend URL
-  │     └── Erreur réseau / 5xx → backend suivant ; 4xx → stop
-  ├── Traduction réponse → format OpenAI
-  ├── Métriques tokens + tracking consumer (Redis sorted set)
-  └── Réponse client  X-Cache: MISS  +  cache-fill async
+  ├── Redis cache check (SHA-256 key of canonical body)  ── HIT → response + X-Cache: HIT
+  │                                                                        ↑
+  ├── MISS → for each backend (weighted-random order):         (async goroutine, 5s)
+  │     ├── Rewrite model alias → backend.model (or backend_model)
+  │     ├── Inject backend.headers (override inference_headers)
+  │     ├── Translate request (if anthropic: OpenAI → Messages API)
+  │     ├── Forward to backend URL
+  │     └── Network error / 5xx → next backend ; 4xx → stop
+  ├── Translate response → OpenAI format
+  ├── Token metrics + consumer tracking (Redis sorted set)
+  └── Client response  X-Cache: MISS  +  async cache-fill
 
-  Streaming (`"stream": true`) : SSE pipé directement, pas de cache ni de traduction.
-  Retry possible avant WriteHeader ; impossible une fois le stream démarré.
+  Streaming (`"stream": true`): SSE piped directly, no caching or translation.
+  Retry possible before WriteHeader; impossible once the stream has started.
 ```
 
-### Composants externes requis
+### Required external components
 
-| Composant | Rôle | Requis |
+| Component | Role | Required |
 |---|---|---|
-| **Redis** | État des jobs, queue relay, pub/sub completion, cache LLM, rate limiting | Toujours |
-| **S3** | Stockage fichiers d'entrée et résultats | Toujours |
+| **Redis** | Job state, relay queue, completion pub/sub, LLM cache, rate limiting | Always |
+| **S3** | Storage for input files and results | Always |
 
 ---
 
-## Démarrage rapide
+## Quick start
 
-### Prérequis
+### Prerequisites
 
 - Go 1.23+
-- Redis et un bucket S3-compatible accessibles
+- Redis and an S3-compatible bucket accessible
 
 ### Build
 
@@ -122,25 +122,25 @@ docker run \
 
 ## Configuration
 
-La configuration est lue depuis `config.yaml` (chemin par défaut). Toutes les valeurs de la forme `${VAR:-défaut}` sont substituées depuis l'environnement au démarrage.
+Configuration is read from `config.yaml` (default path). All values of the form `${VAR:-default}` are substituted from the environment at startup.
 
 ### Gateway (`config.yaml`)
 
 ```yaml
 server:
   addr: ":8080"
-  read_timeout: 120s    # élevé pour les gros uploads
-  write_timeout: 0s     # 0 = désactivé — requis pour le mode sync (inférence longue)
+  read_timeout: 120s    # high for large uploads
+  write_timeout: 0s     # 0 = disabled — required for sync mode (long inference)
   idle_timeout: 120s
-  # consumer_header: header HTTP injecté par APISIX après auth (ex: "X-Consumer-Username").
-  # Active le tracking consumer : GET /jobs, isolation des jobs, métrique par consumer.
-  # Laisser vide en l'absence d'auth en amont.
+  # consumer_header: HTTP header injected by APISIX after auth (e.g. "X-Consumer-Username").
+  # Enables consumer tracking: GET /jobs, job isolation, per-consumer metrics.
+  # Leave empty if no upstream auth.
   consumer_header: "${CONSUMER_HEADER:-}"
-  # priority_header: header HTTP pour le routage prioritaire (ex: "X-Priority").
-  # Si présent, peut être utilisé pour du routage prioritaire applicatif.
+  # priority_header: HTTP header for priority routing (e.g. "X-Priority").
+  # If present, can be used for application-level priority routing.
   priority_header: "${PRIORITY_HEADER:-}"
-  # user_type_header: header HTTP pour le type d'utilisateur (ex: "X-User-Type" → "sa" | "user").
-  # Utilisé pour le rate limiting et le labelling des métriques LLM.
+  # user_type_header: HTTP header for user type (e.g. "X-User-Type" → "sa" | "user").
+  # Used for rate limiting and LLM metrics labelling.
   user_type_header: "${USER_TYPE_HEADER:-}"
 
 s3:
@@ -151,7 +151,7 @@ s3:
   bucket: "GatewAI-jobs"
 
 encryption:
-  key: "${ENCRYPTION_KEY:-}"    # AES-256-GCM at-rest, vide = désactivé
+  key: "${ENCRYPTION_KEY:-}"    # AES-256-GCM at-rest, empty = disabled
 
 redis:
   addr: "redis:6379"
@@ -159,29 +159,29 @@ redis:
   db: 0
   job_ttl_hours: 72
 
-# Métriques haute cardinalité — consumer token tracking
+# High-cardinality metrics — consumer token tracking
 metrics:
-  top_consumers: 10      # expose le top-N dans Prometheus via Redis sorted sets; 0 = désactivé
+  top_consumers: 10      # expose top-N in Prometheus via Redis sorted sets; 0 = disabled
 
-# Rate limiting par consumer, service type et user type (Redis fixed-window)
+# Per-consumer, per-service-type, per-user-type rate limiting (Redis fixed-window)
 rate_limits:
   audio:
-    unlimited:           # rate: 0 = aucune limite (Redis non consulté)
+    unlimited:           # rate: 0 = no limit (Redis not consulted)
       rate: 0
-    sa:                  # header user_type_header = "sa"
+    sa:                  # user_type_header = "sa"
       rate: 100
       period: 1m
     user:
       rate: 20
       period: 1m
-    "*":                 # fallback si user_type absent ou non listé
+    "*":                 # fallback if user_type absent or not listed
       rate: 10
       period: 1m
 
 services:
   - type: audio
     model: "whisper-large-v3"
-    default: true           # modèle utilisé par défaut si non précisé et plusieurs modèles configurés
+    default: true           # model used by default if unspecified and multiple models are configured
     operations:
       transcription:
         - "/v1/audio/transcriptions"
@@ -197,12 +197,12 @@ services:
     operations:
       ocr:
         - "/v1/ocr"
-        - "/v1/vision/ocr"    # alias — toutes les paths d'une opération sont indexées
+        - "/v1/vision/ocr"    # alias — all paths of an operation are indexed
     inference_url: "http://GatewAI-ocr-predictor.default.svc.cluster.local"
     accepted_exts: [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     max_file_size_mb: 50
 
-  # Service sync-direct uniquement — POST /v1/* → proxy direct vers inference_url.
+  # Sync-direct only service — POST /v1/* → direct proxy to inference_url.
   # POST /jobs/{service_type} → 405 Method Not Allowed.
   - type: reranker
     model: "bge-reranker-v2-m3"
@@ -210,20 +210,20 @@ services:
       rerank:
         - "/rerank"
     inference_url: "http://GatewAI-reranker-predictor.default.svc.cluster.local"
-    # Pas de async (pas de relay queue) → sync-direct uniquement
+    # No async (no relay queue) → sync-direct only
 
-  # LLM proxy — openai, anthropic, ollama ou passthrough (vLLM…)
-  # Les requêtes JSON POST /v1/* passent par le proxy LLM (cache, métriques, traduction).
+  # LLM proxy — openai, anthropic, ollama or passthrough (vLLM…)
+  # JSON POST /v1/* requests go through the LLM proxy (cache, metrics, translation).
   - type: llm
-    model: "chat-smart"                # alias client-facing
+    model: "chat-smart"                # client-facing alias
     provider: passthrough              # openai | anthropic | ollama | passthrough
-    backend_model: "meta-llama/Meta-Llama-3-8B-Instruct"  # vide = alias transmis tel quel
-    response_cache_ttl: 3600           # secondes; 0 = désactivé
+    backend_model: "meta-llama/Meta-Llama-3-8B-Instruct"  # empty = alias forwarded as-is
+    response_cache_ttl: 3600           # seconds; 0 = disabled
     operations:
       chat:
-        - "/v1/*"                      # wildcard : toutes les paths OpenAI-compatibles
-    # Multi-backend : blue/green, canary, fallback
-    # weight > 0 = sélection weighted-random ; weight = 0 = fallback uniquement
+        - "/v1/*"                      # wildcard: all OpenAI-compatible paths
+    # Multi-backend: blue/green, canary, fallback
+    # weight > 0 = weighted-random selection ; weight = 0 = fallback only
     backends:
       - url: "http://vllm-primary.default.svc.cluster.local:8000"
         weight: 90
@@ -235,37 +235,36 @@ services:
         model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
         headers:
           Authorization: "Bearer ${VLLM_CANARY_TOKEN}"
-    # inference_url: "" (legacy — un seul backend, remplacé par backends[])
-    # inference_headers s'applique à tous les backends ; backends[].headers les surcharge
+    # inference_url: "" (legacy — single backend, replaced by backends[])
+    # inference_headers applies to all backends; backends[].headers override it
 ```
 
-#### Champs `services[]`
+#### `services[]` fields
 
-| Champ | Description |
+| Field | Description |
 |---|---|
-| `type` | Nom du type de service (ex: `audio`, `ocr`). Plusieurs entrées peuvent partager le même type avec des modèles différents. |
-| `model` | Identifiant du modèle, transmis dans le payload OpenAI pour le routage. |
-| `default` | `true` → modèle par défaut pour ce type quand aucun `model` n'est précisé dans la requête. |
-| `operations` | Map `nom_opération → liste de paths URL`. Tous les paths sont indexés pour le routage sync ; le premier est utilisé comme `inference_url` dans les jobs async. |
-| `inference_url` | URL de base du backend pour le direct proxy. Le chemin de la requête d'origine y est appendé. |
-| `accepted_exts` | Extensions acceptées (mode async uniquement). Vide ou absent = toutes les extensions acceptées. |
-| `max_file_size_mb` | Taille max du fichier. Absent ou 0 = 100 MB par défaut. |
-| `inference_url` | URL de base du backend (un seul backend, legacy). Ignoré si `backends` est défini. |
-| `backends` | Liste de backends avec routing pondéré. Prend le pas sur `inference_url`. Voir ci-dessous. |
-| `inference_headers` | Headers HTTP injectés sur chaque requête vers le backend (sync-direct et LLM proxy). Supporte `${VAR}`. Surchargés par `backends[].headers`. |
-| `provider` | Active le LLM proxy : `openai`, `anthropic`, `ollama`, `passthrough`. Absent = proxy direct classique. |
-| `backend_model` | Nom du modèle transmis au backend (défaut pour tous les backends). Surchargé par `backends[].model`. |
-| `response_cache_ttl` | TTL du cache Redis en secondes. `0` = désactivé. |
-| `swagger_url` | URL vers le spec OpenAPI JSON du service. Optionnel — si absent, le service n'apparaît pas dans le dropdown `/docs`. |
+| `type` | Service type name (e.g. `audio`, `ocr`). Multiple entries can share the same type with different models. |
+| `model` | Model identifier, forwarded in the OpenAI payload for routing. |
+| `default` | `true` → default model for this type when no `model` is specified in the request. |
+| `operations` | Map `operation_name → list of URL paths`. All paths are indexed for sync routing; the first is used as `inference_url` in async jobs. |
+| `inference_url` | Backend base URL for direct proxy. The original request path is appended. |
+| `accepted_exts` | Accepted file extensions (async mode only). Empty or absent = all extensions accepted. |
+| `max_file_size_mb` | Maximum file size. Absent or 0 = 100 MB default. |
+| `backends` | List of backends with weighted routing. Takes precedence over `inference_url`. See below. |
+| `inference_headers` | HTTP headers injected on every request to the backend (sync-direct and LLM proxy). Supports `${VAR}`. Overridden by `backends[].headers`. |
+| `provider` | Enables the LLM proxy: `openai`, `anthropic`, `ollama`, `passthrough`. Absent = standard direct proxy. |
+| `backend_model` | Model name forwarded to the backend (default for all backends). Overridden by `backends[].model`. |
+| `response_cache_ttl` | Redis cache TTL in seconds. `0` = disabled. |
+| `swagger_url` | URL to the service's OpenAPI JSON spec. Optional — if absent, the service does not appear in the `/docs` dropdown. |
 
-#### Champs `backends[]`
+#### `backends[]` fields
 
-| Champ | Description |
+| Field | Description |
 |---|---|
-| `url` | URL du backend (**requis**) |
-| `weight` | Poids de routage. `0` = fallback uniquement (jamais sélectionné en primaire). |
-| `model` | Surcharge `backend_model` pour ce backend uniquement — utile pour les déploiements canary. |
-| `headers` | Headers HTTP injectés sur les requêtes vers ce backend. Surchargent `inference_headers`. |
+| `url` | Backend URL (**required**) |
+| `weight` | Routing weight. `0` = fallback only (never selected as primary). |
+| `model` | Overrides `backend_model` for this backend only — useful for canary deployments. |
+| `headers` | HTTP headers injected on requests to this backend. Override `inference_headers`. |
 
 ### Relay (`relay/config.yaml`)
 
@@ -275,7 +274,7 @@ redis:
   password: "${REDIS_PASSWORD:-}"
   db: 0
 
-model: "${RELAY_MODEL}"          # ex: whisper-large-v3  — sets relay:<model>:pending queue name
+model: "${RELAY_MODEL}"          # e.g. whisper-large-v3  — sets relay:<model>:pending queue name
 
 queue_pop_timeout: "${QUEUE_POP_TIMEOUT:-5m}"   # BLMOVE timeout before the pod exits 0
 
@@ -289,53 +288,53 @@ s3:
 encryption:
   key: "${ENCRYPTION_KEY:-}"
 
-# URL de base du container d'inférence local (même pod).
-# Le chemin OpenAI est fourni par le gateway dans InputEvent.inference_url
-# et appendé dynamiquement : base_url + inference_url.
+# Base URL of the local inference container (same pod).
+# The OpenAI path is provided by the gateway in InputEvent.inference_url
+# and appended dynamically: base_url + inference_url.
 inference:
   base_url: "http://127.0.0.1:${INFERENCE_PORT:-9000}"
   api_key:  ""
   timeout:  "300s"
-  extra_fields:             # champs form optionnels ajoutés à chaque requête multipart
+  extra_fields:             # optional form fields added to every multipart request
     response_format: "json"
-    # language: "fr"
+    # language: "en"
     # prompt: "..."
 ```
 
-### Variables d'environnement (gateway)
+### Environment variables (gateway)
 
-| Variable | Valeur par défaut | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `CONFIG_PATH` | `config.yaml` | Chemin vers le fichier de configuration |
-| `S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` | Endpoint S3 |
-| `S3_REGION` | `fr-par` | Région |
-| `S3_ACCESS_KEY` | — | Access Key ID (**requis**) |
-| `S3_SECRET_KEY` | — | Secret Key (**requis**) |
-| `S3_BUCKET` | `GatewAI-jobs` | Nom du bucket |
-| `REDIS_ADDR` | `redis:6379` | Adresse Redis |
-| `REDIS_PASSWORD` | _(vide)_ | Mot de passe Redis |
-| `ENCRYPTION_KEY` | _(vide)_ | Clé AES-256-GCM hex-encodée (32 octets) |
-| `CONSUMER_HEADER` | _(vide)_ | Header HTTP pour identifier le consumer (ex: `X-Consumer-Username`) |
-| `PRIORITY_HEADER` | _(vide)_ | Header HTTP pour le routing prioritaire (ex: `X-Priority`) |
-| `USER_TYPE_HEADER` | _(vide)_ | Header HTTP pour le type d'utilisateur (ex: `X-User-Type`) — rate limiting + métriques LLM |
+| `CONFIG_PATH` | `config.yaml` | Path to the configuration file |
+| `S3_ENDPOINT` | `https://s3.fr-par.scw.cloud` | S3 endpoint |
+| `S3_REGION` | `fr-par` | Region |
+| `S3_ACCESS_KEY` | — | Access Key ID (**required**) |
+| `S3_SECRET_KEY` | — | Secret Key (**required**) |
+| `S3_BUCKET` | `GatewAI-jobs` | Bucket name |
+| `REDIS_ADDR` | `redis:6379` | Redis address |
+| `REDIS_PASSWORD` | _(empty)_ | Redis password |
+| `ENCRYPTION_KEY` | _(empty)_ | Hex-encoded AES-256-GCM key (32 bytes) |
+| `CONSUMER_HEADER` | _(empty)_ | HTTP header to identify the consumer (e.g. `X-Consumer-Username`) |
+| `PRIORITY_HEADER` | _(empty)_ | HTTP header for priority routing (e.g. `X-Priority`) |
+| `USER_TYPE_HEADER` | _(empty)_ | HTTP header for user type (e.g. `X-User-Type`) — rate limiting + LLM metrics |
 
-### Variables d'environnement (relay)
+### Environment variables (relay)
 
-| Variable | Valeur par défaut | Description |
+| Variable | Default | Description |
 |---|---|---|
-| `CONFIG_PATH` | `config.yaml` | Chemin vers le fichier de configuration |
-| `RELAY_MODEL` | — | Nom du modèle (**requis**) — détermine la queue `relay:<model>:pending` |
-| `QUEUE_POP_TIMEOUT` | `5m` | Timeout BLMOVE avant que le pod quitte avec code 0 |
-| `INFERENCE_PORT` | `9000` | Port du serveur de modèle local |
-| `REDIS_ADDR` | `redis:6379` | Adresse Redis |
-| `REDIS_PASSWORD` | _(vide)_ | Mot de passe Redis |
-| `S3_ACCESS_KEY` | — | Access Key ID (**requis**) |
-| `S3_SECRET_KEY` | — | Secret Key (**requis**) |
-| `ENCRYPTION_KEY` | _(vide)_ | Doit correspondre à la valeur du gateway |
+| `CONFIG_PATH` | `config.yaml` | Path to the configuration file |
+| `RELAY_MODEL` | — | Model name (**required**) — determines the `relay:<model>:pending` queue |
+| `QUEUE_POP_TIMEOUT` | `5m` | BLMOVE timeout before the pod exits with code 0 |
+| `INFERENCE_PORT` | `9000` | Local model server port |
+| `REDIS_ADDR` | `redis:6379` | Redis address |
+| `REDIS_PASSWORD` | _(empty)_ | Redis password |
+| `S3_ACCESS_KEY` | — | Access Key ID (**required**) |
+| `S3_SECRET_KEY` | — | Secret Key (**required**) |
+| `ENCRYPTION_KEY` | _(empty)_ | Must match the gateway value |
 
 ---
 
-## Helm — déploiement du gateway
+## Helm — gateway deployment
 
 ```bash
 helm upgrade --install gatewai-gateway ./helm/gateway \
@@ -343,12 +342,12 @@ helm upgrade --install gatewai-gateway ./helm/gateway \
   --namespace default
 ```
 
-### Valeurs clés (`values.yaml`)
+### Key values (`values.yaml`)
 
 ```yaml
 image:
   repository: ghcr.io/qatr-io/gatewai/gateway
-  tag: v0.14.0
+  tag: v0.15.0
 
 config:
   redis:
@@ -373,11 +372,11 @@ services:
 
 ---
 
-## Ajouter un service d'inférence
+## Adding an inference service
 
-Aucun changement de code n'est nécessaire. Il suffit d'ajouter un bloc dans `config.yaml` (gateway) et de déployer un Relay Deployment configuré avec le bon `model`.
+No code change required. Simply add a block to the gateway's `config.yaml` and deploy a Relay Deployment configured with the correct `model`.
 
-**Gateway `config.yaml`** (service async + sync) :
+**Gateway `config.yaml`** (async + sync service):
 
 ```yaml
 services:
@@ -391,9 +390,9 @@ services:
     max_file_size_mb: 500
 ```
 
-La queue Redis `relay:pyannote-audio-3.1:pending` est créée automatiquement à la première soumission de job. Aucune configuration de topic préalable n'est nécessaire.
+The Redis queue `relay:pyannote-audio-3.1:pending` is created automatically on first job submission. No prior topic configuration is needed.
 
-**Gateway `config.yaml`** (service sync-direct uniquement) :
+**Gateway `config.yaml`** (sync-direct only service):
 
 ```yaml
 services:
@@ -403,48 +402,48 @@ services:
       rerank:
         - "/rerank"
     inference_url: "http://GatewAI-reranker-predictor.default.svc.cluster.local"
-    # Pas de relay → sync-direct uniquement
-    # POST /jobs/reranker → 405  |  POST /rerank → proxy direct
+    # No relay → sync-direct only
+    # POST /jobs/reranker → 405  |  POST /rerank → direct proxy
 ```
 
-**Relay** (`relay/config.yaml` ou ConfigMap) :
+**Relay** (`relay/config.yaml` or ConfigMap):
 
 ```yaml
-model: "pyannote-audio-3.1"   # détermine la queue relay:pyannote-audio-3.1:pending
+model: "pyannote-audio-3.1"   # determines the relay:pyannote-audio-3.1:pending queue
 redis:
   addr: "${REDIS_ADDR:-redis:6379}"
 ```
 
-> **Multi-modèles par type** : plusieurs entrées peuvent partager le même `type` avec des `model` différents. Le gateway sélectionne le backend d'après le champ `model` de la requête. Le champ `default: true` désigne le modèle utilisé si `model` est absent et que plusieurs modèles sont configurés.
+> **Multiple models per type**: multiple entries can share the same `type` with different `model` values. The gateway routes based on the `model` field in the request. The `default: true` field designates the model used when `model` is absent and multiple models are configured.
 
-> **Multi-opérations par modèle** : un même modèle peut exposer plusieurs opérations (ex: transcription et translation) via `operations`. En mode async, préciser l'opération avec `-F operation=transcription` quand le modèle en propose plusieurs.
+> **Multiple operations per model**: a single model can expose multiple operations (e.g. transcription and translation) via `operations`. In async mode, specify the operation with `-F operation=transcription` when the model offers more than one.
 
-> **Service sync-direct** : un service sans relay est traité entièrement en proxy direct — aucune queue Redis n'est créée pour ce type.
+> **Sync-direct service**: a service without a relay is handled entirely as a direct proxy — no Redis queue is created for that type.
 
 ---
 
 ## API
 
-### Documentation interactive
+### Interactive documentation
 
-Le gateway génère le spec OpenAPI 3.0 à chaque démarrage depuis le registre de services :
+The gateway generates the OpenAPI 3.0 spec at startup from the service registry:
 
-- **Swagger UI** : `GET /docs` — dropdown multi-specs : gateway (jobs async/sync) + un onglet par service ayant un `swagger_url`
-- **Spec gateway** : `GET /openapi.yaml` — spec générée dynamiquement (routes async + sync)
-- **Spec service** : `GET /swagger/{type}/{model}` — spec OpenAPI du service d'inférence, mise en cache au démarrage
+- **Swagger UI**: `GET /docs` — multi-spec dropdown: gateway (async/sync jobs) + one tab per service with a `swagger_url`
+- **Gateway spec**: `GET /openapi.yaml` — dynamically generated spec (async + sync routes)
+- **Service spec**: `GET /swagger/{type}/{model}` — inference service OpenAPI spec, cached at startup
 
-### Mode sync — Endpoints OpenAI-compatibles
+### Sync mode — OpenAI-compatible endpoints
 
-Ces endpoints sont exposés dynamiquement d'après les `operations` configurées dans `config.yaml`.
+These endpoints are exposed dynamically based on the `operations` configured in `config.yaml`.
 
-#### `POST /v1/audio/transcriptions` — Transcription audio
+#### `POST /v1/audio/transcriptions` — Audio transcription
 
-**Content-Type** : `multipart/form-data`
+**Content-Type**: `multipart/form-data`
 
-| Champ | Type | Requis | Description |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `model` | string | si plusieurs modèles | Ex: `whisper-large-v3`. Optionnel si un seul modèle ou un défaut configuré. |
-| `file` | file | oui | Fichier audio (.mp3, .wav, .m4a, .ogg, .flac) |
+| `model` | string | if multiple models | E.g. `whisper-large-v3`. Optional if only one model or a default is configured. |
+| `file` | file | yes | Audio file (.mp3, .wav, .m4a, .ogg, .flac) |
 
 ```bash
 curl https://api.GatewAI.example.com/v1/audio/transcriptions \
@@ -452,7 +451,7 @@ curl https://api.GatewAI.example.com/v1/audio/transcriptions \
   -F file=@interview.wav
 ```
 
-**Avec le SDK OpenAI Python**
+**With the OpenAI Python SDK**
 
 ```python
 from openai import OpenAI
@@ -471,12 +470,12 @@ print(transcript.text)
 
 #### `POST /v1/ocr` — OCR (documents, images)
 
-**Content-Type** : `multipart/form-data`
+**Content-Type**: `multipart/form-data`
 
-| Champ | Type | Requis | Description |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `model` | string | si plusieurs modèles | Ex: `deepseek-ocr` |
-| `file` | file | oui | Document (.pdf, .jpg, .jpeg, .png, .tiff, .bmp) |
+| `model` | string | if multiple models | E.g. `deepseek-ocr` |
+| `file` | file | yes | Document (.pdf, .jpg, .jpeg, .png, .tiff, .bmp) |
 
 ```bash
 curl https://api.GatewAI.example.com/v1/ocr \
@@ -486,20 +485,20 @@ curl https://api.GatewAI.example.com/v1/ocr \
 
 ---
 
-### Mode async — Jobs
+### Async mode — Jobs
 
-#### `POST /jobs/{service_type}` — Soumettre un job
+#### `POST /jobs/{service_type}` — Submit a job
 
-**Content-Type** : `multipart/form-data`
+**Content-Type**: `multipart/form-data`
 
-| Champ | Type | Requis | Description |
+| Field | Type | Required | Description |
 |---|---|---|---|
-| `model` | string | si plusieurs modèles sans défaut | Ex: `whisper-large-v3`. Optionnel si un seul modèle ou `default: true` configuré. |
-| `operation` | string | si plusieurs opérations | Ex: `transcription` ou `translation`. Optionnel si une seule opération pour le modèle. |
-| `file` | file | oui | Fichier à traiter |
-| `callback_url` | string | non | URL appelée en POST à la complétion du job |
+| `model` | string | if multiple models with no default | E.g. `whisper-large-v3`. Optional if only one model or `default: true` is configured. |
+| `operation` | string | if multiple operations | E.g. `transcription` or `translation`. Optional if only one operation for the model. |
+| `file` | file | yes | File to process |
+| `callback_url` | string | no | URL called via POST when the job completes |
 
-**Réponse** `202 Accepted`
+**Response** `202 Accepted`
 
 ```json
 {
@@ -511,23 +510,23 @@ curl https://api.GatewAI.example.com/v1/ocr \
 ```
 
 ```bash
-# Modèle et opération explicites
+# Explicit model and operation
 curl -X POST http://localhost:8080/jobs/audio \
   -F "model=whisper-large-v3" \
   -F "operation=transcription" \
   -F "file=@interview.wav" \
-  -F "callback_url=https://mon-app.example.com/hooks/inference"
+  -F "callback_url=https://my-app.example.com/hooks/inference"
 
-# Modèle par défaut, opération unique → champs optionnels
+# Default model, single operation → optional fields
 curl -X POST http://localhost:8080/jobs/audio \
   -F "file=@interview.wav"
 ```
 
 ---
 
-#### `GET /jobs/{service_type}/{id}` — Statut d'un job
+#### `GET /jobs/{service_type}/{id}` — Job status
 
-**Réponse** `200 OK`
+**Response** `200 OK`
 
 ```json
 {
@@ -535,13 +534,13 @@ curl -X POST http://localhost:8080/jobs/audio \
   "service_type": "audio",
   "model": "whisper-large-v3",
   "status": "completed",
-  "result": { "text": "Bonjour, bienvenue à cette réunion..." },
+  "result": { "text": "Hello, welcome to this meeting..." },
   "created_at": "2026-03-05T10:00:00Z",
   "updated_at": "2026-03-05T10:04:32Z"
 }
 ```
 
-Exemple pour un job en attente :
+Example for a pending job:
 
 ```json
 {
@@ -555,26 +554,26 @@ Exemple pour un job en attente :
 }
 ```
 
-| Champ | Description |
+| Field | Description |
 |---|---|
 | `status` | `pending` \| `processing` \| `completed` \| `failed` |
-| `queue_position` | Position 1-indexée dans la file d'attente du modèle (présent uniquement si `pending`) |
-| `result` | Payload JSON du résultat d'inférence (présent uniquement si `completed`) |
-| `error` | Message d'erreur (présent uniquement si `failed`) |
+| `queue_position` | 1-indexed position in the model's queue (present only if `pending`) |
+| `result` | Inference result JSON payload (present only if `completed`) |
+| `error` | Error message (present only if `failed`) |
 
-> **Attention** : le fichier résultat S3 est supprimé après cet appel — les appels suivants retournent 404.
+> **Note**: the S3 result file is deleted after this call — subsequent calls return 404.
 
-> **Isolation consumer** : si `consumer_header` est configuré et que le header est présent dans la requête, le job doit appartenir au consumer identifié — sinon `404` (aucune fuite d'information sur les jobs d'autres consumers). Les appels sans header (admin, usage interne) ne sont pas soumis à cette vérification.
+> **Consumer isolation**: if `consumer_header` is configured and the header is present in the request, the job must belong to the identified consumer — otherwise `404` (no information leak about other consumers' jobs). Requests without a header (admin, internal use) bypass this check.
 
 ---
 
-#### `GET /jobs` — Liste des jobs d'un consumer
+#### `GET /jobs` — List a consumer's jobs
 
-Nécessite `consumer_header` configuré. Retourne la liste paginée des jobs du consumer identifié par le header, triée par date de création décroissante.
+Requires `consumer_header` to be configured. Returns the paginated list of jobs for the consumer identified by the header, sorted by creation date descending.
 
-**Query params** : `limit` (défaut 20, max 100), `offset` (défaut 0)
+**Query params**: `limit` (default 20, max 100), `offset` (default 0)
 
-**Réponse** `200 OK`
+**Response** `200 OK`
 
 ```json
 {
@@ -601,9 +600,9 @@ curl http://localhost:8080/jobs \
   "?limit=10&offset=0"
 ```
 
-> Si `consumer_header` n'est pas configuré, retourne `501 Not Implemented`.
+> If `consumer_header` is not configured, returns `501 Not Implemented`.
 
-**Polling simple**
+**Simple polling**
 
 ```bash
 JOB_ID="550e8400-e29b-41d4-a716-446655440000"
@@ -611,7 +610,7 @@ while true; do
   RESPONSE=$(curl -s http://localhost:8080/jobs/audio/$JOB_ID)
   STATUS=$(echo $RESPONSE | jq -r '.status')
   [ "$STATUS" = "completed" ] && echo $RESPONSE | jq '.result' && break
-  [ "$STATUS" = "failed" ]    && echo "Erreur : $(echo $RESPONSE | jq -r '.error')" && break
+  [ "$STATUS" = "failed" ]    && echo "Error: $(echo $RESPONSE | jq -r '.error')" && break
   sleep 10
 done
 ```
@@ -628,15 +627,15 @@ done
 
 ### `GET /metrics`
 
-Métriques Prometheus au format text (scraping compatible avec Prometheus / VictoriaMetrics).
+Prometheus metrics in text format (compatible with Prometheus / VictoriaMetrics scraping).
 
 ---
 
-## Contrat async (queue Redis)
+## Async contract (Redis queue)
 
-Le gateway et le relay communiquent via Redis. Les données du job sont stockées dans Redis JSON ; les fichiers d'entrée/sortie sont dans S3.
+The gateway and relay communicate via Redis. Job data is stored as Redis JSON; input/output files are in S3.
 
-### Job record — stocké par le gateway dans Redis
+### Job record — stored by the gateway in Redis
 
 ```json
 {
@@ -650,28 +649,28 @@ Le gateway et le relay communiquent via Redis. Les données du job sont stockée
 }
 ```
 
-| Champ | Description |
+| Field | Description |
 |---|---|
-| `input_ref` | Clé objet S3 du fichier d'entrée |
-| `inference_url` | Chemin à appeler sur le modèle local (appendé à `inference.base_url` du relay) — dérivé du premier path de l'opération choisie |
+| `input_ref` | S3 object key of the input file |
+| `inference_url` | Path to call on the local model (appended to the relay's `inference.base_url`) — derived from the first path of the chosen operation |
 
-### Séquence de file d'attente
+### Queue sequence
 
 ```
 Gateway   RPUSH relay:<model>:pending <job_id>
 Relay     BLMOVE relay:<model>:pending relay:<model>:processing LEFT RIGHT
-Relay     [traite le job]
+Relay     [processes the job]
 Relay     HSET job:<id> status completed result_ref ...
 Relay     PUBLISH jobs:<model>:completed <job_id>
 Relay     LREM relay:<model>:processing 1 <job_id>
-Gateway   [reçoit PUBLISH, met à jour Redis, déclenche webhook]
+Gateway   [receives PUBLISH, updates Redis, triggers webhook]
 ```
 
 ---
 
-## Webhook (optionnel, mode async)
+## Webhook (optional, async mode)
 
-Si `callback_url` est fourni à la soumission, le gateway effectue un `POST` sur cette URL dès que le job passe à l'état `completed` ou `failed`. En cas d'échec HTTP (5xx ou timeout), 3 tentatives sont faites avec un backoff exponentiel (2 s → 4 s → 8 s).
+If `callback_url` is provided at submission, the gateway performs a `POST` to that URL as soon as the job transitions to `completed` or `failed`. On HTTP failure (5xx or timeout), 3 attempts are made with exponential backoff (2s → 4s → 8s).
 
 ```json
 {
@@ -687,44 +686,44 @@ Si `callback_url` est fourni à la soumission, le gateway effectue un `POST` sur
 
 ## Monitoring
 
-Les deux composants exposent des métriques Prometheus sur `GET /metrics`.
+Both components expose Prometheus metrics at `GET /metrics`.
 
 ### Gateway
 
-| Métrique | Type | Labels | Description |
+| Metric | Type | Labels | Description |
 |---|---|---|---|
-| `GatewAI_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Requêtes traitées (mode `async` ou `sync`, code HTTP en `status`) |
-| `GatewAI_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | Latence bout-en-bout du handler |
-| `GatewAI_s3_operation_duration_seconds` | histogram | `operation` (upload/get/delete) | Latence des opérations S3 |
-| `GatewAI_s3_errors_total` | counter | `operation` | Erreurs S3 |
-| `GatewAI_redis_operation_duration_seconds` | histogram | `operation` (save_job/get_job/delete_job/update_job_result/push_queue) | Latence des opérations Redis |
-| `GatewAI_redis_errors_total` | counter | `operation` | Erreurs Redis |
-| `GatewAI_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs soumis par consumer (uniquement si `consumer_header` configuré) |
-| `GatewAI_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` | Requêtes LLM proxy |
-| `GatewAI_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | Latence LLM proxy |
-| `GatewAI_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` | Tokens consommés (`prompt`/`completion`) |
-| `GatewAI_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Distribution des tokens par requête |
-| `GatewAI_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Top-N consumers par tokens (Redis, si `metrics.top_consumers > 0`) |
-| `GatewAI_cache_hits_total` | counter | `service_type`, `model` | Cache hits LLM |
-| `GatewAI_cache_misses_total` | counter | `service_type`, `model` | Cache misses LLM |
-| `GatewAI_cache_errors_total` | counter | `service_type`, `model`, `op` | Erreurs cache LLM |
-| `GatewAI_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` | Checks rate limit (`allowed`/`rejected`) |
-| `GatewAI_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type` | Consumers ayant dépassé leur limite |
-| `GatewAI_ratelimit_errors_total` | counter | `service_type` | Erreurs Redis lors du rate limiting |
+| `GatewAI_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Handled requests (mode `async` or `sync`, HTTP code in `status`) |
+| `GatewAI_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | End-to-end handler latency |
+| `GatewAI_s3_operation_duration_seconds` | histogram | `operation` (upload/get/delete) | S3 operation latency |
+| `GatewAI_s3_errors_total` | counter | `operation` | S3 errors |
+| `GatewAI_redis_operation_duration_seconds` | histogram | `operation` (save_job/get_job/delete_job/update_job_result/push_queue) | Redis operation latency |
+| `GatewAI_redis_errors_total` | counter | `operation` | Redis errors |
+| `GatewAI_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs submitted per consumer (only if `consumer_header` configured) |
+| `GatewAI_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` | LLM proxy requests |
+| `GatewAI_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | LLM proxy latency |
+| `GatewAI_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` | Tokens consumed (`prompt`/`completion`) |
+| `GatewAI_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Token distribution per request |
+| `GatewAI_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Top-N consumers by tokens (Redis, if `metrics.top_consumers > 0`) |
+| `GatewAI_cache_hits_total` | counter | `service_type`, `model` | LLM cache hits |
+| `GatewAI_cache_misses_total` | counter | `service_type`, `model` | LLM cache misses |
+| `GatewAI_cache_errors_total` | counter | `service_type`, `model`, `op` | LLM cache errors |
+| `GatewAI_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` | Rate limit checks (`allowed`/`rejected`) |
+| `GatewAI_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type` | Consumers that exceeded their limit |
+| `GatewAI_ratelimit_errors_total` | counter | `service_type` | Redis errors during rate limiting |
 
 ### Relay
 
-| Métrique | Type | Labels | Description |
+| Metric | Type | Labels | Description |
 |---|---|---|---|
-| `GatewAI_relay_jobs_total` | counter | `service_type`, `status` (completed/failed) | Jobs traités |
-| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type` | Durée de l'appel à l'API d'inférence locale |
-| `GatewAI_relay_input_size_bytes` | histogram | `service_type` | Taille des fichiers d'entrée téléchargés depuis S3 |
-| `GatewAI_relay_s3_operation_duration_seconds` | histogram | `operation` (get/put/delete) | Latence des opérations S3 |
-| `GatewAI_relay_s3_errors_total` | counter | `operation` | Erreurs S3 |
-| `GatewAI_relay_redis_publish_errors_total` | counter | — | Erreurs de publication Redis pub/sub (jobs completed) |
-| `GatewAI_relay_redis_done_errors_total` | counter | — | Erreurs lors de la suppression du job de la processing list |
+| `GatewAI_relay_jobs_total` | counter | `service_type`, `status` (completed/failed) | Jobs processed |
+| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type` | Local inference API call duration |
+| `GatewAI_relay_input_size_bytes` | histogram | `service_type` | Size of input files downloaded from S3 |
+| `GatewAI_relay_s3_operation_duration_seconds` | histogram | `operation` (get/put/delete) | S3 operation latency |
+| `GatewAI_relay_s3_errors_total` | counter | `operation` | S3 errors |
+| `GatewAI_relay_redis_publish_errors_total` | counter | — | Redis pub/sub publish errors (jobs completed) |
+| `GatewAI_relay_redis_done_errors_total` | counter | — | Errors removing the job from the processing list |
 
-### Exemple de configuration Prometheus
+### Example Prometheus configuration
 
 ```yaml
 scrape_configs:
@@ -739,53 +738,53 @@ scrape_configs:
 
 ---
 
-## Structure du projet
+## Project structure
 
 ```
 .
-├── cmd/gateway/main.go          # Point d'entrée — wiring et graceful shutdown
+├── cmd/gateway/main.go          # Entry point — wiring and graceful shutdown
 ├── internal/
-│   ├── config/config.go         # Chargement YAML + expansion des variables d'env
-│   ├── model/job.go             # Types partagés : Job, InputEvent, ResultEvent
-│   ├── service/registry.go      # Registre config-driven (routing sync + async, défaut par type)
+│   ├── config/config.go         # YAML loading + env variable expansion
+│   ├── model/job.go             # Shared types: Job, InputEvent, ResultEvent
+│   ├── service/registry.go      # Config-driven registry (sync + async routing, default per type)
 │   ├── storage/
-│   │   ├── s3.go                # Client S3 (AWS SDK v2)
-│   │   └── redis.go             # Persistance des jobs (JSON blob + TTL) + RPUSH/LPUSH queue
+│   │   ├── s3.go                # S3 client (AWS SDK v2)
+│   │   └── redis.go             # Job persistence (JSON blob + TTL) + RPUSH/LPUSH queue
 │   ├── consumer/
-│   │   └── manager.go           # Subscriptions Redis pub/sub (jobs:<model>:completed)
+│   │   └── manager.go           # Redis pub/sub subscriptions (jobs:<model>:completed)
 │   ├── ratelimit/
-│   │   └── ratelimit.go         # Fixed-window rate limiting Redis (Lua INCR+EXPIRE)
+│   │   └── ratelimit.go         # Redis fixed-window rate limiting (Lua INCR+EXPIRE)
 │   ├── cache/
-│   │   ├── cache.go             # Interface Cache + entrée Redis
-│   │   ├── key.go               # Clé SHA-256 canonique du body LLM
-│   │   └── redis.go             # Implémentation Redis
+│   │   ├── cache.go             # Cache interface + Redis entry
+│   │   ├── key.go               # SHA-256 canonical key of the LLM body
+│   │   └── redis.go             # Redis implementation
 │   ├── llmproxy/
-│   │   ├── handler.go           # LLM proxy : cache → provider → translate → cache-fill async
+│   │   ├── handler.go           # LLM proxy: cache → provider → translate → async cache-fill
 │   │   └── provider/            # openai, anthropic, ollama, passthrough
 │   ├── metrics/
-│   │   ├── metrics.go           # Définitions Prometheus (promauto) — GET /metrics
+│   │   ├── metrics.go           # Prometheus definitions (promauto) — GET /metrics
 │   │   └── consumer_tracker.go  # ConsumerTracker interface + Redis sorted-set + top-N refresh
 │   └── handler/
 │       ├── jobs.go              # POST /jobs/{service_type}  •  GET /jobs/{service_type}/{id}
-│       ├── sync.go              # POST /v1/*  (direct proxy ou LLM proxy)
-│       ├── docs.go              # GET /docs (Swagger UI)  •  GET /openapi.yaml (spec généré dynamiquement)
+│       ├── sync.go              # POST /v1/*  (direct proxy or LLM proxy)
+│       ├── docs.go              # GET /docs (Swagger UI)  •  GET /openapi.yaml (dynamically generated spec)
 │       ├── health.go            # GET /health
-│       └── middleware.go        # Logger structuré (slog/JSON)
-├── relay/                       # Relay Deployment (module Go séparé : gatewai/relay)
+│       └── middleware.go        # Structured logger (slog/JSON)
+├── relay/                       # Relay Deployment (separate Go module: gatewai/relay)
 │   ├── cmd/relay/main.go
 │   ├── internal/
-│   │   ├── config/config.go     # Config relay : model, redis, inference.base_url + extra_fields
+│   │   ├── config/config.go     # Relay config: model, redis, inference.base_url + extra_fields
 │   │   ├── queue/               # BLMOVE pop, Publish (pub/sub), Done (remove from processing)
 │   │   ├── store/               # GetJob, UpdateJobResult (Redis JSON)
-│   │   ├── relay/               # Traitement des jobs async
-│   │   ├── metrics/             # Définitions Prometheus relay — GET /metrics
-│   │   ├── adapter/             # Adapter multipart générique (model + extra_fields + file)
-│   │   └── storage/             # Client S3
-│   └── config.yaml              # Config template (env vars expansées au démarrage)
-├── helm/gateway/                # Chart Helm du gateway (inclut Redis-HA)
-├── k8s/                         # Manifestes Kubernetes (Relay Deployment, KEDA ScaledObject)
-├── config.yaml                  # Configuration par défaut du gateway
-└── Dockerfile                   # Multi-stage build → image distroless (~10 MB)
+│   │   ├── relay/               # Async job processing
+│   │   ├── metrics/             # Relay Prometheus definitions — GET /metrics
+│   │   ├── adapter/             # Generic multipart adapter (model + extra_fields + file)
+│   │   └── storage/             # S3 client
+│   └── config.yaml              # Config template (env vars expanded at startup)
+├── helm/gateway/                # Gateway Helm chart (includes Redis-HA)
+├── k8s/                         # Kubernetes manifests (Relay Deployment, KEDA ScaledObject)
+├── config.yaml                  # Default gateway configuration
+└── Dockerfile                   # Multi-stage build → distroless image (~10 MB)
 ```
 
 ## Contributing
