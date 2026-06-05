@@ -1,4 +1,4 @@
-# Strimzi KafkaUser manifests for kevent-gateway and kevent-relay.
+# Strimzi KafkaUser manifests for gatewai-gateway and gatewai-relay.
 #
 # Apply in the namespace where your Strimzi Kafka cluster is managed:
 #   kubectl apply -f examples/kafka-users.yaml -n <kafka-namespace>
@@ -8,7 +8,7 @@
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaUser
 metadata:
-  name: kevent-gateway
+  name: gatewai-gateway
   # namespace: <kafka-namespace>
   labels:
     strimzi.io/cluster: my-kafka  # replace with your Kafka cluster name
@@ -22,13 +22,13 @@ spec:
       - resource: { type: topic, name: jobs., patternType: prefix }
         operations: [Write, Create, Describe, Read]
       # Consumer group for result consumers
-      - resource: { type: group, name: kevent-gateway, patternType: prefix }
+      - resource: { type: group, name: gatewai-gateway, patternType: prefix }
         operations: [Read]
 ---
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaUser
 metadata:
-  name: kevent-relay
+  name: gatewai-relay
   # namespace: <kafka-namespace>
   labels:
     strimzi.io/cluster: my-kafka  # replace with your Kafka cluster name

@@ -545,7 +545,7 @@ func specComponents() map[string]any {
 				"properties": map[string]any{
 					"id":       map[string]any{"type": "string", "example": "whisper-large-v3"},
 					"object":   map[string]any{"type": "string", "example": "model"},
-					"owned_by": map[string]any{"type": "string", "example": "kevent"},
+					"owned_by": map[string]any{"type": "string", "example": "gatewai"},
 				},
 			},
 			"Error": map[string]any{

@@ -67,8 +67,8 @@ jobs:
         id: images
         run: |
           OWNER=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
-          echo "gateway=ghcr.io/${OWNER}/kevent-ai/gateway" >> $GITHUB_OUTPUT
-          echo "relay=ghcr.io/${OWNER}/kevent-ai/relay"    >> $GITHUB_OUTPUT
+          echo "gateway=ghcr.io/${OWNER}/gatewai/gateway" >> $GITHUB_OUTPUT
+          echo "relay=ghcr.io/${OWNER}/gatewai/relay"    >> $GITHUB_OUTPUT
 
   # ── Gateway dev image ──────────────────────────────────────────────────────
   gateway:

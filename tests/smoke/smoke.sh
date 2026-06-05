@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/smoke/smoke.sh — Smoke tests for the kevent gateway (dev / staging)
+# tests/smoke/smoke.sh — Smoke tests for the GatewAI gateway (dev / staging)
 #
 # Usage:
 #   GATEWAY_URL=https://api.example.com \
@@ -25,7 +25,7 @@
 set -euo pipefail
 
 # ── Configuration ──────────────────────────────────────────────────────────────
-GATEWAY_URL="${GATEWAY_URL:?GATEWAY_URL is required (e.g. https://api.kevent.example.com)}"
+GATEWAY_URL="${GATEWAY_URL:?GATEWAY_URL is required (e.g. https://api.gatewai.example.com)}"
 AUDIO_URL="${AUDIO_URL:?AUDIO_URL is required (URL of a short .mp3 / .wav speech file)}"
 WHISPER_API_KEY="${WHISPER_API_KEY:-}"
 RERANK_API_KEY="${RERANK_API_KEY:-}"

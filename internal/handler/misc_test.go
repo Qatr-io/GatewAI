@@ -166,8 +166,8 @@ func TestListModels_ReturnsAllModels(t *testing.T) {
 		if m.Object != "model" {
 			t.Errorf(`expected object "model", got %q`, m.Object)
 		}
-		if m.OwnedBy != "kevent" {
-			t.Errorf(`expected owned_by "kevent", got %q`, m.OwnedBy)
+		if m.OwnedBy != "gatewai" {
+			t.Errorf(`expected owned_by "gatewai", got %q`, m.OwnedBy)
 		}
 	}
 }

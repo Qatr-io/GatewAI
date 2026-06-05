@@ -71,7 +71,7 @@ type ServerConfig struct {
 	// When configured:
 	//   - the consumer name is stored in the job record and tracked in a Redis
 	//     sorted set for listing via GET /jobs
-	//   - kevent_jobs_by_consumer_total metric is incremented per consumer
+	//   - gatewai_jobs_by_consumer_total metric is incremented per consumer
 	//   - GET /jobs/{service_type}/{id} enforces ownership: if the header is
 	//     present, the job's consumer_name must match or 404 is returned
 	// Leave empty in deployments without upstream authentication.
