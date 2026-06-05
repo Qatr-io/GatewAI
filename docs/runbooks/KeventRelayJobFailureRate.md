@@ -15,18 +15,18 @@ Async jobs complete with status `failed`. The gateway notifies clients via webho
 
 ```bash
 # Failure rate by service_type
-sum by (service_type) (rate(kevent_relay_jobs_total{status="failed"}[5m]))
+sum by (service_type) (rate(GatewAI_relay_jobs_total{status="failed"}[5m]))
   /
-sum by (service_type) (rate(kevent_relay_jobs_total[5m]))
+sum by (service_type) (rate(GatewAI_relay_jobs_total[5m]))
 
 # Relay pod logs (check for inference errors)
 kubectl logs -l serving.kserve.io/inferenceservice=<name> -c kserve-container -n <namespace> --tail=100
 
 # Relay S3 errors (download failures)
-increase(kevent_relay_s3_errors_total[5m])
+increase(GatewAI_relay_s3_errors_total[5m])
 
 # Inference duration — timeout issues?
-histogram_quantile(0.95, rate(kevent_relay_inference_duration_seconds_bucket[5m]))
+histogram_quantile(0.95, rate(GatewAI_relay_inference_duration_seconds_bucket[5m]))
 ```
 
 Common causes:

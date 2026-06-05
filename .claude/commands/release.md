@@ -63,7 +63,7 @@ For each component being released, update:
 - `CHANGELOG.md` → add entry under `## Relay` with today's date
 
 **If Helm chart version changed:**
-- `CHANGELOG.md` → add entry under `## Helm chart (kevent-gateway)`
+- `CHANGELOG.md` → add entry under `## Helm chart (gatewai-gateway)`
 
 ### Step 3 — Commit
 
@@ -105,7 +105,7 @@ Confirm with the user before executing.
 
 Print a summary:
 - Tags created and pushed
-- Docker images that CI will build (ghcr.io/ia-generative/kevent-ai/gateway:vX.Y.Z, etc.)
+- Docker images that CI will build (ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z, etc.)
 - Reminder: update relay image tag in `k8s/inference-transcription.yaml` on the cluster (file is gitignored)
 
 ---

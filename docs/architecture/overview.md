@@ -1,6 +1,6 @@
 # Architecture overview
 
-kevent-ai consists of two independent components deployed separately:
+GatewAI consists of two independent components deployed separately:
 
 - **Gateway** — HTTP server that accepts requests, routes them, and returns results
 - **Relay** — standalone Kubernetes Deployment alongside the inference pod; one pod per job lifecycle

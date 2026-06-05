@@ -42,7 +42,7 @@
 ┌──────────────────┐                ┌────────────────────────────────────────────┐
 │  Scaleway S3     │                │  Knative Services (1 par type de service)  │
 │                  │                │                                            │
-│  {job_id}/       │                │  kevent-transcription-predictor            │
+│  {job_id}/       │                │  GatewAI-transcription-predictor            │
 │  input.ext  ◀────┼────────────────│  ┌──────────────────────┐ ┌────────────┐  │
 │  result.json────▶│                │  │  dispatcher  :8080   │ │ whisper    │  │
 └──────────────────┘                │  │  ─────────────────── │ │ :9000      │  │
@@ -52,7 +52,7 @@
 │  port 9093       │                │  │   Gateway↗      ─────┼▶│            │  │
 │                  │                │  └──────────────────────┘ └────────────┘  │
 │  jobs.*.input ───┼── KafkaSource─▶│                                            │
-│  jobs.*.results◀─┼────────────────│  kevent-dispatcher-ocr  (même structure)  │
+│  jobs.*.results◀─┼────────────────│  GatewAI-dispatcher-ocr  (même structure)  │
 └──────────────────┘                └────────────────────────────────────────────┘
 ```
 
@@ -239,7 +239,7 @@ Client (SDK OpenAI)     Gateway SyncHandler     Dispatcher /v1/*     Whisper :90
 ### Objets S3 (mode async)
 
 ```
-kevent-jobs/
+GatewAI-jobs/
 └── {job_id}/
     ├── input.wav          ← uploadé par le gateway au POST /jobs
     └── result.json        ← uploadé par le dispatcher après inférence
@@ -265,8 +265,8 @@ kevent-jobs/
 
 ```
 openai_path                      model                    InferenceURL
-/v1/audio/transcriptions   →   whisper-large-v3   →   http://kevent-transcription-predictor…
-/v1/chat/completions        →   llava-v1.6-…       →   http://kevent-dispatcher-ocr…
+/v1/audio/transcriptions   →   whisper-large-v3   →   http://GatewAI-transcription-predictor…
+/v1/chat/completions        →   llava-v1.6-…       →   http://GatewAI-dispatcher-ocr…
 ```
 
 Plusieurs services peuvent partager le même `openai_path` (ex: deux modèles sur `/v1/chat/completions`) — la sélection se fait uniquement par la valeur du champ `model`.
@@ -297,14 +297,14 @@ Le cluster Kafka (Strimzi) écoute sur le port **9093** (`SASL_SSL`). Le gateway
 
 ### ACLs Strimzi requises
 
-**`kevent-gateway`** :
+**`gatewai-gateway`** :
 
 | Ressource | Pattern | Opérations |
 |---|---|---|
 | topic `jobs.*` | prefix | `Read`, `Write`, `Create`, `Describe` |
-| group `kevent-gateway` | prefix | `Read`, `Describe`, `Delete` |
+| group `gatewai-gateway` | prefix | `Read`, `Describe`, `Delete` |
 
-**`kevent-dispatcher`** :
+**`GatewAI-dispatcher`** :
 
 | Ressource | Pattern | Opérations |
 |---|---|---|
@@ -324,8 +324,8 @@ Les valeurs de secrets Kubernetes créées via `echo` ou heredoc incluent souven
 Toujours créer les secrets avec `printf` (pas `echo`) :
 
 ```bash
-kubectl create secret generic kevent-dispatcher-kafka \
-  --from-literal=username=kevent-dispatcher \
+kubectl create secret generic GatewAI-dispatcher-kafka \
+  --from-literal=username=GatewAI-dispatcher \
   --from-literal=password=<mot-de-passe> \
   --from-literal=sasl-type=SCRAM-SHA-512
 # kubectl create secret --from-literal n'ajoute pas de newline
@@ -348,7 +348,7 @@ spec:
       image: ghcr.io/ia-generative/whisper-api:latest-gpu
       # ...
 
-    - name: dispatcher           # sidecar kevent
+    - name: dispatcher           # sidecar GatewAI
       image: tcheksa62/side-event:v0.2.4
       ports:
         - name: http1
@@ -369,37 +369,37 @@ spec:
         - name: KAFKA_SASL_USERNAME
           valueFrom:
             secretKeyRef:
-              name: kevent-dispatcher-kafka
+              name: GatewAI-dispatcher-kafka
               key: username
         - name: KAFKA_SASL_PASSWORD
           valueFrom:
             secretKeyRef:
-              name: kevent-dispatcher-kafka
+              name: GatewAI-dispatcher-kafka
               key: password
         - name: S3_ACCESS_KEY
           valueFrom:
             secretKeyRef:
-              name: kevent-s3-credentials
+              name: GatewAI-s3-credentials
               key: access-key
         - name: S3_SECRET_KEY
           valueFrom:
             secretKeyRef:
-              name: kevent-s3-credentials
+              name: GatewAI-s3-credentials
               key: secret-key
         - name: CONFIG_PATH
-          value: /etc/kevent/config.yaml
+          value: /etc/GatewAI/config.yaml
         - name: S3_BUCKET
-          value: kevent-jobs
+          value: GatewAI-jobs
       volumeMounts:
-        - name: kevent-sidecar
-          mountPath: /etc/kevent/
+        - name: GatewAI-sidecar
+          mountPath: /etc/GatewAI/
         - name: kafka-tls
           mountPath: /etc/kafka-tls
           readOnly: true
   volumes:
-    - name: kevent-sidecar
+    - name: GatewAI-sidecar
       configMap:
-        name: kevent-sidecar
+        name: GatewAI-sidecar
     - name: kafka-tls
       secret:
         secretName: kafka-cluster-ca-cert   # CA Strimzi (clé : ca.crt)
@@ -425,15 +425,15 @@ spec:
       enable: true
       type:
         secretKeyRef:
-          name: kevent-dispatcher-kafka
+          name: GatewAI-dispatcher-kafka
           key: sasl-type       # valeur : SCRAM-SHA-512 (sans newline)
       user:
         secretKeyRef:
-          name: kevent-dispatcher-kafka
+          name: GatewAI-dispatcher-kafka
           key: username
       password:
         secretKeyRef:
-          name: kevent-dispatcher-kafka
+          name: GatewAI-dispatcher-kafka
           key: password
     tls:
       enable: true
@@ -451,7 +451,7 @@ spec:
     ref:
       apiVersion: serving.knative.dev/v1
       kind: Service
-      name: kevent-transcription-predictor
+      name: GatewAI-transcription-predictor
       namespace: default
 ```
 
@@ -463,7 +463,7 @@ Défini dans `k8s/kafka-users.yaml` :
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaUser
 metadata:
-  name: kevent-dispatcher
+  name: GatewAI-dispatcher
   namespace: infra-kafka
   labels:
     strimzi.io/cluster: default
@@ -487,15 +487,15 @@ spec:
 
 | Composant | Image | Tag actuel |
 |---|---|---|
-| Gateway | `tcheksa62/kevent` | `v0.2.4` |
+| Gateway | `tcheksa62/GatewAI` | `v0.2.4` |
 | Dispatcher sidecar | `tcheksa62/side-event` | `v0.2.4` |
 
 Build et push :
 
 ```bash
 # Gateway
-docker build -t tcheksa62/kevent:vX.Y.Z .
-docker push tcheksa62/kevent:vX.Y.Z
+docker build -t tcheksa62/GatewAI:vX.Y.Z .
+docker push tcheksa62/GatewAI:vX.Y.Z
 
 # Dispatcher
 docker build -t tcheksa62/side-event:vX.Y.Z ./dispatcher

@@ -10,7 +10,7 @@ Versioning: each component is versioned independently — see tag conventions be
 |---|---|---|
 | Gateway (binary + Docker) | `gateway/vX.Y.Z` | `gateway/v0.2.5` |
 | Relay (binary + Docker) | `relay/vX.Y.Z` | `relay/v0.2.5` |
-| Helm chart | auto-tagged by chart-releaser | `kevent-gateway-0.2.0` |
+| Helm chart | auto-tagged by chart-releaser | `gatewai-gateway-0.2.0` |
 
 ---
 
@@ -21,7 +21,7 @@ Versioning: each component is versioned independently — see tag conventions be
 #### Added
 
 - **Priority queue** (`server.priority_header`): jobs are inserted at the head of the Redis queue (`LPUSH relay:<model>:pending`) when the configured header is present. No dedicated relay Deployment required — the relay's `BLMOVE LEFT RIGHT` naturally dequeues priority jobs first.
-- `kevent_async_jobs_submitted_total` counter (labels: `service_type`, `model`, `mode=async|async-priority`) — emitted at submission time.
+- `GatewAI_async_jobs_submitted_total` counter (labels: `service_type`, `model`, `mode=async|async-priority`) — emitted at submission time.
 
 #### Changed
 
@@ -29,7 +29,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 #### Removed
 
-- `kevent_kafka_publish_duration_seconds` and `kevent_kafka_publish_errors_total` Prometheus metrics (Kafka was removed in v0.14.0; these counters were never emitted).
+- `GatewAI_kafka_publish_duration_seconds` and `GatewAI_kafka_publish_errors_total` Prometheus metrics (Kafka was removed in v0.14.0; these counters were never emitted).
 
 ---
 
@@ -124,12 +124,12 @@ New `lifecycle.gc` config block:
 - PII detection for LLM JSON requests: email, phone FR, IBAN, credit card, SIREN/SIRET patterns
 - Enabled per service via `guardrails.pii: true` in config
 - Blocked requests logged as security events (`slog.Warn`, `level=WARN`)
-- New Prometheus counter `kevent_guardrails_pii_blocked_total{service_type, model}`
+- New Prometheus counter `GatewAI_guardrails_pii_blocked_total{service_type, model}`
 
 **Audit trail** (`internal/llmproxy/`)
 - Structured `slog` log per LLM request: `service_type`, `model`, `backend_model`, `provider`, `consumer`, `user_type`, `status`, `prompt_tokens`, `completion_tokens`, `cache_hit`, `duration_ms`, `backend_url`, `stream`
 - Opt-in via `audit_log.enabled: true`; prompt body logging via `audit_log.prompt: true` (PII risk — disabled by default)
-- New Grafana dashboard `kevent-audit-trail` (JSON in `dashboards/`)
+- New Grafana dashboard `GatewAI-audit-trail` (JSON in `dashboards/`)
 
 **X-RateLimit headers** (`internal/ratelimit/`, `internal/handler/`)
 - `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `X-RateLimit-Reset` on every response (async submit and sync), not only on 429
@@ -145,7 +145,7 @@ New `lifecycle.gc` config block:
 - **Stale job scan status filter**: `scanStaleJobs` now filters `status == pending` to match `ListStalePendingJobs` / `AdminPurge` semantics.
 - Background GC (`SweepStalePendingJobs`): prevented ghost resurrection (job re-marked stale after completing); now cleans S3 input files on sweep.
 - Cancel restricted to `pending` only — returns 409 for processing/terminal states.
-- New Prometheus counter `kevent_async_stale_jobs_swept_total{model}` for GC activity.
+- New Prometheus counter `GatewAI_async_stale_jobs_swept_total{model}` for GC activity.
 
 ---
 
@@ -190,24 +190,24 @@ New `lifecycle.gc` config block:
 - PrometheusRule: `KeventGatewayRateLimitHighRejectionRate` (> 20 %, warning) and `KeventGatewayRateLimitErrors`
 
 **Observability**
-- `backend_model` label added to `kevent_llm_requests_total`, `kevent_llm_request_duration_seconds`, `kevent_llm_tokens_total`, `kevent_llm_tokens_per_request` — enables per-model-version dashboards during canary deployments
-- New Grafana dashboard `kevent-llm.json` — LLM proxy metrics (requests, latency, tokens, cache, rate limiting)
+- `backend_model` label added to `GatewAI_llm_requests_total`, `GatewAI_llm_request_duration_seconds`, `GatewAI_llm_tokens_total`, `GatewAI_llm_tokens_per_request` — enables per-model-version dashboards during canary deployments
+- New Grafana dashboard `GatewAI-llm.json` — LLM proxy metrics (requests, latency, tokens, cache, rate limiting)
 - `metrics.top_consumers` and `metrics.consumer_labels` exposed in Helm `values.yaml`
 
 **Updated Prometheus metrics**
 
 | Metric | Labels |
 |---|---|
-| `kevent_llm_requests_total` | `service_type, model, backend_model, provider, user_type, status` |
-| `kevent_llm_request_duration_seconds` | `service_type, model, backend_model, provider, user_type` |
-| `kevent_llm_tokens_total` | `service_type, model, backend_model, user_type, type` |
-| `kevent_llm_tokens_per_request` | `service_type, model, backend_model, user_type` (histogram) |
-| `kevent_ratelimit_requests_total` | `service_type, user_type, result` |
-| `kevent_ratelimit_consumer_hits_total` | `service_type, user_type` |
-| `kevent_ratelimit_errors_total` | `service_type` |
+| `GatewAI_llm_requests_total` | `service_type, model, backend_model, provider, user_type, status` |
+| `GatewAI_llm_request_duration_seconds` | `service_type, model, backend_model, provider, user_type` |
+| `GatewAI_llm_tokens_total` | `service_type, model, backend_model, user_type, type` |
+| `GatewAI_llm_tokens_per_request` | `service_type, model, backend_model, user_type` (histogram) |
+| `GatewAI_ratelimit_requests_total` | `service_type, user_type, result` |
+| `GatewAI_ratelimit_consumer_hits_total` | `service_type, user_type` |
+| `GatewAI_ratelimit_errors_total` | `service_type` |
 
 #### Breaking changes
-- `kevent_llm_*` metrics gain a `backend_model` label (empty string `""` when not configured) — existing dashboards and alerts targeting these metrics need to be updated
+- `GatewAI_llm_*` metrics gain a `backend_model` label (empty string `""` when not configured) — existing dashboards and alerts targeting these metrics need to be updated
 
 ---
 
@@ -231,7 +231,7 @@ New `lifecycle.gc` config block:
 - New Grafana dashboard section: "Gateway — Rate Limiting" (5 panels including distinct consumer count via PromQL `group` trick)
 
 **Consumer metrics** (`internal/metrics/consumer_tracker.go`)
-- `ConsumerTracker` interface backed by Redis sorted sets (`ZINCRBY` on `llm:consumer:tokens:{user_type}:{token_type}`); top-N consumers loaded from Redis and exposed as `kevent_llm_consumer_tokens_top{consumer, user_type, type}`
+- `ConsumerTracker` interface backed by Redis sorted sets (`ZINCRBY` on `llm:consumer:tokens:{user_type}:{token_type}`); top-N consumers loaded from Redis and exposed as `GatewAI_llm_consumer_tokens_top{consumer, user_type, type}`
 - Enabled via `metrics.top_consumers: N`; refreshed every 60 s and immediately at startup
 - `NoopTracker` used when tracking is disabled (zero overhead)
 
@@ -239,17 +239,17 @@ New `lifecycle.gc` config block:
 
 | Metric | Labels |
 |---|---|
-| `kevent_llm_requests_total` | `service_type, model, provider, user_type, status` |
-| `kevent_llm_request_duration_seconds` | `service_type, model, provider, user_type` |
-| `kevent_llm_tokens_total` | `service_type, model, user_type, type` |
-| `kevent_llm_tokens_per_request` | `service_type, model, user_type` (histogram) |
-| `kevent_llm_consumer_tokens_top` | `consumer, user_type, type` (top-N gauge) |
-| `kevent_cache_hits_total` | `service_type, model` |
-| `kevent_cache_misses_total` | `service_type, model` |
-| `kevent_cache_errors_total` | `service_type, model, op` |
-| `kevent_ratelimit_requests_total` | `service_type, user_type, result` |
-| `kevent_ratelimit_consumer_hits_total` | `service_type, user_type` |
-| `kevent_ratelimit_errors_total` | `service_type` |
+| `GatewAI_llm_requests_total` | `service_type, model, provider, user_type, status` |
+| `GatewAI_llm_request_duration_seconds` | `service_type, model, provider, user_type` |
+| `GatewAI_llm_tokens_total` | `service_type, model, user_type, type` |
+| `GatewAI_llm_tokens_per_request` | `service_type, model, user_type` (histogram) |
+| `GatewAI_llm_consumer_tokens_top` | `consumer, user_type, type` (top-N gauge) |
+| `GatewAI_cache_hits_total` | `service_type, model` |
+| `GatewAI_cache_misses_total` | `service_type, model` |
+| `GatewAI_cache_errors_total` | `service_type, model, op` |
+| `GatewAI_ratelimit_requests_total` | `service_type, user_type, result` |
+| `GatewAI_ratelimit_consumer_hits_total` | `service_type, user_type` |
+| `GatewAI_ratelimit_errors_total` | `service_type` |
 
 #### Fixed
 - Cache-fill goroutine is now launched after `w.Write` — cache population never adds latency to the HTTP response
@@ -307,7 +307,7 @@ New `lifecycle.gc` config block:
   - Consumer name stored in job record (`consumer_name` field)
   - Redis sorted set `consumer:{name}:jobs` indexed at submit time (score = creation timestamp)
   - `GET /jobs` endpoint: paginated job list for the authenticated consumer (`?limit=20&offset=0`)
-  - `kevent_jobs_by_consumer_total{mode, service_type, model, consumer}` Prometheus counter
+  - `GatewAI_jobs_by_consumer_total{mode, service_type, model, consumer}` Prometheus counter
 - Consumer ownership check on `GET /jobs/{service_type}/{id}`: if `consumer_header` is configured and the header is present, the job's `consumer_name` must match — returns 404 on mismatch (no information leak). Auth-less deployments (no header) are unaffected.
 - `DeleteJob` now atomically cleans the consumer index via a Lua script (ZREM + DEL in a single round-trip)
 
@@ -321,7 +321,7 @@ New `lifecycle.gc` config block:
 ### [v0.6.0] — 2026-04-10
 
 #### Added
-- Redis operation metrics: `kevent_redis_operation_duration_seconds` histogram and `kevent_redis_errors_total` counter, both labelled by operation (`save_job`, `get_job`, `delete_job`, `update_job_result`)
+- Redis operation metrics: `GatewAI_redis_operation_duration_seconds` histogram and `GatewAI_redis_errors_total` counter, both labelled by operation (`save_job`, `get_job`, `delete_job`, `update_job_result`)
 - Priority routing: requests carrying the configurable `server.priority_header` are published to `services[].priority_topic` (Kafka), routed to `POST /sync` on the relay (sets `syncPriority++`, deferring async jobs)
 - MkDocs Material documentation site: architecture, deployment, configuration reference, Kafka/SASL guide, gitflow, releasing guide — deployed automatically to GitHub Pages
 
@@ -445,7 +445,7 @@ New `lifecycle.gc` config block:
 ### [v0.4.10] — 2026-03-31
 
 #### Fixed
-- `kevent_requests_total` now recorded on sync-direct path (`proxyToInference`) with `mode="sync-direct"`
+- `GatewAI_requests_total` now recorded on sync-direct path (`proxyToInference`) with `mode="sync-direct"`
 
 ---
 
@@ -453,14 +453,14 @@ New `lifecycle.gc` config block:
 
 #### Added
 - Prometheus metrics exposed at `GET /metrics`:
-  - `kevent_requests_total` (counter, labels: `mode`, `service_type`, `model`, `status`) — all completed requests
-  - `kevent_request_duration_seconds` (histogram, labels: `mode`, `service_type`, `model`) — end-to-end handler latency
-  - `kevent_sync_wait_duration_seconds` (histogram, labels: `service_type`, `model`) — time blocked on Redis pub/sub in sync-over-Kafka mode
-  - `kevent_sync_jobs_in_flight` (gauge) — open sync-over-Kafka connections waiting for relay results
-  - `kevent_s3_operation_duration_seconds` (histogram, label: `operation`: upload/get/delete) — S3 latency
-  - `kevent_s3_errors_total` (counter, label: `operation`) — S3 failures
-  - `kevent_kafka_publish_duration_seconds` (histogram, label: `topic`) — Kafka write latency
-  - `kevent_kafka_publish_errors_total` (counter, label: `topic`) — Kafka publish failures
+  - `GatewAI_requests_total` (counter, labels: `mode`, `service_type`, `model`, `status`) — all completed requests
+  - `GatewAI_request_duration_seconds` (histogram, labels: `mode`, `service_type`, `model`) — end-to-end handler latency
+  - `GatewAI_sync_wait_duration_seconds` (histogram, labels: `service_type`, `model`) — time blocked on Redis pub/sub in sync-over-Kafka mode
+  - `GatewAI_sync_jobs_in_flight` (gauge) — open sync-over-Kafka connections waiting for relay results
+  - `GatewAI_s3_operation_duration_seconds` (histogram, label: `operation`: upload/get/delete) — S3 latency
+  - `GatewAI_s3_errors_total` (counter, label: `operation`) — S3 failures
+  - `GatewAI_kafka_publish_duration_seconds` (histogram, label: `topic`) — Kafka write latency
+  - `GatewAI_kafka_publish_errors_total` (counter, label: `topic`) — Kafka publish failures
 
 ---
 
@@ -548,7 +548,7 @@ New `lifecycle.gc` config block:
 - Kafka topics renamed from `jobs.<type>.*` to `jobs.<model>.*`
 - `registry.RouteAsync(serviceType, model)` replaces `registry.Route(serviceType)` — supports multi-model types
 - `MaxFileSizeForType` used for `MaxBytesReader` before multipart parse (maximum across all models for the type)
-- Docker image moved to `ghcr.io/ia-generative/kevent-ai/gateway`
+- Docker image moved to `ghcr.io/qatr-io/gatewai/gateway`
 
 ### [v0.2.4] — 2026-01-XX
 
@@ -565,9 +565,9 @@ New `lifecycle.gc` config block:
 
 #### Changed
 
-- **Prometheus metrics**: replaced `kevent_relay_kafka_publish_errors_total` (removed with Kafka) by two Redis-specific counters:
-  - `kevent_relay_redis_publish_errors_total` — failures publishing the completion notification to `jobs:<model>:completed` (Redis pub/sub)
-  - `kevent_relay_redis_done_errors_total` — failures removing the job from `relay:<model>:processing` after completion
+- **Prometheus metrics**: replaced `GatewAI_relay_kafka_publish_errors_total` (removed with Kafka) by two Redis-specific counters:
+  - `GatewAI_relay_redis_publish_errors_total` — failures publishing the completion notification to `jobs:<model>:completed` (Redis pub/sub)
+  - `GatewAI_relay_redis_done_errors_total` — failures removing the job from `relay:<model>:processing` after completion
 
 ---
 
@@ -644,7 +644,7 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ### [v0.5.1] — 2026-04-03
 
 #### Fixed
-- Proxy metrics (`kevent_relay_proxy_requests_total`, `kevent_relay_proxy_duration_seconds`) now carry the correct `service_type` label, derived automatically from `result_topic` (`jobs.<type>.results` → `<type>`). The `SERVICE_TYPE` env var is no longer required in any ServingRuntime.
+- Proxy metrics (`GatewAI_relay_proxy_requests_total`, `GatewAI_relay_proxy_duration_seconds`) now carry the correct `service_type` label, derived automatically from `result_topic` (`jobs.<type>.results` → `<type>`). The `SERVICE_TYPE` env var is no longer required in any ServingRuntime.
 
 ---
 
@@ -660,8 +660,8 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ### [v0.4.7] — 2026-03-31
 
 #### Added
-- `kevent_relay_proxy_requests_total` (counter, labels: `service_type`, `status`) — sync-direct requests proxied to the local model
-- `kevent_relay_proxy_duration_seconds` (histogram, label: `service_type`) — sync-direct proxy latency
+- `GatewAI_relay_proxy_requests_total` (counter, labels: `service_type`, `status`) — sync-direct requests proxied to the local model
+- `GatewAI_relay_proxy_duration_seconds` (histogram, label: `service_type`) — sync-direct proxy latency
 
 ---
 
@@ -669,14 +669,14 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 #### Added
 - Prometheus metrics exposed at `GET /metrics`:
-  - `kevent_relay_jobs_total` (counter, labels: `service_type`, `status`: completed/failed) — job outcomes
-  - `kevent_relay_inference_duration_seconds` (histogram, label: `service_type`) — inference API call latency
-  - `kevent_relay_input_size_bytes` (histogram, label: `service_type`) — input file size distribution
-  - `kevent_relay_sync_priority` (gauge) — number of sync jobs in progress on this pod (non-zero defers async)
-  - `kevent_relay_deferred_total` (counter) — async jobs returned 503 due to sync priority
-  - `kevent_relay_s3_operation_duration_seconds` (histogram, label: `operation`: get/put/delete) — S3 latency
-  - `kevent_relay_s3_errors_total` (counter, label: `operation`) — S3 failures
-  - `kevent_relay_kafka_publish_errors_total` (counter) — result-event publish failures
+  - `GatewAI_relay_jobs_total` (counter, labels: `service_type`, `status`: completed/failed) — job outcomes
+  - `GatewAI_relay_inference_duration_seconds` (histogram, label: `service_type`) — inference API call latency
+  - `GatewAI_relay_input_size_bytes` (histogram, label: `service_type`) — input file size distribution
+  - `GatewAI_relay_sync_priority` (gauge) — number of sync jobs in progress on this pod (non-zero defers async)
+  - `GatewAI_relay_deferred_total` (counter) — async jobs returned 503 due to sync priority
+  - `GatewAI_relay_s3_operation_duration_seconds` (histogram, label: `operation`: get/put/delete) — S3 latency
+  - `GatewAI_relay_s3_errors_total` (counter, label: `operation`) — S3 failures
+  - `GatewAI_relay_kafka_publish_errors_total` (counter) — result-event publish failures
 
 ---
 
@@ -740,7 +740,7 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 - `result_topic` auto-derived from active model: `jobs.<model>.results` when left empty
 
 #### Changed
-- Docker image moved to `ghcr.io/ia-generative/kevent-ai/relay`
+- Docker image moved to `ghcr.io/qatr-io/gatewai/relay`
 
 ### [v0.2.4] — 2026-01-XX
 
@@ -750,7 +750,7 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ---
 
-## Helm chart (kevent-gateway)
+## Helm chart (gatewai-gateway)
 
 ### [0.5.11] — 2026-04-02
 
@@ -880,7 +880,7 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 #### Added
 - `encryption.key` / `encryption.existingSecret` — AES-256-GCM key injection (Option A: chart creates Secret, Option B: External Secrets)
-- `kevent-gateway.encryptionSecretName` helper in `_helpers.tpl`
+- `gatewai-gateway.encryptionSecretName` helper in `_helpers.tpl`
 - `README.md` for the chart
 
 #### Changed

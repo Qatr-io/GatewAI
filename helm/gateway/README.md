@@ -1,6 +1,6 @@
-# kevent-gateway
+# gatewai-gateway
 
-Helm chart for the **kevent** API gateway — accepts file uploads, pushes async jobs to a Redis queue consumed by relay sidecars, and exposes sync (OpenAI-compatible) endpoints for AI inference services.
+Helm chart for the **GatewAI** API gateway — accepts file uploads, pushes async jobs to a Redis queue consumed by relay sidecars, and exposes sync (OpenAI-compatible) endpoints for AI inference services.
 
 ## Prerequisites
 
@@ -17,16 +17,16 @@ Helm chart for the **kevent** API gateway — accepts file uploads, pushes async
 The chart is published automatically to GitHub Pages on every push to `main` that changes `helm/`.
 
 ```bash
-helm repo add kevent https://ia-generative.github.io/kevent-ai
+helm repo add GatewAI https://ia-generative.github.io/GatewAI
 helm repo update
-helm install kevent-gateway kevent/kevent-gateway -f values.yaml
+helm install gatewai-gateway GatewAI/gatewai-gateway -f values.yaml
 ```
 
 ### From source
 
 ```bash
 helm dependency update ./helm/gateway
-helm upgrade --install kevent-gateway ./helm/gateway -f values.yaml
+helm upgrade --install gatewai-gateway ./helm/gateway -f values.yaml
 ```
 
 ## Architecture
@@ -50,7 +50,7 @@ Gateway (:8080)
 
 | Parameter | Description | Default |
 |---|---|---|
-| `image.repository` | Gateway image | `ghcr.io/ia-generative/kevent-ai/gateway` |
+| `image.repository` | Gateway image | `ghcr.io/qatr-io/gatewai/gateway` |
 | `image.tag` | Image tag | `v0.9.0` |
 | `image.pullPolicy` | Pull policy | `IfNotPresent` |
 
@@ -60,7 +60,7 @@ Gateway (:8080)
 |---|---|---|
 | `config.existingConfigMap` | **Option B** — name of an existing ConfigMap containing a `config.yaml` key. When set, the chart does not create a ConfigMap. | `""` |
 
-When `config.existingConfigMap` is set, the chart mounts the referenced ConfigMap as `/etc/kevent/config.yaml`. The ConfigMap must contain the key `config.yaml`. Use this to manage configuration externally (e.g. with a GitOps tool or External Secrets).
+When `config.existingConfigMap` is set, the chart mounts the referenced ConfigMap as `/etc/GatewAI/config.yaml`. The ConfigMap must contain the key `config.yaml`. Use this to manage configuration externally (e.g. with a GitOps tool or External Secrets).
 
 ### S3
 
@@ -109,7 +109,7 @@ services:
         - "/v1/audio/transcriptions"
       translation:
         - "/v1/audio/translations"
-    inferenceURL: "http://kevent-transcription-predictor.default.svc.cluster.local"
+    inferenceURL: "http://GatewAI-transcription-predictor.default.svc.cluster.local"
     acceptedExts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     maxFileSizeMB: 500
 
@@ -119,7 +119,7 @@ services:
     operations:
       rerank:
         - "/rerank"
-    inferenceURL: "http://kevent-reranker-predictor.default.svc.cluster.local"
+    inferenceURL: "http://GatewAI-reranker-predictor.default.svc.cluster.local"
     # No relay queue — sync-direct mode only
 ```
 
@@ -344,28 +344,28 @@ metrics:
 
 | Metric | Type | Labels |
 |---|---|---|
-| `kevent_requests_total` | counter | `mode`, `service_type`, `model`, `status` |
-| `kevent_request_duration_seconds` | histogram | `mode`, `service_type`, `model` |
-| `kevent_sync_wait_duration_seconds` | histogram | `service_type`, `model` |
-| `kevent_sync_jobs_in_flight` | gauge | — |
-| `kevent_s3_operation_duration_seconds` | histogram | `operation` |
-| `kevent_s3_errors_total` | counter | `operation` |
-| `kevent_kafka_publish_duration_seconds` | histogram | `topic` |
-| `kevent_kafka_publish_errors_total` | counter | `topic` |
-| `kevent_redis_operation_duration_seconds` | histogram | `operation` |
-| `kevent_redis_errors_total` | counter | `operation` |
-| `kevent_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` |
-| `kevent_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` |
-| `kevent_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` |
-| `kevent_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` |
-| `kevent_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` |
-| `kevent_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` |
-| `kevent_cache_hits_total` | counter | `service_type`, `model` |
-| `kevent_cache_misses_total` | counter | `service_type`, `model` |
-| `kevent_cache_errors_total` | counter | `service_type`, `model`, `operation` |
-| `kevent_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` |
-| `kevent_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type`, `consumer` |
-| `kevent_ratelimit_errors_total` | counter | `service_type` |
+| `GatewAI_requests_total` | counter | `mode`, `service_type`, `model`, `status` |
+| `GatewAI_request_duration_seconds` | histogram | `mode`, `service_type`, `model` |
+| `GatewAI_sync_wait_duration_seconds` | histogram | `service_type`, `model` |
+| `GatewAI_sync_jobs_in_flight` | gauge | — |
+| `GatewAI_s3_operation_duration_seconds` | histogram | `operation` |
+| `GatewAI_s3_errors_total` | counter | `operation` |
+| `GatewAI_kafka_publish_duration_seconds` | histogram | `topic` |
+| `GatewAI_kafka_publish_errors_total` | counter | `topic` |
+| `GatewAI_redis_operation_duration_seconds` | histogram | `operation` |
+| `GatewAI_redis_errors_total` | counter | `operation` |
+| `GatewAI_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` |
+| `GatewAI_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` |
+| `GatewAI_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` |
+| `GatewAI_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` |
+| `GatewAI_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` |
+| `GatewAI_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` |
+| `GatewAI_cache_hits_total` | counter | `service_type`, `model` |
+| `GatewAI_cache_misses_total` | counter | `service_type`, `model` |
+| `GatewAI_cache_errors_total` | counter | `service_type`, `model`, `operation` |
+| `GatewAI_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` |
+| `GatewAI_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type`, `consumer` |
+| `GatewAI_ratelimit_errors_total` | counter | `service_type` |
 
 ### Relay sidecar metrics
 
@@ -373,16 +373,16 @@ The relay sidecar exposes its own `/metrics` endpoint (scraped separately, e.g. 
 
 | Metric | Type | Labels |
 |---|---|---|
-| `kevent_relay_jobs_total` | counter | `service_type`, `status` |
-| `kevent_relay_inference_duration_seconds` | histogram | `service_type` |
-| `kevent_relay_input_size_bytes` | histogram | `service_type` |
-| `kevent_relay_sync_priority` | gauge | — |
-| `kevent_relay_deferred_total` | counter | — |
-| `kevent_relay_s3_operation_duration_seconds` | histogram | `operation` |
-| `kevent_relay_s3_errors_total` | counter | `operation` |
-| `kevent_relay_kafka_publish_errors_total` | counter | — |
-| `kevent_relay_proxy_requests_total` | counter | `service_type`, `status` |
-| `kevent_relay_proxy_duration_seconds` | histogram | `service_type` |
+| `GatewAI_relay_jobs_total` | counter | `service_type`, `status` |
+| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type` |
+| `GatewAI_relay_input_size_bytes` | histogram | `service_type` |
+| `GatewAI_relay_sync_priority` | gauge | — |
+| `GatewAI_relay_deferred_total` | counter | — |
+| `GatewAI_relay_s3_operation_duration_seconds` | histogram | `operation` |
+| `GatewAI_relay_s3_errors_total` | counter | `operation` |
+| `GatewAI_relay_kafka_publish_errors_total` | counter | — |
+| `GatewAI_relay_proxy_requests_total` | counter | `service_type`, `status` |
+| `GatewAI_relay_proxy_duration_seconds` | histogram | `service_type` |
 
 ## Strimzi KafkaUser
 
@@ -393,7 +393,7 @@ The gateway requires a `KafkaUser` in the `infra-kafka` namespace:
 apiVersion: kafka.strimzi.io/v1beta2
 kind: KafkaUser
 metadata:
-  name: kevent-gateway
+  name: gatewai-gateway
 spec:
   authentication:
     type: scram-sha-512
@@ -402,11 +402,11 @@ spec:
     acls:
       - resource: { type: topic, name: jobs., patternType: prefix }
         operations: [Read, Write, Describe, Create]
-      - resource: { type: group, name: kevent-gateway, patternType: prefix }
+      - resource: { type: group, name: gatewai-gateway, patternType: prefix }
         operations: [Read]
 ```
 
-The generated secret (`kevent-gateway` in `infra-kafka`) must be copied to the gateway namespace and referenced via `kafka.sasl.existingSecret`, or its password extracted and passed via `kafka.sasl.password`.
+The generated secret (`gatewai-gateway` in `infra-kafka`) must be copied to the gateway namespace and referenced via `kafka.sasl.existingSecret`, or its password extracted and passed via `kafka.sasl.password`.
 
 ## Upgrade notes
 
@@ -447,7 +447,7 @@ The generated secret (`kevent-gateway` in `infra-kafka`) must be copied to the g
 
 ### 0.7.0 → 0.8.0
 
-**Breaking change:** LLM metrics now include a `backend_model` label. Existing PromQL queries and dashboard panels targeting `kevent_llm_requests_total`, `kevent_llm_request_duration_seconds`, `kevent_llm_tokens_total`, or `kevent_llm_tokens_per_request` must be updated to include `backend_model` in `by`/`without` clauses, or use `{backend_model=~".*"}` as a wildcard.
+**Breaking change:** LLM metrics now include a `backend_model` label. Existing PromQL queries and dashboard panels targeting `GatewAI_llm_requests_total`, `GatewAI_llm_request_duration_seconds`, `GatewAI_llm_tokens_total`, or `GatewAI_llm_tokens_per_request` must be updated to include `backend_model` in `by`/`without` clauses, or use `{backend_model=~".*"}` as a wildcard.
 
 - **Multi-backend routing** — `backends[]` list per service with weighted-random primary selection, automatic fallback on 5xx/network error, and `weight: 0` for last-resort backends
 - **Per-backend `model` override** — `backends[].model` overrides `backendModel` for a specific backend; enables canary deployments with different model versions

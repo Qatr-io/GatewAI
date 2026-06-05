@@ -15,20 +15,20 @@ Clients are receiving errors. Async job submissions or sync inference calls are 
 
 ```bash
 # Error rate by mode and service_type
-rate(kevent_requests_total{status=~"5.."}[5m])
+rate(GatewAI_requests_total{status=~"5.."}[5m])
 
 # Check gateway pod logs
-kubectl logs -l app.kubernetes.io/name=kevent-gateway -n <namespace> --tail=100
+kubectl logs -l app.kubernetes.io/name=gatewai-gateway -n <namespace> --tail=100
 
 # Check which status codes are returned
 sum by (status, mode, service_type) (
-  rate(kevent_requests_total[5m])
+  rate(GatewAI_requests_total[5m])
 )
 ```
 
 Common causes:
-- S3 unavailable → check `kevent_s3_errors_total`
-- Redis unavailable → check `kevent_redis_errors_total`, gateway logs will show connection errors
+- S3 unavailable → check `GatewAI_s3_errors_total`
+- Redis unavailable → check `GatewAI_redis_errors_total`, gateway logs will show connection errors
 - Upstream inference service returning errors (sync mode)
 
 ## Mitigation

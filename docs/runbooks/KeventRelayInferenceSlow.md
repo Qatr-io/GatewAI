@@ -18,14 +18,14 @@ The 95th percentile inference duration exceeds the configured threshold (default
 # p50 / p95 / p99 inference duration by service_type
 histogram_quantile(0.95,
   sum by (service_type, le) (
-    rate(kevent_relay_inference_duration_seconds_bucket[10m])
+    rate(GatewAI_relay_inference_duration_seconds_bucket[10m])
   )
 )
 
 # Input file size distribution (large files = expected slow inference)
 histogram_quantile(0.95,
   sum by (service_type, le) (
-    rate(kevent_relay_input_size_bytes_bucket[10m])
+    rate(GatewAI_relay_input_size_bytes_bucket[10m])
   )
 )
 

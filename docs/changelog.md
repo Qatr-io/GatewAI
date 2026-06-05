@@ -15,9 +15,9 @@ Versioning: each component is versioned independently — see tag conventions be
 |---|---|---|
 | Gateway (binary + Docker) | `gateway/vX.Y.Z` | `gateway/v0.2.5` |
 | Relay (binary + Docker) | `relay/vX.Y.Z` | `relay/v0.2.5` |
-| Helm chart | auto-tagged by chart-releaser | `kevent-gateway-0.2.0` |
+| Helm chart | auto-tagged by chart-releaser | `gatewai-gateway-0.2.0` |
 
 ---
 
 !!! note
-    For the full changelog, see [CHANGELOG.md](https://github.com/IA-Generative/kevent-ai/blob/main/CHANGELOG.md) on GitHub.
+    For the full changelog, see [CHANGELOG.md](https://github.com/Qatr-io/GatewAI/blob/main/CHANGELOG.md) on GitHub.

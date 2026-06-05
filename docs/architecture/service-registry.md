@@ -93,7 +93,7 @@ For sync-direct services whose backend requires authentication, add `inference_h
   operations:
     rerank:
       - "/rerank"
-  inference_url: "http://kevent-reranker-predictor.svc.cluster.local"
+  inference_url: "http://GatewAI-reranker-predictor.svc.cluster.local"
   inference_headers:
     Authorization: "Bearer ${RERANKER_API_KEY}"
 ```

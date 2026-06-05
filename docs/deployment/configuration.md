@@ -22,7 +22,7 @@ When set to a non-empty header name (e.g. `X-Consumer-Username`, typically injec
 - The consumer name is stored in the job record (`consumer_name` field in Redis).
 - A Redis sorted set `consumer:{name}:jobs` is maintained per consumer (score = creation timestamp, same TTL as the job). Used by `GET /jobs`.
 - `GET /jobs/{service_type}/{id}` enforces **ownership**: if the header is present in the request, `job.consumer_name` must match — returns `404` on mismatch (no information leak about other consumers' jobs).
-- `kevent_jobs_by_consumer_total{mode, service_type, model, consumer}` is incremented per submission.
+- `GatewAI_jobs_by_consumer_total{mode, service_type, model, consumer}` is incremented per submission.
 
 Leave empty in deployments without upstream authentication — no behaviour change, zero overhead.
 
@@ -51,7 +51,7 @@ metrics:
 
 ### `top_consumers`
 
-When set to a positive integer, enables Redis sorted-set tracking of per-consumer LLM token usage. A background goroutine reads the top-N consumers every 60 seconds (and immediately at startup) and exposes them as `kevent_llm_consumer_tokens_top{consumer, user_type, type}`.
+When set to a positive integer, enables Redis sorted-set tracking of per-consumer LLM token usage. A background goroutine reads the top-N consumers every 60 seconds (and immediately at startup) and exposes them as `GatewAI_llm_consumer_tokens_top{consumer, user_type, type}`.
 
 Only suitable when `server.consumer_header` is configured. Requires `server.user_type_header` for `user_type` labelling.
 
@@ -97,7 +97,7 @@ s3:
   region: "${S3_REGION:-fr-par}"
   access_key: "${S3_ACCESS_KEY}"
   secret_key: "${S3_SECRET_KEY}"
-  bucket: "${S3_BUCKET:-kevent-jobs}"
+  bucket: "${S3_BUCKET:-GatewAI-jobs}"
 ```
 
 ## Encryption

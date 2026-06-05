@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository overview
 
-**kevent** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Kafka jobs, and returns results asynchronously. A relay Deployment runs alongside each inference pod, pulling jobs from Kafka, calling the local inference model, and publishing results back.
+**GatewAI** is an AI inference job gateway for Kubernetes. It exposes an HTTP API that accepts file uploads, enqueues them as Kafka jobs, and returns results asynchronously. A relay Deployment runs alongside each inference pod, pulling jobs from Kafka, calling the local inference model, and publishing results back.
 
 Two independent Go modules (separate `go.mod`, separate Docker images):
-- **Gateway** — root module `kevent/gateway`, entry point `cmd/gateway/main.go`
-- **Relay** — module `kevent/relay` in `./relay/`, entry point `relay/cmd/relay/main.go`
+- **Gateway** — root module `gatewai/gateway`, entry point `cmd/gateway/main.go`
+- **Relay** — module `gatewai/relay` in `./relay/`, entry point `relay/cmd/relay/main.go`
 
 ## Build commands
 
@@ -56,8 +56,8 @@ git push origin develop
 ```
 
 Images:
-- Gateway:    `ghcr.io/ia-generative/kevent-ai/gateway:vX.Y.Z`
-- Relay: `ghcr.io/ia-generative/kevent-ai/relay:vX.Y.Z`
+- Gateway:    `ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z`
+- Relay: `ghcr.io/qatr-io/gatewai/relay:vX.Y.Z`
 
 Current tags: gateway `v0.13.0`, relay `v0.6.0`.
 
@@ -156,14 +156,14 @@ Broker: `default-kafka-bootstrap.infra-kafka.svc.cluster.local:9093` (SASL_SSL, 
 
 ### Strimzi KafkaUsers (`k8s/kafka-users.yaml`)
 
-- `kevent-gateway` (namespace `infra-kafka`) — Write/Read on `jobs.*` topics, Read on `kevent-gateway*` groups
-- `kevent-relay` (namespace `infra-kafka`) — Read on `jobs.*` topics, **Read + Describe + Delete** on `inference-*` groups (Delete is required by the Knative controller for ConsumerGroup finalization), Write on `jobs.*` topics
+- `gatewai-gateway` (namespace `infra-kafka`) — Write/Read on `jobs.*` topics, Read on `gatewai-gateway*` groups
+- `gatewai-relay` (namespace `infra-kafka`) — Read on `jobs.*` topics, **Read + Describe + Delete** on `inference-*` groups (Delete is required by the Knative controller for ConsumerGroup finalization), Write on `jobs.*` topics
 
 ### Secret hygiene
 
-Strimzi-generated secrets (e.g. `kevent-relay-kafka`) must not have trailing newlines in values. The Knative KafkaSource controller does exact string comparison on `sasl-type` — a `\n` suffix causes `[protocol SASL_SSL] unsupported SASL mechanism`. Verify with:
+Strimzi-generated secrets (e.g. `gatewai-relay-kafka`) must not have trailing newlines in values. The Knative KafkaSource controller does exact string comparison on `sasl-type` — a `\n` suffix causes `[protocol SASL_SSL] unsupported SASL mechanism`. Verify with:
 ```bash
-kubectl get secret kevent-relay-kafka -n default \
+kubectl get secret gatewai-relay-kafka -n default \
   -o jsonpath='{.data.sasl-type}' | base64 -d | xxd
 ```
 
@@ -186,16 +186,16 @@ kubectl get secret kevent-relay-kafka -n default \
 
 Helm chart deploys the gateway with Redis-HA (HAProxy front-end). The relay runs as a standalone Deployment alongside the inference pod (see `k8s/deployment-transcription.yaml`), not managed by Helm.
 
-The Helm chart is published to GitHub Pages at `https://ia-generative.github.io/kevent-ai` (auto-updated on push to `main` when `helm/` changes). The `gh-pages` branch must exist in the repository.
+The Helm chart is published to GitHub Pages at `https://ia-generative.github.io/GatewAI` (auto-updated on push to `main` when `helm/` changes). The `gh-pages` branch must exist in the repository.
 
 ```bash
 # Add Helm repo
-helm repo add kevent https://ia-generative.github.io/kevent-ai
+helm repo add GatewAI https://ia-generative.github.io/GatewAI
 helm repo update
-helm install kevent-gateway kevent/kevent-gateway -f values.yaml
+helm install gatewai-gateway GatewAI/gatewai-gateway -f values.yaml
 
 # Or deploy from local sources
-helm upgrade --install kevent-gateway ./helm/gateway -f values.yaml
+helm upgrade --install gatewai-gateway ./helm/gateway -f values.yaml
 
 # Apply Strimzi users (namespace infra-kafka)
 kubectl apply -f k8s/kafka-users.yaml -n infra-kafka
