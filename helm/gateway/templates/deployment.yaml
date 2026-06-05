@@ -1,18 +1,18 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "kevent-gateway.fullname" . }}
+  name: {{ include "gatewai-gateway.fullname" . }}
   labels:
-    {{- include "kevent-gateway.labels" . | nindent 4 }}
+    {{- include "gatewai-gateway.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
   selector:
     matchLabels:
-      {{- include "kevent-gateway.selectorLabels" . | nindent 6 }}
+      {{- include "gatewai-gateway.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       labels:
-        {{- include "kevent-gateway.selectorLabels" . | nindent 8 }}
+        {{- include "gatewai-gateway.selectorLabels" . | nindent 8 }}
       annotations:
         # checksum/config is only set when configReloader is disabled.
         # When configReloader is enabled, it hot-reloads the config via POST /-/reload
@@ -37,24 +37,24 @@ spec:
               protocol: TCP
           env:
             - name: CONFIG_PATH
-              value: /etc/kevent/config.yaml
+              value: /etc/gatewai/config.yaml
             # Les credentials S3 sont injectés depuis le Secret et expansés
             # par os.Expand au démarrage (syntaxe ${VAR} dans config.yaml).
             - name: S3_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kevent-gateway.s3SecretName" . }}
+                  name: {{ include "gatewai-gateway.s3SecretName" . }}
                   key: S3_ACCESS_KEY
             - name: S3_SECRET_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kevent-gateway.s3SecretName" . }}
+                  name: {{ include "gatewai-gateway.s3SecretName" . }}
                   key: S3_SECRET_KEY
             {{- if or .Values.encryption.key .Values.encryption.existingSecret }}
             - name: ENCRYPTION_KEY
               valueFrom:
                 secretKeyRef:
-                  name: {{ include "kevent-gateway.encryptionSecretName" . }}
+                  name: {{ include "gatewai-gateway.encryptionSecretName" . }}
                   key: ENCRYPTION_KEY
             {{- end }}
             {{- with .Values.extraEnvVars }}
@@ -62,7 +62,7 @@ spec:
             {{- end }}
           volumeMounts:
             - name: config
-              mountPath: /etc/kevent
+              mountPath: /etc/gatewai
               readOnly: true
           livenessProbe:
             httpGet:
@@ -85,18 +85,18 @@ spec:
         - name: config-reloader
           image: "{{ .Values.configReloader.image }}"
           args:
-            - --volume-dir=/etc/kevent
+            - --volume-dir=/etc/gatewai
             - --webhook-url=http://localhost:8080/-/reload
             - --web.listen-address=:{{ .Values.configReloader.listenPort }}
           volumeMounts:
             - name: config
-              mountPath: /etc/kevent
+              mountPath: /etc/gatewai
               readOnly: true
         {{- end }}
       volumes:
         - name: config
           configMap:
-            name: {{ include "kevent-gateway.configMapName" . }}
+            name: {{ include "gatewai-gateway.configMapName" . }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

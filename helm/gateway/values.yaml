@@ -1,7 +1,7 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/ia-generative/kevent-ai/gateway
+  repository: ghcr.io/qatr-io/gatewai/gateway
   tag: "v0.14.1"
   pullPolicy: IfNotPresent
 
@@ -16,11 +16,11 @@ ingress:
   className: "nginx"
   annotations: {}
     # cert-manager.io/cluster-issuer: letsencrypt-prod
-  host: api.kevent.example.com
+  host: api.gatewai.example.com
   tls: []
-  #  - secretName: kevent-gateway-tls
+  #  - secretName: gatewai-gateway-tls
   #    hosts:
-  #      - api.kevent.example.com
+  #      - api.gatewai.example.com
 
 # ── Configuration ────────────────────────────────────────────────────────────
 config:
@@ -33,7 +33,7 @@ config:
 s3:
   endpoint: "https://s3.fr-par.scw.cloud"
   region: "fr-par"
-  bucket: "test-kevent-jobs"
+  bucket: "test-gatewai-jobs"
   # Option A : fournir les credentials directement (créé un Secret dans le cluster)
   accessKey: ""
   secretKey: ""
@@ -78,7 +78,7 @@ services:
         - "/v1/audio/transcriptions"
       translation:
         - "/v1/audio/translations"
-    inferenceURL: "http://kevent-transcription-predictor.default.svc.cluster.local"
+    inferenceURL: "http://gatewai-transcription-predictor.default.svc.cluster.local"
     acceptedExts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     maxFileSizeMB: 500
 
@@ -89,7 +89,7 @@ services:
       ocr:
         - "/v1/ocr"
         - "/v1/vision/ocr"
-    inferenceURL: "http://kevent-ocr-predictor.default.svc.cluster.local"
+    inferenceURL: "http://gatewai-ocr-predictor.default.svc.cluster.local"
     acceptedExts: [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     maxFileSizeMB: 50
 
@@ -132,7 +132,7 @@ services:
   #   operations:
   #     rerank:
   #       - "/rerank"
-  #   inferenceURL: "http://kevent-reranker-predictor.default.svc.cluster.local"
+  #   inferenceURL: "http://gatewai-reranker-predictor.default.svc.cluster.local"
   #   # Pas de inputTopic / resultTopic → sync-direct uniquement
   #
   #   # Headers injectés sur chaque requête vers le backend (sync-direct uniquement).
@@ -209,7 +209,7 @@ alerting:
     # Exemple : release: kube-prometheus-stack
     additionalLabels: {}
     # URL de base des runbooks. Les URLs finales seront <runbookBaseURL>/<AlertName>.
-    runbookBaseURL: "https://ia-generative.github.io/kevent-ai/runbooks"
+    runbookBaseURL: "https://ia-generative.github.io/gatewai-ai/runbooks"
     # Seuils modifiables par alerte.
     thresholds:
       # Taux d'erreur gateway (0.05 = 5%)
@@ -224,12 +224,12 @@ alerting:
       relayInferenceP95Seconds: 120
       # Taux de rejet rate limit (0.20 = 20% des requêtes rejetées sur un service)
       rateLimitRejectionRateWarning: 0.20
-    # Règles supplémentaires ajoutées au groupe kevent-relay.
+    # Règles supplémentaires ajoutées au groupe gatewai-relay.
     extraRules: []
     # Exemple :
     # extraRules:
     #   - alert: MyCustomAlert
-    #     expr: kevent_relay_deferred_total > 100
+    #     expr: gatewai_relay_deferred_total > 100
     #     for: 5m
     #     labels:
     #       severity: warning

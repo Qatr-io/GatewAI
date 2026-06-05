@@ -1,6 +1,6 @@
 apiVersion: v2
-name: kevent-gateway
-description: API gateway for kevent inference jobs
+name: gatewai-gateway
+description: API gateway for GatewAI inference jobs
 type: application
 version: 0.14.1
 appVersion: "v0.14.1"
