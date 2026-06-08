@@ -314,3 +314,54 @@ func TestLoad_Validate_SyncOnlyService(t *testing.T) {
 		t.Errorf("sync-only service should load successfully, got: %v", err)
 	}
 }
+
+func TestLoad_TokenRateWithoutPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: test
+rate_limits:
+  llm:
+    user:
+      token_rate: 100000
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when token_rate is set without token_period")
+	}
+}
+
+func TestLoad_TokenRateWithPeriod_OK(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: test
+rate_limits:
+  llm:
+    user:
+      token_rate: 100000
+      token_period: 1h
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.RateLimits["llm"]["user"].TokenRate != 100000 {
+		t.Errorf("TokenRate: expected 100000, got %d", cfg.RateLimits["llm"]["user"].TokenRate)
+	}
+	if cfg.RateLimits["llm"]["user"].TokenPeriod != "1h" {
+		t.Errorf("TokenPeriod: expected 1h, got %q", cfg.RateLimits["llm"]["user"].TokenPeriod)
+	}
+}

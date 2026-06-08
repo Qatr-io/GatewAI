@@ -35,10 +35,14 @@ type AuditLogConfig struct {
 	Prompt bool `yaml:"prompt"`
 }
 
-// RateLimitConfig defines the allowed request rate for a (service, user-type) pair.
+// RateLimitConfig defines the allowed rate for a (service, user-type) pair.
+// Set Rate+Period for request-count limiting, TokenRate+TokenPeriod for token
+// budget limiting. Both can coexist; either can be omitted (0 = disabled).
 type RateLimitConfig struct {
-	Rate   int    `yaml:"rate"`   // max requests per Period
-	Period string `yaml:"period"` // e.g. "1m", "1h", "24h"
+	Rate        int    `yaml:"rate"`         // max requests per Period (0 = disabled)
+	Period      string `yaml:"period"`       // e.g. "1m", "1h", "24h"
+	TokenRate   int    `yaml:"token_rate"`   // max total tokens per TokenPeriod (0 = disabled)
+	TokenPeriod string `yaml:"token_period"` // e.g. "1h", "24h"
 }
 
 // MetricsConfig controls optional high-cardinality metric features.
@@ -316,6 +320,13 @@ func (c *Config) validate() error {
 	for _, svc := range c.Services {
 		if svc.Type == "" {
 			return fmt.Errorf("a service has an empty type")
+		}
+	}
+	for svcType, userLimits := range c.RateLimits {
+		for userType, limit := range userLimits {
+			if limit.TokenRate > 0 && limit.TokenPeriod == "" {
+				return fmt.Errorf("rate_limits[%s][%s]: token_rate requires token_period", svcType, userType)
+			}
 		}
 	}
 	validProviders := map[string]bool{"openai": true, "anthropic": true, "ollama": true, "passthrough": true}
