@@ -53,6 +53,14 @@ type Checker interface {
 	Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 }
 
+// TokenChecker is the interface for token-budget rate limiting implemented by Limiter.
+type TokenChecker interface {
+	// CheckTokens returns whether the caller still has token budget. Fail-open on Redis errors.
+	CheckTokens(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
+	// AddTokens records total tokens consumed into the current window counter.
+	AddTokens(ctx context.Context, r *http.Request, serviceType string, total int) error
+}
+
 // Limiter checks rate limits using Redis fixed-window counters.
 type Limiter struct {
 	rdb            *redis.Client
