@@ -92,6 +92,11 @@ type S3Config struct {
 	AccessKey string `yaml:"access_key"`
 	SecretKey string `yaml:"secret_key"`
 	Bucket    string `yaml:"bucket"`
+	// CABundle is an optional path to a PEM file containing one or more CA
+	// certificates used to verify the S3 endpoint's TLS certificate.
+	// Required when the endpoint uses a private or self-signed CA.
+	// Empty (default) uses the system certificate pool.
+	CABundle string `yaml:"ca_bundle"`
 }
 
 type RedisConfig struct {
