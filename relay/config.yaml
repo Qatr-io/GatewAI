@@ -15,6 +15,10 @@ s3:
   access_key: "${S3_ACCESS_KEY}"
   secret_key: "${S3_SECRET_KEY}"
   bucket:     "${S3_BUCKET:-gatewai-jobs}"
+  # ca_bundle: path to a PEM file with CA certificates for the S3 endpoint TLS verification.
+  # Required when the endpoint uses a private or self-signed CA.
+  # Set via S3_CA_BUNDLE (mounted ConfigMap/Secret). Empty = system certificate pool.
+  ca_bundle:  "${S3_CA_BUNDLE:-}"
 
 # Inference service endpoint. For Job deployments, set INFERENCE_BASE_URL to the InferenceService cluster URL.
 # INFERENCE_PORT is the port of the model server in the pod.

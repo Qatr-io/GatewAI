@@ -34,6 +34,11 @@ s3:
   access_key: "${S3_ACCESS_KEY}"    # Scaleway API Access Key ID
   secret_key: "${S3_SECRET_KEY}"    # Scaleway API Secret Key
   bucket: "${S3_BUCKET:-gatewai-jobs}"
+  # ca_bundle: path to a PEM file with CA certificates for the S3 endpoint TLS verification.
+  # Required when the endpoint uses a private or self-signed CA.
+  # Set via S3_CA_BUNDLE (injected by Helm when s3.caBundle or s3.existingCAConfigMap is configured).
+  # Empty (default) = system certificate pool.
+  ca_bundle: "${S3_CA_BUNDLE:-}"
 
 encryption:
   # AES-256-GCM at-rest encryption for S3 objects.

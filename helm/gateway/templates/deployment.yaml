@@ -57,6 +57,10 @@ spec:
                   name: {{ include "gatewai-gateway.encryptionSecretName" . }}
                   key: ENCRYPTION_KEY
             {{- end }}
+            {{- if .Values.s3.existingCABundle }}
+            - name: S3_CA_BUNDLE
+              value: /etc/ssl/s3-ca/{{ .Values.s3.existingCABundleKey }}
+            {{- end }}
             {{- with .Values.extraEnvVars }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -64,6 +68,11 @@ spec:
             - name: config
               mountPath: /etc/gatewai
               readOnly: true
+            {{- if .Values.s3.existingCABundle }}
+            - name: s3-ca
+              mountPath: /etc/ssl/s3-ca
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /health
@@ -97,6 +106,11 @@ spec:
         - name: config
           configMap:
             name: {{ include "gatewai-gateway.configMapName" . }}
+        {{- if .Values.s3.existingCABundle }}
+        - name: s3-ca
+          configMap:
+            name: {{ .Values.s3.existingCABundle }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
