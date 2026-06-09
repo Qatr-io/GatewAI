@@ -47,7 +47,9 @@ func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client
 		Credentials: aws.NewCredentialsCache(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		),
-		UsePathStyle: cfg.UsePathStyle,
+		UsePathStyle:               cfg.UsePathStyle,
+		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	}
 
 	tlsCfg := &tls.Config{}
