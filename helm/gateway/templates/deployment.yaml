@@ -108,8 +108,8 @@ spec:
             name: {{ include "gatewai-gateway.configMapName" . }}
         {{- if .Values.s3.existingCABundle }}
         - name: s3-ca
-          configMap:
-            name: {{ .Values.s3.existingCABundle }}
+          secret:
+            secretName: {{ .Values.s3.existingCABundle }}
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

@@ -41,11 +41,11 @@ s3:
   #   Le Secret doit contenir les clés S3_ACCESS_KEY et S3_SECRET_KEY.
   existingSecret: ""
   # CA bundle pour la vérification TLS de l'endpoint S3 (CA privé ou auto-signé).
-  # Référencer un ConfigMap ou Secret existant contenant le certificat PEM.
+  # Référencer un Secret existant contenant le certificat PEM.
   # Le volume est monté sous /etc/ssl/s3-ca/ et S3_CA_BUNDLE est injecté automatiquement.
   # Laisser vide pour utiliser le pool système (défaut).
-  existingCABundle: ""      # nom du ConfigMap ou Secret
-  existingCABundleKey: "ca.crt"  # clé dans le ConfigMap/Secret
+  existingCABundle: ""      # nom du Secret
+  existingCABundleKey: "ca.crt"  # clé dans le Secret
 
 # ── Chiffrement at-rest (S3) ──────────────────────────────────────────────────
 # Clé AES-256-GCM partagée entre le gateway et tous les relay sidecars.
