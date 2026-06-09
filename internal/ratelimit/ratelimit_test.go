@@ -2,8 +2,10 @@ package ratelimit_test
 
 import (
 	"context"
+	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -168,6 +170,135 @@ func TestCheck_NoUserTypeHeader_UsesFallback(t *testing.T) {
 	res2, _ := l.Check(context.Background(), r2, "audio")
 	if res2.Allowed {
 		t.Fatal("second request should be rejected by fallback limit")
+	}
+}
+
+func TestCheckTokens_NoConfig_Allowed(t *testing.T) {
+	l, _ := newLimiter(t, nil, "", "X-User-Type")
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	res, err := l.CheckTokens(context.Background(), r, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected allowed when no config for service type")
+	}
+}
+
+func TestCheckTokens_ZeroTokenRate_AlwaysAllowed(t *testing.T) {
+	l, _ := newLimiter(t, map[string]map[string]config.RateLimitConfig{
+		"llm": {"*": {TokenRate: 0, TokenPeriod: "1h"}},
+	}, "", "X-User-Type")
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	for i := 0; i < 5; i++ {
+		res, err := l.CheckTokens(context.Background(), r, "llm")
+		if err != nil {
+			t.Fatalf("iteration %d: unexpected error: %v", i, err)
+		}
+		if !res.Allowed {
+			t.Fatalf("iteration %d: expected allowed when token_rate=0", i)
+		}
+	}
+}
+
+func TestAddTokens_ThenCheckTokens_BudgetEnforced(t *testing.T) {
+	const limit = 1000
+	l, _ := newLimiter(t, map[string]map[string]config.RateLimitConfig{
+		"llm": {"*": {TokenRate: limit, TokenPeriod: "1h"}},
+	}, "", "X-User-Type")
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	// Consume 900 — within budget.
+	if err := l.AddTokens(context.Background(), r, "llm", 900); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := l.CheckTokens(context.Background(), r, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected allowed after 900/1000 tokens consumed")
+	}
+	if res.Limit != limit {
+		t.Fatalf("expected Limit=%d, got %d", limit, res.Limit)
+	}
+	if res.Remaining != 100 {
+		t.Fatalf("expected Remaining=100, got %d", res.Remaining)
+	}
+
+	// Consume 200 more → total 1100, over limit.
+	if err := l.AddTokens(context.Background(), r, "llm", 200); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err = l.CheckTokens(context.Background(), r, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected rejected after exceeding token budget")
+	}
+	if res.Remaining != 0 {
+		t.Fatalf("expected Remaining=0 on rejection, got %d", res.Remaining)
+	}
+	if res.ResetAfter <= 0 {
+		t.Fatal("expected positive ResetAfter on rejection")
+	}
+}
+
+func TestAddTokens_SetsWindowTTL(t *testing.T) {
+	l, mr := newLimiter(t, map[string]map[string]config.RateLimitConfig{
+		"llm": {"*": {TokenRate: 5000, TokenPeriod: "1h"}},
+	}, "", "X-User-Type")
+	r := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	if err := l.AddTokens(context.Background(), r, "llm", 100); err != nil {
+		t.Fatal(err)
+	}
+
+	ttl := mr.TTL("trl:anonymous:llm:*")
+	if ttl <= time.Duration(0) {
+		t.Fatalf("expected positive TTL after first AddTokens, got %v", ttl)
+	}
+}
+
+func TestCheckTokens_UserTypeMatchAndFallback(t *testing.T) {
+	l, _ := newLimiter(t, map[string]map[string]config.RateLimitConfig{
+		"llm": {
+			"sa": {TokenRate: 1_000_000, TokenPeriod: "1h"},
+			"*":  {TokenRate: 10_000, TokenPeriod: "1h"},
+		},
+	}, "", "X-User-Type")
+
+	// "sa" → exact match.
+	rSA := httptest.NewRequest(http.MethodPost, "/", nil)
+	rSA.Header.Set("X-User-Type", "sa")
+	res, err := l.CheckTokens(context.Background(), rSA, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected sa user to be allowed")
+	}
+	if res.Limit != 1_000_000 {
+		t.Fatalf("expected Limit=1_000_000 for sa, got %d", res.Limit)
+	}
+
+	// "user" not listed → falls back to "*".
+	rUser := httptest.NewRequest(http.MethodPost, "/", nil)
+	rUser.Header.Set("X-User-Type", "user")
+	res, err = l.CheckTokens(context.Background(), rUser, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected unlisted user type to fall back to * and be allowed")
+	}
+	if res.Limit != 10_000 {
+		t.Fatalf("expected Limit=10_000 for fallback, got %d", res.Limit)
 	}
 }
 

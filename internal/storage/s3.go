@@ -2,8 +2,12 @@ package storage
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -60,6 +64,8 @@ func groupByJobID(objects []s3Object) map[string]S3JobEntry {
 
 // NewS3Client builds a standard S3 client from the provided config.
 // The BaseEndpoint field makes it compatible with any S3-compatible provider.
+// When cfg.CABundle is set, TLS verification uses the certificates in that PEM
+// file instead of (not in addition to) the system certificate pool.
 func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client, error) {
 	if cfg.AccessKey == "" || cfg.SecretKey == "" {
 		return nil, fmt.Errorf("s3: access_key and secret_key are required")
@@ -70,14 +76,32 @@ func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client
 		return nil, fmt.Errorf("s3: %w", err)
 	}
 
-	s3Client := s3.New(s3.Options{
+	opts := s3.Options{
 		BaseEndpoint: aws.String(cfg.Endpoint),
 		Region:       cfg.Region,
 		Credentials: aws.NewCredentialsCache(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		),
 		UsePathStyle: true,
-	})
+	}
+
+	if cfg.CABundle != "" {
+		pem, err := os.ReadFile(cfg.CABundle)
+		if err != nil {
+			return nil, fmt.Errorf("s3: reading CA bundle %q: %w", cfg.CABundle, err)
+		}
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(pem) {
+			return nil, fmt.Errorf("s3: no valid certificates found in %q", cfg.CABundle)
+		}
+		opts.HTTPClient = &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{RootCAs: pool},
+			},
+		}
+	}
+
+	s3Client := s3.New(opts)
 
 	return &S3Client{
 		s3:       s3Client,

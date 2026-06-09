@@ -16,6 +16,7 @@ import (
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 )
 
@@ -40,13 +41,15 @@ type Handler struct {
 	userTypeHeader string // HTTP header carrying consumer type (e.g. "X-User-Type")
 	tracker        metrics.ConsumerTracker
 	audit          AuditConfig
+	tokenLimiter   ratelimit.TokenChecker // nil = token rate limiting disabled
 }
 
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
 // userTypeHeader is the request header name for the consumer type (e.g. "X-User-Type");
 // empty disables user_type labelling. tracker records per-consumer token usage.
 // audit controls structured audit logging (disabled when audit.Enabled == false).
-func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, audit AuditConfig) *Handler {
+// tl is the optional token rate limiter; nil disables token budget enforcement.
+func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, audit AuditConfig, tl ratelimit.TokenChecker) *Handler {
 	return &Handler{
 		cache:          c,
 		providers:      p,
@@ -54,7 +57,36 @@ func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader st
 		userTypeHeader: userTypeHeader,
 		tracker:        tracker,
 		audit:          audit,
+		tokenLimiter:   tl,
 	}
+}
+
+// checkAndWriteTokenLimit checks the token budget for the request.
+// Returns true when the request is allowed to proceed. On rejection it writes
+// HTTP 429 (with X-TokenRateLimit-* headers) and returns false — callers must
+// return immediately.
+func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request, serviceType string) bool {
+	if h.tokenLimiter == nil {
+		return true
+	}
+	res, err := h.tokenLimiter.CheckTokens(r.Context(), r, serviceType)
+	if err != nil {
+		slog.WarnContext(r.Context(), "token rate limit check error", "error", err)
+	}
+	if res.Allowed {
+		return true
+	}
+	if res.Limit > 0 {
+		w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(res.Limit))
+		w.Header().Set("X-TokenRateLimit-Remaining", "0")
+		if res.ResetAfter > 0 {
+			secs := strconv.Itoa(int(res.ResetAfter.Seconds()))
+			w.Header().Set("X-TokenRateLimit-Reset", secs)
+			w.Header().Set("Retry-After", secs)
+		}
+	}
+	writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+	return false
 }
 
 // ServeJSON handles a JSON-body LLM request. It writes the response to w directly.
@@ -76,6 +108,10 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	// The SSE stream is piped directly to the client with per-chunk flushing.
 	if isStreamingRequest(body) {
 		h.serveStream(w, r, def, body, prov, consumer, userType, start)
+		return
+	}
+
+	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
 		return
 	}
 
@@ -115,6 +151,12 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			w.Header().Set("X-Cache", "HIT")
 			w.WriteHeader(entry.StatusCode)
 			_, _ = w.Write(entry.Body)
+			if h.tokenLimiter != nil && usage != nil {
+				total := usage.PromptTokens + usage.CompletionTokens
+				if total > 0 {
+					_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+				}
+			}
 			return
 		}
 		metrics.CacheMissesTotal.WithLabelValues(def.Type, def.Model).Inc()
@@ -228,6 +270,13 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	w.WriteHeader(finalStatus)
 	_, _ = w.Write(finalBody)
 
+	if h.tokenLimiter != nil && usage != nil {
+		total := usage.PromptTokens + usage.CompletionTokens
+		if total > 0 {
+			_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+		}
+	}
+
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
 		finalStatus, time.Since(start).Milliseconds(), false, body, usage)
 
@@ -307,6 +356,10 @@ func isStreamingRequest(body []byte) bool {
 // Backend retry is possible before w.WriteHeader; once the SSE stream starts,
 // switching backends is no longer possible.
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, prov provider.Provider, consumer, userType string, start time.Time) {
+	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
+		return
+	}
+
 	backends := service.OrderedBackends(def.Backends)
 	var resp *http.Response
 	var lastErr string

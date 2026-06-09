@@ -16,6 +16,15 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.15.1] — 2026-06-09
+
+#### Added
+
+- **S3 custom CA bundle**: `s3.ca_bundle` config field (env `S3_CA_BUNDLE`) — path to a PEM file with CA certificates for S3 TLS verification. Required when the S3 endpoint uses a private or self-signed CA. Defaults to the system certificate pool when unset.
+- **Helm**: `s3.existingCABundle` / `s3.existingCABundleKey` values — mounts a ConfigMap as a volume, sets `S3_CA_BUNDLE` env var automatically in the gateway Deployment.
+
+---
+
 ### [v0.15.0] — 2026-06-05
 
 #### Changed
@@ -571,6 +580,14 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [v0.7.1] — 2026-06-09
+
+#### Added
+
+- **S3 custom CA bundle**: `s3.ca_bundle` config field (env `S3_CA_BUNDLE`) — path to a PEM file with CA certificates for S3 TLS verification. Required when the S3 endpoint uses a private or self-signed CA. Defaults to the system certificate pool when unset.
+
+---
 
 ### [v0.7.0] — 2026-06-05
 
