@@ -36,9 +36,14 @@ s3:
   bucket: "${S3_BUCKET:-gatewai-jobs}"
   # ca_bundle: path to a PEM file with CA certificates for the S3 endpoint TLS verification.
   # Required when the endpoint uses a private or self-signed CA.
-  # Set via S3_CA_BUNDLE (injected by Helm when s3.caBundle or s3.existingCAConfigMap is configured).
+  # Set via S3_CA_BUNDLE (injected by Helm when s3.existingCABundle is configured).
   # Empty (default) = system certificate pool.
   ca_bundle: "${S3_CA_BUNDLE:-}"
+  # use_path_style: force path-style URLs (https://endpoint/bucket/key).
+  # Required for most S3-compatible providers (MinIO, Ceph, etc.). Default: true.
+  use_path_style: ${S3_USE_PATH_STYLE:-true}
+  # ssl_insecure: disable TLS certificate verification. Use only for development.
+  ssl_insecure: ${S3_SSL_INSECURE:-false}
 
 encryption:
   # AES-256-GCM at-rest encryption for S3 objects.

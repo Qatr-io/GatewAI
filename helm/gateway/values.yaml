@@ -46,6 +46,8 @@ s3:
   # Laisser vide pour utiliser le pool système (défaut).
   existingCABundle: ""      # nom du Secret
   existingCABundleKey: "ca.crt"  # clé dans le Secret
+  usePathStyle: true        # path-style URLs — requis pour la plupart des providers S3-compatibles
+  sslInsecure: false        # désactive la vérification TLS (développement uniquement)
 
 # ── Chiffrement at-rest (S3) ──────────────────────────────────────────────────
 # Clé AES-256-GCM partagée entre le gateway et tous les relay sidecars.

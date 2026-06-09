@@ -116,6 +116,14 @@ type S3Config struct {
 	// Required when the endpoint uses a private or self-signed CA.
 	// Empty (default) uses the system certificate pool.
 	CABundle string `yaml:"ca_bundle"`
+	// UsePathStyle forces path-style URLs (https://endpoint/bucket/key) instead
+	// of virtual-hosted style (https://bucket.endpoint/key).
+	// Required for most S3-compatible providers. Default: true.
+	UsePathStyle bool `yaml:"use_path_style"`
+	// SSLInsecure disables TLS certificate verification for the S3 endpoint.
+	// Use only in development or when the endpoint uses a self-signed cert
+	// and ca_bundle is not available.
+	SSLInsecure bool `yaml:"ssl_insecure"`
 }
 
 // Load reads, env-expands, and validates the YAML config at path.
