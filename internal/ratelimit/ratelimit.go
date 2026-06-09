@@ -53,6 +53,14 @@ type Checker interface {
 	Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 }
 
+// TokenChecker is the interface for token-budget rate limiting implemented by Limiter.
+type TokenChecker interface {
+	// CheckTokens returns whether the caller still has token budget. Fail-open on Redis errors.
+	CheckTokens(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
+	// AddTokens records total tokens consumed into the current window counter.
+	AddTokens(ctx context.Context, r *http.Request, serviceType string, total int) error
+}
+
 // Limiter checks rate limits using Redis fixed-window counters.
 type Limiter struct {
 	rdb            *redis.Client
@@ -60,6 +68,28 @@ type Limiter struct {
 	consumerHeader string
 	userTypeHeader string
 }
+
+// tokenCheckScript reads the current window token count.
+// Returns {count, TTL} — TTL is -1 when the budget is not exhausted.
+var tokenCheckScript = redis.NewScript(`
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+local limit  = tonumber(ARGV[1])
+if count >= limit then
+    return {count, redis.call('TTL', KEYS[1])}
+end
+return {count, -1}
+`)
+
+// tokenAddScript increments the window counter and sets TTL on the first write.
+var tokenAddScript = redis.NewScript(`
+local ttl   = tonumber(ARGV[1])
+local delta = tonumber(ARGV[2])
+local count = redis.call('INCRBY', KEYS[1], delta)
+if count == delta then
+    redis.call('EXPIRE', KEYS[1], ttl)
+end
+return count
+`)
 
 // script atomically increments the counter, sets the TTL on first access,
 // and returns {count, ttl} in all cases.
@@ -88,34 +118,44 @@ func New(
 	}
 }
 
-// Check evaluates the rate limit for the given request and service type.
-func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
-	typeLimits, ok := l.limits[serviceType]
-	if !ok {
-		return CheckResult{Allowed: true}, nil
-	}
-
-	consumer := "anonymous"
+// resolveIdentity returns the consumer ID, matched userType key, and the
+// RateLimitConfig entry for serviceType. Falls back to "*" when the request's
+// user-type header is absent or has no explicit entry.
+func (l *Limiter) resolveIdentity(r *http.Request, serviceType string) (consumer, userType string, cfg config.RateLimitConfig) {
+	consumer = "anonymous"
 	if l.consumerHeader != "" {
 		if v := r.Header.Get(l.consumerHeader); v != "" {
 			consumer = v
 		}
 	}
 
-	userType := "*"
+	userType = "*"
 	if l.userTypeHeader != "" {
 		if v := r.Header.Get(l.userTypeHeader); v != "" {
 			userType = v
 		}
 	}
 
-	// Exact match first, then "*" fallback.
-	rlCfg, ok := typeLimits[userType]
+	svcLimits, ok := l.limits[serviceType]
 	if !ok {
-		rlCfg, ok = typeLimits["*"]
-		if !ok {
-			return CheckResult{Allowed: true}, nil
-		}
+		return consumer, userType, config.RateLimitConfig{}
+	}
+	if c, ok := svcLimits[userType]; ok {
+		return consumer, userType, c
+	}
+	if c, ok := svcLimits["*"]; ok {
+		return consumer, "*", c
+	}
+	return consumer, userType, config.RateLimitConfig{}
+}
+
+// Check evaluates the rate limit for the given request and service type.
+func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
+	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
+
+	// No config for this service type → always allowed.
+	if _, ok := l.limits[serviceType]; !ok {
+		return CheckResult{Allowed: true}, nil
 	}
 
 	// rate: 0 is the sentinel for "no limit" — allow without touching Redis.
@@ -165,4 +205,87 @@ func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string
 		Remaining:  remaining,
 		ResetAfter: time.Duration(ttlSecs) * time.Second,
 	}, nil
+}
+
+// CheckTokens returns whether the caller still has token budget in the current
+// window. Allowed is always true when TokenRate is 0 (disabled). Fail-open on
+// Redis errors.
+func (l *Limiter) CheckTokens(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
+	consumer, userType, cfg := l.resolveIdentity(r, serviceType)
+	if cfg.TokenRate == 0 {
+		return CheckResult{Allowed: true}, nil
+	}
+
+	period, err := time.ParseDuration(cfg.TokenPeriod)
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		return CheckResult{Allowed: true}, fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	}
+
+	key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+
+	raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{key}, cfg.TokenRate).Slice()
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		return CheckResult{Allowed: true}, nil // fail-open
+	}
+
+	count := raw[0].(int64)
+	ttl := raw[1].(int64)
+
+	allowed := count < int64(cfg.TokenRate)
+	remaining := cfg.TokenRate - int(count)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	result := "allowed"
+	if !allowed {
+		result = "rejected"
+	}
+	metrics.TokenRatelimitCheckedTotal.WithLabelValues(serviceType, userType, result).Inc()
+
+	var resetAfter time.Duration
+	if !allowed {
+		if ttl > 0 {
+			resetAfter = time.Duration(ttl) * time.Second
+		} else {
+			resetAfter = period
+		}
+	}
+
+	return CheckResult{
+		Allowed:    allowed,
+		Limit:      cfg.TokenRate,
+		Remaining:  remaining,
+		ResetAfter: resetAfter,
+	}, nil
+}
+
+// AddTokens records total tokens consumed by the current request into the
+// window counter. No-op when TokenRate is 0 or total is 0. Fail-open on
+// Redis errors.
+func (l *Limiter) AddTokens(ctx context.Context, r *http.Request, serviceType string, total int) error {
+	if total == 0 {
+		return nil
+	}
+	consumer, userType, cfg := l.resolveIdentity(r, serviceType)
+	if cfg.TokenRate == 0 {
+		return nil
+	}
+
+	period, err := time.ParseDuration(cfg.TokenPeriod)
+	if err != nil {
+		return fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	}
+
+	key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+
+	if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
+		int(period.Seconds()),
+		total,
+	).Err(); err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+	}
+	return nil
 }

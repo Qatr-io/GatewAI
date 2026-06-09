@@ -245,6 +245,12 @@ services:
 # "*" is the fallback when the header is absent or the type has no specific entry.
 # Multiple models for the same service type share the same counter.
 # Leave this section empty (or omit it) to disable rate limiting.
+#
+# Each entry may configure request-count limits, token-budget limits, or both:
+#   rate / period       — max requests per time window (e.g. rate: 100, period: 1m)
+#   token_rate / token_period — max total tokens (prompt+completion) per window
+#                         (only meaningful for LLM proxy services with a provider)
+#                         token_rate: 0 (or absent) disables token budget enforcement.
 # ─────────────────────────────────────────────────────────────────────────────
 # rate_limits:
 #   audio:
@@ -261,3 +267,14 @@ services:
 #     "*":
 #       rate: 5
 #       period: 1m
+#   llm:
+#     sa:                         # service accounts: high request rate, large token budget
+#       rate: 1000
+#       period: 1m
+#       token_rate: 5000000       # 5 M tokens / hour
+#       token_period: 1h
+#     "*":                        # regular users: stricter limits
+#       rate: 60
+#       period: 1m
+#       token_rate: 100000        # 100 k tokens / hour
+#       token_period: 1h

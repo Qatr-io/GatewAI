@@ -79,6 +79,18 @@ var (
 		Help: "Total number of Redis errors during rate-limit checks (requests are allowed on error).",
 	}, []string{"service_type"})
 
+	// TokenRatelimitCheckedTotal counts token budget checks by result (allowed|rejected).
+	TokenRatelimitCheckedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_token_ratelimit_checked_total",
+		Help: "Token rate limit checks by result (allowed|rejected).",
+	}, []string{"service_type", "user_type", "result"})
+
+	// TokenRatelimitErrorsTotal counts Redis errors during token rate limit operations (fail-open).
+	TokenRatelimitErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_token_ratelimit_errors_total",
+		Help: "Redis errors during token rate limit checks or updates (requests are allowed on error).",
+	}, []string{"service_type"})
+
 	// LLM proxy + cache metrics
 	CacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_cache_hits_total",

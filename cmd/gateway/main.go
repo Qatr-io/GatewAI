@@ -156,8 +156,10 @@ func main() {
 	defer redisClient.Close()
 
 	var rl ratelimit.Checker
+	var limiter *ratelimit.Limiter
 	if len(cfg.RateLimits) > 0 {
-		rl = ratelimit.New(redisClient.Client(), cfg.RateLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
+		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
+		rl = limiter
 		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits))
 	}
 
@@ -176,7 +178,8 @@ func main() {
 	var llmHandler *llmproxy.Handler
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
-		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt})
+		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
+		limiter)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
@@ -215,13 +218,16 @@ func main() {
 
 		// Rebuild stateless config-driven objects.
 		if len(newCfg.RateLimits) > 0 {
-			rl = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
+			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
+			rl = limiter
 		} else {
+			limiter = nil
 			rl = nil
 		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
-			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt})
+			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
+			limiter)
 
 		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, llmHandler)
 		holder.p.Store(newRouter)

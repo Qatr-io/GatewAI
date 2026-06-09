@@ -163,7 +163,10 @@ redis:
 metrics:
   top_consumers: 10      # expose top-N in Prometheus via Redis sorted sets; 0 = disabled
 
-# Per-consumer, per-service-type, per-user-type rate limiting (Redis fixed-window)
+# Per-consumer, per-service-type, per-user-type rate limiting (Redis fixed-window).
+# rate / period        → max requests per time window.
+# token_rate / token_period → max total tokens (prompt+completion) per window
+#                        (LLM proxy only; rate: 0 or absent = no limit).
 rate_limits:
   audio:
     unlimited:           # rate: 0 = no limit (Redis not consulted)
@@ -177,6 +180,17 @@ rate_limits:
     "*":                 # fallback if user_type absent or not listed
       rate: 10
       period: 1m
+  llm:
+    sa:
+      rate: 1000
+      period: 1m
+      token_rate: 5000000    # 5 M tokens / hour
+      token_period: 1h
+    "*":
+      rate: 60
+      period: 1m
+      token_rate: 100000     # 100 k tokens / hour
+      token_period: 1h
 
 services:
   - type: audio
@@ -710,6 +724,8 @@ Both components expose Prometheus metrics at `GET /metrics`.
 | `GatewAI_ratelimit_requests_total` | counter | `service_type`, `user_type`, `result` | Rate limit checks (`allowed`/`rejected`) |
 | `GatewAI_ratelimit_consumer_hits_total` | counter | `service_type`, `user_type` | Consumers that exceeded their limit |
 | `GatewAI_ratelimit_errors_total` | counter | `service_type` | Redis errors during rate limiting |
+| `GatewAI_token_ratelimit_checked_total` | counter | `service_type`, `user_type`, `result` | Token budget checks (`allowed`/`rejected`) |
+| `GatewAI_token_ratelimit_errors_total` | counter | `service_type` | Redis errors during token budget checks |
 
 ### Relay
 
