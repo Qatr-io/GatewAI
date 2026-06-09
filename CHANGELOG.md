@@ -789,6 +789,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ## Helm chart (gatewai-gateway)
 
+### [0.15.2] — 2026-06-09
+
+#### Fixed
+- `s3.existingCABundle` : le volume est maintenant monté depuis un `Secret` (`secret.secretName`) au lieu d'un `ConfigMap`.
+
+---
+
 ### [0.5.11] — 2026-04-02
 
 #### Changed
