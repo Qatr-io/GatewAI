@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"bufio"
 	"io"
 	"log/slog"
 	"net/http"
@@ -363,8 +364,8 @@ func isStreamingRequest(body []byte) bool {
 
 // serveStream pipes a streaming (SSE) LLM response directly to the client.
 // Cache and response translation are skipped; chunks are flushed as received.
-// Token metrics are not emitted — usage counts are embedded in SSE chunks and
-// not parsed to avoid buffering the stream.
+// The stream is scanned line-by-line so the last data payload can be inspected
+// for usage counts (token rate limiting, metrics) without buffering the whole body.
 // Backend retry is possible before w.WriteHeader; once the SSE stream starts,
 // switching backends is no longer possible.
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, prov provider.Provider, consumer, userType string, start time.Time) {
@@ -446,26 +447,43 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
 	metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType).Observe(time.Since(start).Seconds())
 
-	// Pipe response, flushing after each read to deliver chunks immediately.
+	// Pipe SSE lines to the client, flushing after each line.
+	// We track the last non-[DONE] data payload to extract usage counts once
+	// the stream is complete (token rate limiting, metrics).
 	flusher, canFlush := w.(http.Flusher)
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return // client disconnected
-			}
-			if canFlush {
-				flusher.Flush()
-			}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1*1024*1024)
+	var lastDataPayload string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
+			return // client disconnected
 		}
-		if readErr != nil {
-			break
+		if canFlush {
+			flusher.Flush()
+		}
+		if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
+			lastDataPayload = after
+		}
+	}
+
+	var streamUsage *provider.Usage
+	if lastDataPayload != "" {
+		streamUsage = emitTokenMetrics(def, winningBackendModel, userType, []byte(lastDataPayload))
+		if streamUsage != nil && h.tokenLimiter != nil {
+			total := streamUsage.PromptTokens + streamUsage.CompletionTokens
+			if total > 0 {
+				tCtx := context.WithoutCancel(r.Context())
+				_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+				if def.Model != "" {
+					_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+				}
+			}
 		}
 	}
 
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
-		resp.StatusCode, time.Since(start).Milliseconds(), true, body, nil)
+		resp.StatusCode, time.Since(start).Milliseconds(), true, body, streamUsage)
 }
 
 // auditLog emits a structured slog record for the LLM request when audit is enabled.

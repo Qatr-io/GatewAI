@@ -77,6 +77,36 @@ func (s *stubTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, _ 
 	return nil
 }
 
+// trackingTokenLimiter records AddTokens/AddModelTokens calls for assertions.
+type trackingTokenLimiter struct {
+	mu               sync.Mutex
+	addedService     int
+	addedModel       int
+	addedServiceType string
+	addedModelName   string
+}
+
+func (t *trackingTokenLimiter) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (t *trackingTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (t *trackingTokenLimiter) AddTokens(_ context.Context, _ *http.Request, serviceType string, n int) error {
+	t.mu.Lock()
+	t.addedService += n
+	t.addedServiceType = serviceType
+	t.mu.Unlock()
+	return nil
+}
+func (t *trackingTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, model string, n int) error {
+	t.mu.Lock()
+	t.addedModel += n
+	t.addedModelName = model
+	t.mu.Unlock()
+	return nil
+}
+
 // ── helpers ──────────────────────────────────────────────────────────────────
 
 func llmDef(provider, backendModel string, cacheTTL time.Duration) *service.Def {
@@ -767,6 +797,41 @@ func TestAuditLog_Enabled_BackendError_StillLogged(t *testing.T) {
 	}
 	if v.Int64() != 500 {
 		t.Errorf("expected status=500 in audit log, got %d", v.Int64())
+	}
+}
+
+func TestServeJSON_Streaming_TokensCountedFromUsageChunk(t *testing.T) {
+	// Backend sends a stream where the last data chunk contains usage.
+	sseStream := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseStream)
+	}))
+	defer backend.Close()
+
+	tracker := &trackingTokenLimiter{}
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, streamBody)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if tracker.addedService != 15 {
+		t.Errorf("expected 15 service tokens added (10+5), got %d", tracker.addedService)
+	}
+	if tracker.addedModel != 15 {
+		t.Errorf("expected 15 model tokens added (10+5), got %d", tracker.addedModel)
+	}
+	if tracker.addedModelName != "my-alias" {
+		t.Errorf("expected model name %q, got %q", "my-alias", tracker.addedModelName)
 	}
 }
 
