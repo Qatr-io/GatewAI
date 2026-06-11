@@ -835,6 +835,65 @@ func TestServeJSON_Streaming_TokensCountedFromUsageChunk(t *testing.T) {
 	}
 }
 
+func TestServeJSON_Streaming_InjectsStreamOptions_WhenLimiterSet(t *testing.T) {
+	var receivedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	tracker := &trackingTokenLimiter{}
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, streamBody)
+
+	var parsed map[string]any
+	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
+		t.Fatalf("backend received invalid JSON: %v", err)
+	}
+	opts, _ := parsed["stream_options"].(map[string]any)
+	if opts == nil {
+		t.Fatal("expected stream_options injected in upstream body, got none")
+	}
+	if opts["include_usage"] != true {
+		t.Errorf("expected stream_options.include_usage=true, got %v", opts["include_usage"])
+	}
+}
+
+func TestServeJSON_Streaming_NoStreamOptions_WhenNoLimiter(t *testing.T) {
+	var receivedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, streamBody)
+
+	var parsed map[string]any
+	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
+		t.Fatalf("backend received invalid JSON: %v", err)
+	}
+	if _, ok := parsed["stream_options"]; ok {
+		t.Error("stream_options should not be injected when no token limiter is set")
+	}
+}
+
 func TestServeJSON_ModelTokenLimit_Rejected(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

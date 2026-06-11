@@ -362,6 +362,27 @@ func isStreamingRequest(body []byte) bool {
 	return req.Stream
 }
 
+// injectStreamUsage adds stream_options.include_usage=true to a JSON body so
+// OpenAI-compatible backends return a usage chunk at the end of the stream.
+// The original body is returned unchanged on any parse error.
+func injectStreamUsage(body []byte) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	opts, _ := raw["stream_options"].(map[string]any)
+	if opts == nil {
+		opts = make(map[string]any)
+	}
+	opts["include_usage"] = true
+	raw["stream_options"] = opts
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // serveStream pipes a streaming (SSE) LLM response directly to the client.
 // Cache and response translation are skipped; chunks are flushed as received.
 // The stream is scanned line-by-line so the last data payload can be inspected
@@ -373,6 +394,13 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		return
 	}
 
+	// When token rate limiting is active, inject stream_options.include_usage=true so
+	// the backend includes a usage chunk in the stream (required for accurate counting).
+	forwardBody := body
+	if h.tokenLimiter != nil {
+		forwardBody = injectStreamUsage(body)
+	}
+
 	backends := service.OrderedBackends(def.Backends)
 	var resp *http.Response
 	var lastErr string
@@ -382,10 +410,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
 		}
-		upstreamBody := body
+		upstreamBody := forwardBody
 		if effectiveModel != "" {
 			var rewriteErr error
-			upstreamBody, rewriteErr = rewriteBodyModel(body, effectiveModel)
+			upstreamBody, rewriteErr = rewriteBodyModel(forwardBody, effectiveModel)
 			if rewriteErr != nil {
 				writeError(w, http.StatusInternalServerError, "failed to rewrite model field: "+rewriteErr.Error())
 				return
