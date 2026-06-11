@@ -238,6 +238,11 @@ type ServiceConfig struct {
 	// A 500ms exponential backoff is applied between each cycle.
 	Retries    int              `yaml:"retries"`
 	Guardrails GuardrailsConfig `yaml:"guardrails"`
+	// TokenLimits defines per-user-type token budgets for this model's LLM requests.
+	// Maps user type → RateLimitConfig (only token_rate and token_period are used).
+	// "*" acts as fallback when the user_type_header is absent or unmatched.
+	// Applied independently from rate_limits; both can reject the same request.
+	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
 }
 
 // GuardrailsConfig controls PII detection for a service's LLM requests.
@@ -356,6 +361,11 @@ func (c *Config) validate() error {
 			}
 			if b.Weight < 0 {
 				return fmt.Errorf("service %q: backends[%d].weight must be >= 0", svc.Type, i)
+			}
+		}
+		for userType, limit := range svc.TokenLimits {
+			if limit.TokenRate > 0 && limit.TokenPeriod == "" {
+				return fmt.Errorf("service %q: token_limits[%q]: token_rate requires token_period", svc.Model, userType)
 			}
 		}
 	}
