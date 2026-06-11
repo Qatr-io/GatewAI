@@ -61,11 +61,11 @@ func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader st
 	}
 }
 
-// checkAndWriteTokenLimit checks the token budget for the request.
+// checkAndWriteTokenLimit checks the service-level and model-level token budgets.
 // Returns true when the request is allowed to proceed. On rejection it writes
 // HTTP 429 (with X-TokenRateLimit-* headers) and returns false — callers must
 // return immediately.
-func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request, serviceType string) bool {
+func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request, serviceType, model string) bool {
 	if h.tokenLimiter == nil {
 		return true
 	}
@@ -73,20 +73,24 @@ func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		slog.WarnContext(r.Context(), "token rate limit check error", "error", err)
 	}
-	if res.Allowed {
+	if !res.Allowed {
+		writeTokenLimitHeaders(w, res)
+		writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+		return false
+	}
+	if model == "" {
 		return true
 	}
-	if res.Limit > 0 {
-		w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(res.Limit))
-		w.Header().Set("X-TokenRateLimit-Remaining", "0")
-		if res.ResetAfter > 0 {
-			secs := strconv.Itoa(int(res.ResetAfter.Seconds()))
-			w.Header().Set("X-TokenRateLimit-Reset", secs)
-			w.Header().Set("Retry-After", secs)
-		}
+	mres, merr := h.tokenLimiter.CheckModelTokens(r.Context(), r, model)
+	if merr != nil {
+		slog.WarnContext(r.Context(), "model token rate limit check error", "error", merr)
 	}
-	writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
-	return false
+	if !mres.Allowed {
+		writeTokenLimitHeaders(w, mres)
+		writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+		return false
+	}
+	return true
 }
 
 // ServeJSON handles a JSON-body LLM request. It writes the response to w directly.
@@ -111,7 +115,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		return
 	}
 
-	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
+	if !h.checkAndWriteTokenLimit(w, r, def.Type, def.Model) {
 		return
 	}
 
@@ -154,7 +158,11 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			if h.tokenLimiter != nil && usage != nil {
 				total := usage.PromptTokens + usage.CompletionTokens
 				if total > 0 {
-					_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+					tCtx := context.WithoutCancel(r.Context())
+					_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+					if def.Model != "" {
+						_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+					}
 				}
 			}
 			return
@@ -273,7 +281,11 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	if h.tokenLimiter != nil && usage != nil {
 		total := usage.PromptTokens + usage.CompletionTokens
 		if total > 0 {
-			_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+			tCtx := context.WithoutCancel(r.Context())
+			_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+			if def.Model != "" {
+				_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+			}
 		}
 	}
 
@@ -356,7 +368,7 @@ func isStreamingRequest(body []byte) bool {
 // Backend retry is possible before w.WriteHeader; once the SSE stream starts,
 // switching backends is no longer possible.
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, prov provider.Provider, consumer, userType string, start time.Time) {
-	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
+	if !h.checkAndWriteTokenLimit(w, r, def.Type, def.Model) {
 		return
 	}
 
@@ -484,6 +496,18 @@ func (h *Handler) auditLog(ctx context.Context, def *service.Def, consumer, user
 		args = append(args, "prompt", string(reqBody))
 	}
 	slog.InfoContext(ctx, "llm request", args...)
+}
+
+func writeTokenLimitHeaders(w http.ResponseWriter, res ratelimit.CheckResult) {
+	if res.Limit > 0 {
+		w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(res.Limit))
+		w.Header().Set("X-TokenRateLimit-Remaining", "0")
+		if res.ResetAfter > 0 {
+			secs := strconv.Itoa(int(res.ResetAfter.Seconds()))
+			w.Header().Set("X-TokenRateLimit-Reset", secs)
+			w.Header().Set("Retry-After", secs)
+		}
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

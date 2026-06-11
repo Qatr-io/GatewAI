@@ -15,6 +15,7 @@ import (
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 )
 
@@ -51,6 +52,28 @@ func (m *memCache) Set(_ context.Context, key string, entry *cache.Entry, _ time
 	if ch != nil {
 		close(ch)
 	}
+	return nil
+}
+
+// ── token limiter stub ────────────────────────────────────────────────────────
+
+// stubTokenLimiter is a test double that satisfies ratelimit.TokenChecker.
+// serviceResult is returned by CheckTokens; modelResult by CheckModelTokens.
+type stubTokenLimiter struct {
+	serviceResult ratelimit.CheckResult
+	modelResult   ratelimit.CheckResult
+}
+
+func (s *stubTokenLimiter) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return s.serviceResult, nil
+}
+func (s *stubTokenLimiter) AddTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+func (s *stubTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return s.modelResult, nil
+}
+func (s *stubTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
 	return nil
 }
 
@@ -744,5 +767,42 @@ func TestAuditLog_Enabled_BackendError_StillLogged(t *testing.T) {
 	}
 	if v.Int64() != 500 {
 		t.Errorf("expected status=500 in audit log, got %d", v.Int64())
+	}
+}
+
+func TestServeJSON_ModelTokenLimit_Rejected(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	limiter := &stubTokenLimiter{
+		serviceResult: ratelimit.CheckResult{Allowed: true},
+		modelResult: ratelimit.CheckResult{
+			Allowed:    false,
+			Limit:      5000,
+			ResetAfter: 30 * time.Minute,
+		},
+	}
+
+	mc := newMemCache()
+	reg := provider.NewRegistry()
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, limiter)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when model token limit exceeded, got %d", rr.Code)
+	}
+	if rr.Header().Get("X-TokenRateLimit-Limit") != "5000" {
+		t.Errorf("expected X-TokenRateLimit-Limit=5000, got %q", rr.Header().Get("X-TokenRateLimit-Limit"))
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on model token limit rejection")
 	}
 }
