@@ -82,10 +82,18 @@ func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client
 		Credentials: aws.NewCredentialsCache(
 			credentials.NewStaticCredentialsProvider(cfg.AccessKey, cfg.SecretKey, ""),
 		),
-		UsePathStyle: true,
+		UsePathStyle:               cfg.UsePathStyle,
+		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
+		ResponseChecksumValidation: aws.ResponseChecksumValidationWhenRequired,
 	}
 
-	if cfg.CABundle != "" {
+	tlsCfg := &tls.Config{}
+	needCustomTransport := false
+
+	if cfg.SSLInsecure {
+		tlsCfg.InsecureSkipVerify = true
+		needCustomTransport = true
+	} else if cfg.CABundle != "" {
 		pem, err := os.ReadFile(cfg.CABundle)
 		if err != nil {
 			return nil, fmt.Errorf("s3: reading CA bundle %q: %w", cfg.CABundle, err)
@@ -94,10 +102,13 @@ func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client
 		if !pool.AppendCertsFromPEM(pem) {
 			return nil, fmt.Errorf("s3: no valid certificates found in %q", cfg.CABundle)
 		}
+		tlsCfg.RootCAs = pool
+		needCustomTransport = true
+	}
+
+	if needCustomTransport {
 		opts.HTTPClient = &http.Client{
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{RootCAs: pool},
-			},
+			Transport: &http.Transport{TLSClientConfig: tlsCfg},
 		}
 	}
 
