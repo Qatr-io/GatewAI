@@ -17,8 +17,13 @@ s3:
   bucket:     "${S3_BUCKET:-gatewai-jobs}"
   # ca_bundle: path to a PEM file with CA certificates for the S3 endpoint TLS verification.
   # Required when the endpoint uses a private or self-signed CA.
-  # Set via S3_CA_BUNDLE (mounted ConfigMap/Secret). Empty = system certificate pool.
+  # Set via S3_CA_BUNDLE (mounted Secret). Empty = system certificate pool.
   ca_bundle:  "${S3_CA_BUNDLE:-}"
+  # use_path_style: force path-style URLs (https://endpoint/bucket/key).
+  # Required for most S3-compatible providers (MinIO, Ceph, etc.). Default: true.
+  use_path_style: ${S3_USE_PATH_STYLE:-true}
+  # ssl_insecure: disable TLS certificate verification. Use only for development.
+  ssl_insecure: ${S3_SSL_INSECURE:-false}
 
 # Inference service endpoint. For Job deployments, set INFERENCE_BASE_URL to the InferenceService cluster URL.
 # INFERENCE_PORT is the port of the model server in the pod.

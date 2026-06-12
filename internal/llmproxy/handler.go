@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"bufio"
 	"io"
 	"log/slog"
 	"net/http"
@@ -61,11 +62,11 @@ func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader st
 	}
 }
 
-// checkAndWriteTokenLimit checks the token budget for the request.
+// checkAndWriteTokenLimit checks the service-level and model-level token budgets.
 // Returns true when the request is allowed to proceed. On rejection it writes
 // HTTP 429 (with X-TokenRateLimit-* headers) and returns false — callers must
 // return immediately.
-func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request, serviceType string) bool {
+func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request, serviceType, model string) bool {
 	if h.tokenLimiter == nil {
 		return true
 	}
@@ -73,20 +74,24 @@ func (h *Handler) checkAndWriteTokenLimit(w http.ResponseWriter, r *http.Request
 	if err != nil {
 		slog.WarnContext(r.Context(), "token rate limit check error", "error", err)
 	}
-	if res.Allowed {
+	if !res.Allowed {
+		writeTokenLimitHeaders(w, res)
+		writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+		return false
+	}
+	if model == "" {
 		return true
 	}
-	if res.Limit > 0 {
-		w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(res.Limit))
-		w.Header().Set("X-TokenRateLimit-Remaining", "0")
-		if res.ResetAfter > 0 {
-			secs := strconv.Itoa(int(res.ResetAfter.Seconds()))
-			w.Header().Set("X-TokenRateLimit-Reset", secs)
-			w.Header().Set("Retry-After", secs)
-		}
+	mres, merr := h.tokenLimiter.CheckModelTokens(r.Context(), r, model)
+	if merr != nil {
+		slog.WarnContext(r.Context(), "model token rate limit check error", "error", merr)
 	}
-	writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
-	return false
+	if !mres.Allowed {
+		writeTokenLimitHeaders(w, mres)
+		writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+		return false
+	}
+	return true
 }
 
 // ServeJSON handles a JSON-body LLM request. It writes the response to w directly.
@@ -111,7 +116,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		return
 	}
 
-	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
+	if !h.checkAndWriteTokenLimit(w, r, def.Type, def.Model) {
 		return
 	}
 
@@ -154,7 +159,11 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			if h.tokenLimiter != nil && usage != nil {
 				total := usage.PromptTokens + usage.CompletionTokens
 				if total > 0 {
-					_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+					tCtx := context.WithoutCancel(r.Context())
+					_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+					if def.Model != "" {
+						_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+					}
 				}
 			}
 			return
@@ -273,7 +282,11 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	if h.tokenLimiter != nil && usage != nil {
 		total := usage.PromptTokens + usage.CompletionTokens
 		if total > 0 {
-			_ = h.tokenLimiter.AddTokens(context.WithoutCancel(r.Context()), r, def.Type, total)
+			tCtx := context.WithoutCancel(r.Context())
+			_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+			if def.Model != "" {
+				_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+			}
 		}
 	}
 
@@ -349,15 +362,43 @@ func isStreamingRequest(body []byte) bool {
 	return req.Stream
 }
 
+// injectStreamUsage adds stream_options.include_usage=true to a JSON body so
+// OpenAI-compatible backends return a usage chunk at the end of the stream.
+// The original body is returned unchanged on any parse error.
+func injectStreamUsage(body []byte) []byte {
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	opts, _ := raw["stream_options"].(map[string]any)
+	if opts == nil {
+		opts = make(map[string]any)
+	}
+	opts["include_usage"] = true
+	raw["stream_options"] = opts
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
 // serveStream pipes a streaming (SSE) LLM response directly to the client.
 // Cache and response translation are skipped; chunks are flushed as received.
-// Token metrics are not emitted — usage counts are embedded in SSE chunks and
-// not parsed to avoid buffering the stream.
+// The stream is scanned line-by-line so the last data payload can be inspected
+// for usage counts (token rate limiting, metrics) without buffering the whole body.
 // Backend retry is possible before w.WriteHeader; once the SSE stream starts,
 // switching backends is no longer possible.
 func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, prov provider.Provider, consumer, userType string, start time.Time) {
-	if !h.checkAndWriteTokenLimit(w, r, def.Type) {
+	if !h.checkAndWriteTokenLimit(w, r, def.Type, def.Model) {
 		return
+	}
+
+	// When token rate limiting is active, inject stream_options.include_usage=true so
+	// the backend includes a usage chunk in the stream (required for accurate counting).
+	forwardBody := body
+	if h.tokenLimiter != nil {
+		forwardBody = injectStreamUsage(body)
 	}
 
 	backends := service.OrderedBackends(def.Backends)
@@ -369,10 +410,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
 		}
-		upstreamBody := body
+		upstreamBody := forwardBody
 		if effectiveModel != "" {
 			var rewriteErr error
-			upstreamBody, rewriteErr = rewriteBodyModel(body, effectiveModel)
+			upstreamBody, rewriteErr = rewriteBodyModel(forwardBody, effectiveModel)
 			if rewriteErr != nil {
 				writeError(w, http.StatusInternalServerError, "failed to rewrite model field: "+rewriteErr.Error())
 				return
@@ -434,26 +475,43 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
 	metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType).Observe(time.Since(start).Seconds())
 
-	// Pipe response, flushing after each read to deliver chunks immediately.
+	// Pipe SSE lines to the client, flushing after each line.
+	// We track the last non-[DONE] data payload to extract usage counts once
+	// the stream is complete (token rate limiting, metrics).
 	flusher, canFlush := w.(http.Flusher)
-	buf := make([]byte, 4096)
-	for {
-		n, readErr := resp.Body.Read(buf)
-		if n > 0 {
-			if _, writeErr := w.Write(buf[:n]); writeErr != nil {
-				return // client disconnected
-			}
-			if canFlush {
-				flusher.Flush()
-			}
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64*1024), 1*1024*1024)
+	var lastDataPayload string
+	for scanner.Scan() {
+		line := scanner.Text()
+		if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
+			return // client disconnected
 		}
-		if readErr != nil {
-			break
+		if canFlush {
+			flusher.Flush()
+		}
+		if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
+			lastDataPayload = after
+		}
+	}
+
+	var streamUsage *provider.Usage
+	if lastDataPayload != "" {
+		streamUsage = emitTokenMetrics(def, winningBackendModel, userType, []byte(lastDataPayload))
+		if streamUsage != nil && h.tokenLimiter != nil {
+			total := streamUsage.PromptTokens + streamUsage.CompletionTokens
+			if total > 0 {
+				tCtx := context.WithoutCancel(r.Context())
+				_ = h.tokenLimiter.AddTokens(tCtx, r, def.Type, total)
+				if def.Model != "" {
+					_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
+				}
+			}
 		}
 	}
 
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
-		resp.StatusCode, time.Since(start).Milliseconds(), true, body, nil)
+		resp.StatusCode, time.Since(start).Milliseconds(), true, body, streamUsage)
 }
 
 // auditLog emits a structured slog record for the LLM request when audit is enabled.
@@ -484,6 +542,18 @@ func (h *Handler) auditLog(ctx context.Context, def *service.Def, consumer, user
 		args = append(args, "prompt", string(reqBody))
 	}
 	slog.InfoContext(ctx, "llm request", args...)
+}
+
+func writeTokenLimitHeaders(w http.ResponseWriter, res ratelimit.CheckResult) {
+	if res.Limit > 0 {
+		w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(res.Limit))
+		w.Header().Set("X-TokenRateLimit-Remaining", "0")
+		if res.ResetAfter > 0 {
+			secs := strconv.Itoa(int(res.ResetAfter.Seconds()))
+			w.Header().Set("X-TokenRateLimit-Reset", secs)
+			w.Header().Set("Retry-After", secs)
+		}
+	}
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {

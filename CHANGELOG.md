@@ -16,6 +16,21 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.16.0] — 2026-06-12
+
+#### Added
+
+- **Per-model token rate limiting**: `token_limits` field on each service entry in `config.yaml` allows setting independent token budgets per model name (e.g. `chat-smart`, `gpt-4o`). Limits are applied in addition to service-level token limits; either can reject a request. Supports per-user-type differentiation (`premium`, `*` fallback) using the same structure as `rate_limits`. Redis key format: `trl:{consumer}:model:{model}:{userType}`.
+- **S3 path-style and SSL insecure options**: `s3.use_path_style` (default `true`) and `s3.ssl_insecure` config fields for S3-compatible endpoints that require path-style URLs or self-signed certificates.
+
+#### Fixed
+
+- **Streaming token counting**: streaming requests (`stream: true`) were checked against the token budget but never contributed to it — the SSE pipe loop had no usage extraction. The stream is now scanned line-by-line; the last `data:` payload is parsed for `usage` after the stream ends, and `AddTokens`/`AddModelTokens` are called accordingly.
+- **vLLM streaming usage**: `stream_options.include_usage=true` is now injected into the upstream body for streaming requests when a token limiter is configured, ensuring the backend emits a usage chunk at the end of the stream.
+- **S3 checksum headers**: disabled automatic AWS checksum headers (`x-amz-checksum-*`) for S3-compatible endpoints that reject them.
+
+---
+
 ### [v0.15.1] — 2026-06-09
 
 #### Added
