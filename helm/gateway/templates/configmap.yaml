@@ -12,6 +12,15 @@ data:
       # write_timeout: 0 — les requêtes sync peuvent durer plusieurs minutes ;
       # le timeout est géré par Knative timeoutSeconds côté InferenceService.
       write_timeout: 0s
+      {{- if .Values.server.priorityHeader }}
+      priority_header: {{ .Values.server.priorityHeader | quote }}
+      {{- end }}
+      {{- if .Values.server.consumerHeader }}
+      consumer_header: {{ .Values.server.consumerHeader | quote }}
+      {{- end }}
+      {{- if .Values.server.userTypeHeader }}
+      user_type_header: {{ .Values.server.userTypeHeader | quote }}
+      {{- end }}
 
     s3:
       endpoint:   "{{ .Values.s3.endpoint }}"
@@ -53,6 +62,24 @@ data:
       top_consumers: {{ .Values.metricsConfig.topConsumers | default 0 }}
       consumer_labels: {{ .Values.metricsConfig.consumerLabels | default false }}
 
+    {{- if .Values.rateLimits }}
+    rate_limits:
+      {{- range $svcType, $userLimits := .Values.rateLimits }}
+      {{ $svcType }}:
+        {{- range $userType, $cfg := $userLimits }}
+        {{ $userType | quote }}:
+          {{- if $cfg.rate }}
+          rate:   {{ $cfg.rate }}
+          period: {{ $cfg.period | quote }}
+          {{- end }}
+          {{- if $cfg.tokenRate }}
+          token_rate:   {{ $cfg.tokenRate }}
+          token_period: {{ $cfg.tokenPeriod | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
     services:
     {{- range .Values.services }}
       - type:              {{ .type }}
@@ -85,6 +112,48 @@ data:
               {{ $k }}: {{ $v | quote }}
               {{- end }}
             {{- end }}
+          {{- end }}
+        {{- end }}
+        {{- if .provider }}
+        provider:          {{ .provider | quote }}
+        {{- end }}
+        {{- if .backendModel }}
+        backend_model:     {{ .backendModel | quote }}
+        {{- end }}
+        {{- if .responseCacheTTL }}
+        response_cache_ttl: {{ .responseCacheTTL }}
+        {{- end }}
+        {{- if .retries }}
+        retries:           {{ .retries }}
+        {{- end }}
+        {{- if .maxConcurrentSync }}
+        max_concurrent_sync: {{ .maxConcurrentSync }}
+        {{- end }}
+        {{- if .guardrails }}
+        guardrails:
+          pii: {{ .guardrails.pii | default false }}
+        {{- end }}
+        {{- if .inferenceHeaders }}
+        inference_headers:
+          {{- range $k, $v := .inferenceHeaders }}
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .swaggerURL }}
+        swagger_url: {{ .swaggerURL | quote }}
+        {{- end }}
+        {{- if .swaggerHeaders }}
+        swagger_headers:
+          {{- range $k, $v := .swaggerHeaders }}
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .tokenLimits }}
+        token_limits:
+          {{- range $userType, $cfg := .tokenLimits }}
+          {{ $userType | quote }}:
+            token_rate:   {{ $cfg.tokenRate }}
+            token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
         {{- end }}
         accepted_exts:     {{ .acceptedExts | toJson }}

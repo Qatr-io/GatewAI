@@ -22,6 +22,41 @@ ingress:
   #    hosts:
   #      - api.gatewai.example.com
 
+# ── Server ────────────────────────────────────────────────────────────────────
+server:
+  # HTTP header injected by the API gateway to identify the consumer.
+  # Required for per-consumer rate limiting and job ownership enforcement.
+  # Example: "X-Consumer-Username" (APISIX), "X-Forwarded-User" (nginx)
+  consumerHeader: ""
+  # HTTP header carrying the consumer type (e.g. "premium", "free").
+  # Used for per-type rate limiting (matched against rate_limits[type][user_type]).
+  # "*" is the fallback when absent.
+  userTypeHeader: ""
+  # HTTP header set by the API gateway on high-priority requests.
+  # When present, jobs are pushed to the head of the Redis queue.
+  priorityHeader: ""
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+# Request-count rate limits per service type and user type.
+# "*" acts as fallback when the user_type_header is absent or unmatched.
+# rate: 0 = unlimited sentinel (no Redis check performed).
+# Requires server.consumerHeader and server.userTypeHeader to be set.
+#
+# Example:
+# rateLimits:
+#   audio:
+#     premium:
+#       rate: 100
+#       period: "1m"
+#     "*":
+#       rate: 10
+#       period: "1m"
+#   llm:
+#     "*":
+#       rate: 20
+#       period: "1m"
+rateLimits: {}
+
 # ── Configuration ────────────────────────────────────────────────────────────
 config:
   # Option B : référencer une ConfigMap existante contenant config.yaml.
@@ -100,6 +135,31 @@ services:
     inferenceURL: "http://gatewai-ocr-predictor.default.svc.cluster.local"
     acceptedExts: [".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".bmp"]
     maxFileSizeMB: 50
+
+  # ── LLM proxy avec token rate limiting ───────────────────────────────────
+  # provider: passthrough|openai|anthropic|ollama
+  # tokenLimits : budget tokens par user type, indépendant du rate_limits service.
+  # Requires server.consumerHeader + server.userTypeHeader.
+  #
+  # - type: llm
+  #   model: "gpt-4o"
+  #   provider: passthrough
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  #   backends:
+  #     - url: "http://my-llm-backend.svc"
+  #       weight: 100
+  #   tokenLimits:
+  #     premium:
+  #       tokenRate: 500000
+  #       tokenPeriod: "24h"
+  #     "*":
+  #       tokenRate: 50000
+  #       tokenPeriod: "24h"
+  #   responseCacheTTL: 300
+  #   guardrails:
+  #     pii: true
 
   # ── Multi-backend : blue/green, canary, fallback ─────────────────────────
   # Remplace inferenceURL par une liste backends. Mutuellement exclusif avec
