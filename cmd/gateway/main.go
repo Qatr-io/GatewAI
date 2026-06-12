@@ -31,6 +31,18 @@ import (
 // version is set at build time via -ldflags "-X main.version=v0.4.1".
 var version = "dev"
 
+// buildModelLimits derives a model→userType→RateLimitConfig map from services.
+// Only services with a non-empty Model and non-empty TokenLimits contribute an entry.
+func buildModelLimits(services []config.ServiceConfig) map[string]map[string]config.RateLimitConfig {
+	m := make(map[string]map[string]config.RateLimitConfig)
+	for _, svc := range services {
+		if svc.Model != "" && len(svc.TokenLimits) > 0 {
+			m[svc.Model] = svc.TokenLimits
+		}
+	}
+	return m
+}
+
 // routerHolder is an atomically-swappable http.Handler.
 // The outer http.Server always points to this wrapper; hot reload replaces the inner router.
 type routerHolder struct {
@@ -157,10 +169,11 @@ func main() {
 
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
-	if len(cfg.RateLimits) > 0 {
-		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
+	modelLimits := buildModelLimits(cfg.Services)
+	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 {
+		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, modelLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
 		rl = limiter
-		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits))
+		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits))
 	}
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
@@ -217,8 +230,9 @@ func main() {
 		gcMaxAge.Store(int64(newCfg.Redis.PendingMaxAgeDuration()))
 
 		// Rebuild stateless config-driven objects.
-		if len(newCfg.RateLimits) > 0 {
-			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
+		newModelLimits := buildModelLimits(newCfg.Services)
+		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 {
+			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newModelLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
 			rl = limiter
 		} else {
 			limiter = nil

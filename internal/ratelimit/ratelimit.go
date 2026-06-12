@@ -59,12 +59,17 @@ type TokenChecker interface {
 	CheckTokens(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 	// AddTokens records total tokens consumed into the current window counter.
 	AddTokens(ctx context.Context, r *http.Request, serviceType string, total int) error
+	// CheckModelTokens returns whether the caller still has token budget for the given model.
+	CheckModelTokens(ctx context.Context, r *http.Request, model string) (CheckResult, error)
+	// AddModelTokens records total tokens consumed for the given model into the window counter.
+	AddModelTokens(ctx context.Context, r *http.Request, model string, total int) error
 }
 
 // Limiter checks rate limits using Redis fixed-window counters.
 type Limiter struct {
 	rdb            *redis.Client
 	limits         map[string]map[string]config.RateLimitConfig
+	modelLimits    map[string]map[string]config.RateLimitConfig
 	consumerHeader string
 	userTypeHeader string
 }
@@ -105,48 +110,56 @@ return {count, redis.call('TTL', key)}
 `)
 
 // New creates a Limiter. Pass the raw *redis.Client (available via storage.RedisClient.Client()).
+// modelLimits maps model name → user type → RateLimitConfig for per-model token budgets;
+// pass nil to disable model-level limiting.
 func New(
 	rdb *redis.Client,
 	limits map[string]map[string]config.RateLimitConfig,
+	modelLimits map[string]map[string]config.RateLimitConfig,
 	consumerHeader, userTypeHeader string,
 ) *Limiter {
 	return &Limiter{
 		rdb:            rdb,
 		limits:         limits,
+		modelLimits:    modelLimits,
 		consumerHeader: consumerHeader,
 		userTypeHeader: userTypeHeader,
 	}
 }
 
-// resolveIdentity returns the consumer ID, matched userType key, and the
-// RateLimitConfig entry for serviceType. Falls back to "*" when the request's
-// user-type header is absent or has no explicit entry.
-func (l *Limiter) resolveIdentity(r *http.Request, serviceType string) (consumer, userType string, cfg config.RateLimitConfig) {
+// resolveFromMap resolves consumer, userType, and the matching RateLimitConfig
+// for key in limitsMap. Falls back to "*" userType when the specific type is absent.
+func (l *Limiter) resolveFromMap(r *http.Request, key string, limitsMap map[string]map[string]config.RateLimitConfig) (consumer, userType string, cfg config.RateLimitConfig) {
 	consumer = "anonymous"
 	if l.consumerHeader != "" {
 		if v := r.Header.Get(l.consumerHeader); v != "" {
 			consumer = v
 		}
 	}
-
 	userType = "*"
 	if l.userTypeHeader != "" {
 		if v := r.Header.Get(l.userTypeHeader); v != "" {
 			userType = v
 		}
 	}
-
-	svcLimits, ok := l.limits[serviceType]
+	keyLimits, ok := limitsMap[key]
 	if !ok {
 		return consumer, userType, config.RateLimitConfig{}
 	}
-	if c, ok := svcLimits[userType]; ok {
+	if c, ok := keyLimits[userType]; ok {
 		return consumer, userType, c
 	}
-	if c, ok := svcLimits["*"]; ok {
+	if c, ok := keyLimits["*"]; ok {
 		return consumer, "*", c
 	}
 	return consumer, userType, config.RateLimitConfig{}
+}
+
+// resolveIdentity returns the consumer ID, matched userType key, and the
+// RateLimitConfig entry for serviceType. Falls back to "*" when the request's
+// user-type header is absent or has no explicit entry.
+func (l *Limiter) resolveIdentity(r *http.Request, serviceType string) (consumer, userType string, cfg config.RateLimitConfig) {
+	return l.resolveFromMap(r, serviceType, l.limits)
 }
 
 // Check evaluates the rate limit for the given request and service type.
@@ -262,6 +275,61 @@ func (l *Limiter) CheckTokens(ctx context.Context, r *http.Request, serviceType 
 	}, nil
 }
 
+// CheckModelTokens returns whether the caller still has token budget for the
+// given model in the current window. No-op (allowed) when no model limits are
+// configured. Fail-open on Redis errors.
+func (l *Limiter) CheckModelTokens(ctx context.Context, r *http.Request, model string) (CheckResult, error) {
+	consumer, userType, cfg := l.resolveFromMap(r, model, l.modelLimits)
+	if cfg.TokenRate == 0 {
+		return CheckResult{Allowed: true}, nil
+	}
+
+	period, err := time.ParseDuration(cfg.TokenPeriod)
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("model:" + model).Inc()
+		return CheckResult{Allowed: true}, fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	}
+
+	key := fmt.Sprintf("trl:%s:model:%s:%s", consumer, model, userType)
+
+	raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{key}, cfg.TokenRate).Slice()
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("model:" + model).Inc()
+		return CheckResult{Allowed: true}, nil // fail-open
+	}
+
+	count := raw[0].(int64)
+	ttl := raw[1].(int64)
+
+	allowed := count < int64(cfg.TokenRate)
+	remaining := cfg.TokenRate - int(count)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	result := "allowed"
+	if !allowed {
+		result = "rejected"
+	}
+	metrics.TokenRatelimitCheckedTotal.WithLabelValues("model:"+model, userType, result).Inc()
+
+	var resetAfter time.Duration
+	if !allowed {
+		if ttl > 0 {
+			resetAfter = time.Duration(ttl) * time.Second
+		} else {
+			resetAfter = period
+		}
+	}
+
+	return CheckResult{
+		Allowed:    allowed,
+		Limit:      cfg.TokenRate,
+		Remaining:  remaining,
+		ResetAfter: resetAfter,
+	}, nil
+}
+
 // AddTokens records total tokens consumed by the current request into the
 // window counter. No-op when TokenRate is 0 or total is 0. Fail-open on
 // Redis errors.
@@ -286,6 +354,34 @@ func (l *Limiter) AddTokens(ctx context.Context, r *http.Request, serviceType st
 		total,
 	).Err(); err != nil {
 		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+	}
+	return nil
+}
+
+// AddModelTokens records total tokens consumed for the given model into the
+// current window counter. No-op when no model limits are configured or total
+// is 0. Fail-open on Redis errors.
+func (l *Limiter) AddModelTokens(ctx context.Context, r *http.Request, model string, total int) error {
+	if total == 0 {
+		return nil
+	}
+	consumer, userType, cfg := l.resolveFromMap(r, model, l.modelLimits)
+	if cfg.TokenRate == 0 {
+		return nil
+	}
+
+	period, err := time.ParseDuration(cfg.TokenPeriod)
+	if err != nil {
+		return fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	}
+
+	key := fmt.Sprintf("trl:%s:model:%s:%s", consumer, model, userType)
+
+	if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
+		int(period.Seconds()),
+		total,
+	).Err(); err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("model:" + model).Inc()
 	}
 	return nil
 }

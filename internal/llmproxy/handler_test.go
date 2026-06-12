@@ -15,6 +15,7 @@ import (
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 )
 
@@ -51,6 +52,58 @@ func (m *memCache) Set(_ context.Context, key string, entry *cache.Entry, _ time
 	if ch != nil {
 		close(ch)
 	}
+	return nil
+}
+
+// ── token limiter stub ────────────────────────────────────────────────────────
+
+// stubTokenLimiter is a test double that satisfies ratelimit.TokenChecker.
+// serviceResult is returned by CheckTokens; modelResult by CheckModelTokens.
+type stubTokenLimiter struct {
+	serviceResult ratelimit.CheckResult
+	modelResult   ratelimit.CheckResult
+}
+
+func (s *stubTokenLimiter) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return s.serviceResult, nil
+}
+func (s *stubTokenLimiter) AddTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+func (s *stubTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return s.modelResult, nil
+}
+func (s *stubTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+
+// trackingTokenLimiter records AddTokens/AddModelTokens calls for assertions.
+type trackingTokenLimiter struct {
+	mu               sync.Mutex
+	addedService     int
+	addedModel       int
+	addedServiceType string
+	addedModelName   string
+}
+
+func (t *trackingTokenLimiter) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (t *trackingTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (t *trackingTokenLimiter) AddTokens(_ context.Context, _ *http.Request, serviceType string, n int) error {
+	t.mu.Lock()
+	t.addedService += n
+	t.addedServiceType = serviceType
+	t.mu.Unlock()
+	return nil
+}
+func (t *trackingTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, model string, n int) error {
+	t.mu.Lock()
+	t.addedModel += n
+	t.addedModelName = model
+	t.mu.Unlock()
 	return nil
 }
 
@@ -744,5 +797,136 @@ func TestAuditLog_Enabled_BackendError_StillLogged(t *testing.T) {
 	}
 	if v.Int64() != 500 {
 		t.Errorf("expected status=500 in audit log, got %d", v.Int64())
+	}
+}
+
+func TestServeJSON_Streaming_TokensCountedFromUsageChunk(t *testing.T) {
+	// Backend sends a stream where the last data chunk contains usage.
+	sseStream := "data: {\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":10,\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseStream)
+	}))
+	defer backend.Close()
+
+	tracker := &trackingTokenLimiter{}
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, streamBody)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if tracker.addedService != 15 {
+		t.Errorf("expected 15 service tokens added (10+5), got %d", tracker.addedService)
+	}
+	if tracker.addedModel != 15 {
+		t.Errorf("expected 15 model tokens added (10+5), got %d", tracker.addedModel)
+	}
+	if tracker.addedModelName != "my-alias" {
+		t.Errorf("expected model name %q, got %q", "my-alias", tracker.addedModelName)
+	}
+}
+
+func TestServeJSON_Streaming_InjectsStreamOptions_WhenLimiterSet(t *testing.T) {
+	var receivedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	tracker := &trackingTokenLimiter{}
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, streamBody)
+
+	var parsed map[string]any
+	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
+		t.Fatalf("backend received invalid JSON: %v", err)
+	}
+	opts, _ := parsed["stream_options"].(map[string]any)
+	if opts == nil {
+		t.Fatal("expected stream_options injected in upstream body, got none")
+	}
+	if opts["include_usage"] != true {
+		t.Errorf("expected stream_options.include_usage=true, got %v", opts["include_usage"])
+	}
+}
+
+func TestServeJSON_Streaming_NoStreamOptions_WhenNoLimiter(t *testing.T) {
+	var receivedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSON(h, def, streamBody)
+
+	var parsed map[string]any
+	if err := json.Unmarshal(receivedBody, &parsed); err != nil {
+		t.Fatalf("backend received invalid JSON: %v", err)
+	}
+	if _, ok := parsed["stream_options"]; ok {
+		t.Error("stream_options should not be injected when no token limiter is set")
+	}
+}
+
+func TestServeJSON_ModelTokenLimit_Rejected(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	limiter := &stubTokenLimiter{
+		serviceResult: ratelimit.CheckResult{Allowed: true},
+		modelResult: ratelimit.CheckResult{
+			Allowed:    false,
+			Limit:      5000,
+			ResetAfter: 30 * time.Minute,
+		},
+	}
+
+	mc := newMemCache()
+	reg := provider.NewRegistry()
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, limiter)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when model token limit exceeded, got %d", rr.Code)
+	}
+	if rr.Header().Get("X-TokenRateLimit-Limit") != "5000" {
+		t.Errorf("expected X-TokenRateLimit-Limit=5000, got %q", rr.Header().Get("X-TokenRateLimit-Limit"))
+	}
+	if rr.Header().Get("Retry-After") == "" {
+		t.Error("expected Retry-After header on model token limit rejection")
 	}
 }

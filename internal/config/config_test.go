@@ -365,3 +365,55 @@ rate_limits:
 		t.Errorf("TokenPeriod: expected 1h, got %q", cfg.RateLimits["llm"]["user"].TokenPeriod)
 	}
 }
+
+func TestLoad_ServiceTokenLimits_MissingPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    token_limits:
+      "*":
+        token_rate: 10000
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when service token_rate is set without token_period")
+	}
+}
+
+func TestLoad_ServiceTokenLimits_OK(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    token_limits:
+      premium:
+        token_rate: 100000
+        token_period: 1h
+      "*":
+        token_rate: 20000
+        token_period: 1h
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Services[0].TokenLimits["premium"].TokenRate != 100000 {
+		t.Errorf("expected TokenRate=100000 for premium, got %d", cfg.Services[0].TokenLimits["premium"].TokenRate)
+	}
+	if cfg.Services[0].TokenLimits["*"].TokenPeriod != "1h" {
+		t.Errorf("expected TokenPeriod=1h for *, got %q", cfg.Services[0].TokenLimits["*"].TokenPeriod)
+	}
+}
