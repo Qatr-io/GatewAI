@@ -10,6 +10,17 @@ Two independent Go modules (separate `go.mod`, separate Docker images):
 - **Gateway** — root module `gatewai/gateway`, entry point `cmd/gateway/main.go`
 - **Relay** — module `gatewai/relay` in `./relay/`, entry point `relay/cmd/relay/main.go`
 
+## Memory (MemPalace)
+
+You have persistent memory via MemPalace MCP tools. Your memory survives across sessions.
+
+### ALWAYS do this:
+1. **On first message of a session:** Call `mempalace_status` to check your palace, then `mempalace_search` for context about the user and current topic.
+2. **When the user tells you something to remember:** Call `mempalace_add_drawer` to store it AND `mempalace_kg_add` to add it to the knowledge graph. Confirm you saved it.
+3. **When asked about past conversations or facts:** Call `mempalace_search` or `mempalace_kg_query` BEFORE answering. Never guess from session context alone.
+4. **At the end of meaningful conversations:** Call `mempalace_diary_write` to record what happened.
+
+
 ## Build commands
 
 ```bash
@@ -59,7 +70,7 @@ Images:
 - Gateway:    `ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z`
 - Relay: `ghcr.io/qatr-io/gatewai/relay:vX.Y.Z`
 
-Current tags: gateway `v0.13.0`, relay `v0.6.0`.
+Current tags: gateway `v0.16.0`, relay `v0.7.2`.
 
 ## Architecture
 
@@ -98,9 +109,15 @@ Gateway → HTTP proxy → InferenceService URL (inference_url in config)
 
 | Request | Path |
 |---|---|
-| Any `POST /v1/*` | Direct proxy to `inference_url` |
+| Any `POST /v1/*` | Direct proxy to `inference_url` (or LLM proxy if `provider` set) |
 
 Configured via `services[].operations`, `services[].model`, `services[].inference_url` in `config.yaml`.
+
+**LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
+
+- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM)
+- **Response cache**: Redis exact-match cache keyed on SHA-256 of request body, configurable TTL via `response_cache_ttl`; `stream=true` and `Cache-Control: no-cache` bypass cache; `X-Cache: HIT/MISS` on every response
+- **Wildcard routing**: paths ending with `/*` (e.g. `/v1/*`) register as chi wildcard routes — proxies all sub-paths without enumerating them
 
 ### Service registry — key concepts
 
@@ -138,6 +155,32 @@ Both binaries use `config.Load(path)` which reads a YAML file and expands `${VAR
 
 **Adding a new service type** requires only a new entry in `config.yaml` (and `values.yaml` for Helm). No Go code change is needed — the service registry (`internal/service/registry.go`) is entirely config-driven.
 
+### Rate limiting & token limits
+
+**`rate_limits`** (top-level config block): per-consumer, per-service-type, per-user-type request limits. Keyed by `{consumer}:{service_type}:{user_type}` in Redis. Returns `429` with `Retry-After` on breach. Requires `server.consumer_header` and `server.user_type_header`.
+
+```yaml
+server:
+  consumer_header: "X-Consumer-Username"   # set by APISIX after auth
+  user_type_header: "X-User-Type"          # set by OPA (sa | user | ...)
+
+rate_limits:
+  llm:
+    sa:    { rate: 100, period: 1m }
+    user:  { rate: 20,  period: 1m }
+    "*":   { rate: 10,  period: 1m }   # fallback
+```
+
+**`token_limits`** (top-level config block): per-consumer, per-service-type token budget limits for LLM proxy. Optimistic enforcement (tokens known post-response); streaming skips counting.
+
+### Guardrails PII
+
+`internal/guardrails/`: PII detection for LLM JSON requests (email, phone FR, IBAN, credit card, SIREN/SIRET). Enabled per service via `guardrails.pii: true`. Blocked requests return 422 and are logged as security events. Prometheus counter: `GatewAI_guardrails_pii_blocked_total{service_type, model}`.
+
+### Service headers
+
+`services[].headers`: static headers injected on every outgoing request to the backend. Values support `${VAR}` expansion. Config headers override client headers with the same name.
+
 
 ## Key files
 
@@ -150,6 +193,13 @@ Both binaries use `config.Load(path)` which reads a YAML file and expands `${VAR
 | `k8s/deployment-transcription.yaml` | Deployment + Service + RBAC for whisper-large-v3 |
 | `internal/service/registry.go` | Config-driven service registry (routing, default model, operations map) |
 | `internal/handler/docs.go` | Dynamic OpenAPI spec generator + Swagger UI handler |
+| `internal/ratelimit/` | Per-consumer Redis fixed-window rate limiting |
+| `internal/consumer/` | Redis pub/sub subscriber + webhook sender (replaces Kafka) |
+| `internal/llmproxy/` | LLM proxy with provider interface (openai/anthropic/ollama/passthrough) |
+| `internal/cache/` | Redis response cache for LLM proxy |
+| `internal/guardrails/` | PII detection for LLM requests |
+| `internal/concurrency/` | Distributed sync semaphore via Redis |
+| `relay/internal/queue/` | Redis BLMOVE queue consumer |
 
 ## Deployment
 
