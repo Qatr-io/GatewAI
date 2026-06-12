@@ -596,6 +596,18 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
+### [v0.7.2] — 2026-06-12
+
+#### Added
+
+- **S3 path-style and SSL insecure options**: `s3.use_path_style` (default `true`) and `s3.ssl_insecure` config fields for S3-compatible endpoints that require path-style URLs or self-signed certificates.
+
+#### Fixed
+
+- **S3 checksum headers**: disabled automatic AWS checksum headers (`x-amz-checksum-*`) for S3-compatible endpoints that reject them.
+
+---
+
 ### [v0.7.1] — 2026-06-09
 
 #### Added
