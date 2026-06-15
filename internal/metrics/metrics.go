@@ -91,6 +91,20 @@ var (
 		Help: "Redis errors during token rate limit checks or updates (requests are allowed on error).",
 	}, []string{"service_type"})
 
+	// ConcurrentJobChecksTotal counts concurrent job limit evaluations.
+	// Labels: service_type, user_type, result (allowed|rejected).
+	ConcurrentJobChecksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_concurrent_job_checks_total",
+		Help: "Total number of concurrent job limit checks, by outcome.",
+	}, []string{"service_type", "user_type", "result"})
+
+	// ProcessingTimeChecksTotal counts processing time budget evaluations.
+	// Labels: service_type, user_type, result (allowed|rejected).
+	ProcessingTimeChecksTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_processingtime_checks_total",
+		Help: "Total number of processing time budget checks, by outcome.",
+	}, []string{"service_type", "user_type", "result"})
+
 	// LLM proxy + cache metrics
 	CacheHitsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_cache_hits_total",
