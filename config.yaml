@@ -257,22 +257,37 @@ services:
 # Leave this section empty (or omit it) to disable rate limiting.
 #
 # Each entry may configure request-count limits, token-budget limits, or both:
-#   rate / period       — max requests per time window (e.g. rate: 100, period: 1m)
-#   token_rate / token_period — max total tokens (prompt+completion) per window
-#                         (only meaningful for LLM proxy services with a provider)
-#                         token_rate: 0 (or absent) disables token budget enforcement.
+#   rate / period              — max requests per time window (e.g. rate: 100, period: 1m)
+#   token_rate / token_period  — max total tokens (prompt+completion) per window
+#                                (only meaningful for LLM proxy services with a provider)
+#                                token_rate: 0 (or absent) disables token budget enforcement.
+#   max_concurrent             — max async jobs in pending+processing state at any moment.
+#                                Applies to async job submissions only. 0 = unlimited.
+#   processing_time / processing_period
+#                              — max cumulative inference seconds (from result.json
+#                                processing_time) per window. Applies to both async jobs
+#                                and sync proxy calls. 0 = unlimited.
 # ─────────────────────────────────────────────────────────────────────────────
 # rate_limits:
 #   audio:
 #     premium:
 #       rate: 100
 #       period: 1m
+#       max_concurrent: 10          # at most 10 jobs in flight simultaneously
+#       processing_time: 7200       # at most 2 h of inference per hour
+#       processing_period: 1h
 #     standard:
 #       rate: 20
 #       period: 1m
+#       max_concurrent: 3
+#       processing_time: 600
+#       processing_period: 1h
 #     "*":
 #       rate: 10
 #       period: 1m
+#       max_concurrent: 1
+#       processing_time: 120
+#       processing_period: 1h
 #   ocr:
 #     "*":
 #       rate: 5
