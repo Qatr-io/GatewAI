@@ -3,6 +3,7 @@ package relay
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,7 +25,7 @@ type objectStore interface {
 
 // eventPublisher wraps the Redis result pipeline: UpdateJobResult + Publish + Done.
 type eventPublisher interface {
-	PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string) error
+	PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64) error
 }
 
 // Processor runs the full processing pipeline for a single Job pulled from the Redis queue.
@@ -69,7 +70,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		if storage.IsNotFound(err) {
 			log.Error("input file not found, publishing permanent failure", "input_ref", job.InputRef)
 			metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-			if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found: "+job.InputRef); perr != nil {
+			if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found: "+job.InputRef, 0); perr != nil {
 				return fmt.Errorf("publishing not-found failure: %w", perr)
 			}
 			return nil
@@ -94,7 +95,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 			if storage.IsNotFound(getErr) {
 				log.Error("input file not found on inference retry, publishing permanent failure", "input_ref", job.InputRef)
 				metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-				if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found on retry: "+job.InputRef); perr != nil {
+				if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found on retry: "+job.InputRef, 0); perr != nil {
 					return fmt.Errorf("publishing not-found failure: %w", perr)
 				}
 				return nil
@@ -108,7 +109,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	if inferErr != nil {
 		log.Error("inference failed", "error", inferErr)
 		metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-		if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", fmt.Sprintf("inference: %v", inferErr)); perr != nil {
+		if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", fmt.Sprintf("inference: %v", inferErr), 0); perr != nil {
 			return fmt.Errorf("publishing failure: %w", perr)
 		}
 		if derr := p.s3.DeleteObject(context.Background(), job.InputRef); derr != nil {
@@ -125,9 +126,10 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		}
 	}
 
-	if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, ""); err != nil {
+	processingTime := extractProcessingTime(result)
+	if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
 		log.Warn("publish result attempt failed, retrying immediately", "error", err)
-		if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, ""); err != nil {
+		if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
 			log.Error("failed to publish result after retry", "error", err)
 		}
 	}
@@ -157,4 +159,16 @@ func (p *Processor) runInference(ctx context.Context, job *model.Job, body io.Re
 	})
 	metrics.InferenceDuration.WithLabelValues(job.ServiceType).Observe(time.Since(inferStart).Seconds())
 	return result, err
+}
+
+// extractProcessingTime parses the processing_time field (float64 seconds) from
+// the inference result JSON. Returns 0 if the field is absent or unparseable.
+func extractProcessingTime(result []byte) float64 {
+	var v struct {
+		ProcessingTime float64 `json:"processing_time"`
+	}
+	if err := json.Unmarshal(result, &v); err != nil {
+		return 0
+	}
+	return v.ProcessingTime
 }
