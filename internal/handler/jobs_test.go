@@ -18,6 +18,7 @@ import (
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/handler"
 	"gatewai/gateway/internal/model"
+	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 )
 
@@ -761,5 +762,70 @@ func TestSubmit_RedisSaveFailure(t *testing.T) {
 	}
 	if !s3.uploaded {
 		t.Error("S3 upload should have been called before Redis save")
+	}
+}
+
+// mockConcurrentLimiter is a test double for ratelimit.ConcurrentChecker.
+type mockConcurrentLimiter struct {
+	result    ratelimit.CheckResult
+	checkErr  error
+	decrCalls int
+}
+
+func (m *mockConcurrentLimiter) CheckAndIncrConcurrent(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return m.result, m.checkErr
+}
+
+func (m *mockConcurrentLimiter) DecrConcurrent(_ context.Context, _, _, _ string) error {
+	m.decrCalls++
+	return nil
+}
+
+// TestSubmit_ConcurrentLimit_Denied verifies that a 429 is returned when the
+// concurrent job limit is reached.
+func TestSubmit_ConcurrentLimit_Denied(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	limiter := &mockConcurrentLimiter{
+		result: ratelimit.CheckResult{Allowed: false, Limit: 5, Remaining: 0},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithConcurrentLimiter(limiter, "X-User-Type").
+		Submit(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 when concurrent limit exceeded, got %d", w.Code)
+	}
+	if store.saved {
+		t.Error("Redis SaveJob must not be called when concurrent limit is exceeded")
+	}
+	if s3.uploaded {
+		t.Error("S3 upload must not happen when concurrent limit is exceeded")
+	}
+}
+
+// TestSubmit_ConcurrentLimit_DecrOnSaveFailure verifies that DecrConcurrent is
+// called to compensate when Redis save fails after a successful concurrent check.
+func TestSubmit_ConcurrentLimit_DecrOnSaveFailure(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{saveErr: fmt.Errorf("redis down")}
+	limiter := &mockConcurrentLimiter{
+		result: ratelimit.CheckResult{Allowed: true, Limit: 5, Remaining: 4},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithConcurrentLimiter(limiter, "X-User-Type").
+		Submit(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on Redis save failure, got %d", w.Code)
+	}
+	if limiter.decrCalls != 1 {
+		t.Errorf("expected DecrConcurrent called once to compensate, got %d", limiter.decrCalls)
 	}
 }

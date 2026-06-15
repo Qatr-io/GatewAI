@@ -48,13 +48,15 @@ var reservedJobFields = map[string]bool{
 
 // JobHandler handles job submission and status queries.
 type JobHandler struct {
-	registry       *service.Registry
-	store          s3Store           // reuses the interface defined in sync.go
-	redis          asyncJobStore
-	priorityHeader string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
-	consumerHeader string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
-	rateLimiter    ratelimit.Checker // nil = no rate limiting
-	lifecycle      config.LifecycleConfig
+	registry          *service.Registry
+	store             s3Store // reuses the interface defined in sync.go
+	redis             asyncJobStore
+	priorityHeader    string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
+	consumerHeader    string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
+	rateLimiter       ratelimit.Checker // nil = no rate limiting
+	lifecycle         config.LifecycleConfig
+	concurrentLimiter ratelimit.ConcurrentChecker // nil = no concurrent limit
+	userTypeHeader    string                       // HTTP header carrying user type (e.g. "X-User-Type")
 }
 
 func NewJobHandler(
@@ -66,7 +68,22 @@ func NewJobHandler(
 	rateLimiter ratelimit.Checker,
 	lifecycle config.LifecycleConfig,
 ) *JobHandler {
-	return &JobHandler{registry, store, redis, priorityHeader, consumerHeader, rateLimiter, lifecycle}
+	return &JobHandler{
+		registry:       registry,
+		store:          store,
+		redis:          redis,
+		priorityHeader: priorityHeader,
+		consumerHeader: consumerHeader,
+		rateLimiter:    rateLimiter,
+		lifecycle:      lifecycle,
+	}
+}
+
+// WithConcurrentLimiter sets the concurrent job limiter and the user-type header name.
+func (h *JobHandler) WithConcurrentLimiter(l ratelimit.ConcurrentChecker, userTypeHeader string) *JobHandler {
+	h.concurrentLimiter = l
+	h.userTypeHeader = userTypeHeader
+	return h
 }
 
 // submitResponse is the 202 body returned after a successful job submission.
@@ -192,6 +209,29 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if h.consumerHeader != "" {
 		consumerName = r.Header.Get(h.consumerHeader)
 	}
+	userType := ""
+	if h.userTypeHeader != "" {
+		userType = r.Header.Get(h.userTypeHeader)
+	}
+
+	if h.concurrentLimiter != nil {
+		cr, err := h.concurrentLimiter.CheckAndIncrConcurrent(r.Context(), r, serviceType)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "concurrent limit check failed", "error", err)
+			// fail open
+		} else {
+			if cr.Limit > 0 {
+				w.Header().Set("X-Concurrent-Limit", strconv.Itoa(cr.Limit))
+				w.Header().Set("X-Concurrent-Remaining", strconv.Itoa(cr.Remaining))
+			}
+			if !cr.Allowed {
+				metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "concurrent job limit exceeded")
+				return
+			}
+			metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
+		}
+	}
 
 	// Collect extra form fields to forward to the inference API.
 	// Reserved gateway fields are excluded.
@@ -234,6 +274,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		Params:       params,
 		CallbackURL:  callbackURL,
 		ConsumerName: consumerName,
+		UserType:     userType,
 		Priority:     priority,
 		CreatedAt:    now,
 		UpdatedAt:    now,
@@ -242,6 +283,11 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	// Step 2 — persist the job record in Redis (also enqueues to relay:<model>:pending).
 	if err := h.redis.SaveJob(r.Context(), job); err != nil {
 		slog.ErrorContext(r.Context(), "redis save failed", "job_id", jobID, "error", err)
+		if h.concurrentLimiter != nil {
+			if derr := h.concurrentLimiter.DecrConcurrent(r.Context(), consumerName, userType, serviceType); derr != nil {
+				slog.ErrorContext(r.Context(), "concurrent decr failed on save error", "error", derr)
+			}
+		}
 		writeError(w, http.StatusInternalServerError, "failed to save job")
 		return
 	}
