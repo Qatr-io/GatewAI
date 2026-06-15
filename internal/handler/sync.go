@@ -28,14 +28,16 @@ import (
 //   - multipart/form-data → reconstruct and proxy to inference_url
 //   - application/json    → proxy to inference_url (or LLM proxy handler)
 type SyncHandler struct {
-	registry       *service.Registry
-	httpClient     *http.Client
-	consumerHeader string                      // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
-	rateLimiter    ratelimit.Checker           // nil = no rate limiting
-	semaphore      *concurrency.ModelSemaphore // nil = no concurrency limit
-	llm            *llmproxy.Handler           // nil when no LLM services are configured
-	piiChecker     *guardrails.Checker         // nil = PII scanning disabled globally
-	retryBackoff   time.Duration               // initial backoff between retry cycles; default 500ms
+	registry          *service.Registry
+	httpClient        *http.Client
+	consumerHeader    string                          // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
+	rateLimiter       ratelimit.Checker               // nil = no rate limiting
+	semaphore         *concurrency.ModelSemaphore     // nil = no concurrency limit
+	llm               *llmproxy.Handler               // nil when no LLM services are configured
+	piiChecker        *guardrails.Checker             // nil = PII scanning disabled globally
+	retryBackoff      time.Duration                   // initial backoff between retry cycles; default 500ms
+	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
+	userTypeHeader    string
 }
 
 func NewSyncHandler(
@@ -59,6 +61,13 @@ func NewSyncHandler(
 // WithSemaphore sets the per-model concurrency limiter for sync calls.
 func (h *SyncHandler) WithSemaphore(s *concurrency.ModelSemaphore) *SyncHandler {
 	h.semaphore = s
+	return h
+}
+
+// WithProcessingLimiter sets the processing time budget limiter.
+func (h *SyncHandler) WithProcessingLimiter(l ratelimit.ProcessingTimeChecker, userTypeHeader string) *SyncHandler {
+	h.processingLimiter = l
+	h.userTypeHeader = userTypeHeader
 	return h
 }
 
@@ -117,6 +126,26 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
 				return
 			}
+		}
+	}
+
+	if h.processingLimiter != nil {
+		pr, err := h.processingLimiter.CheckProcessingTime(r.Context(), r, def.Type)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "processing time check failed", "error", err)
+			// fail open
+		} else {
+			if pr.Limit > 0 {
+				w.Header().Set("X-ProcessingTime-Limit", strconv.Itoa(pr.Limit))
+				w.Header().Set("X-ProcessingTime-Remaining", strconv.Itoa(pr.Remaining))
+			}
+			if !pr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(pr.ResetAfter.Seconds())))
+				metrics.ProcessingTimeChecksTotal.WithLabelValues(def.Type, r.Header.Get(h.userTypeHeader), "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "processing time budget exceeded")
+				return
+			}
+			metrics.ProcessingTimeChecksTotal.WithLabelValues(def.Type, r.Header.Get(h.userTypeHeader), "allowed").Inc()
 		}
 	}
 
@@ -180,6 +209,26 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if h.processingLimiter != nil {
+		pr, err := h.processingLimiter.CheckProcessingTime(r.Context(), r, def.Type)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "processing time check failed", "error", err)
+			// fail open
+		} else {
+			if pr.Limit > 0 {
+				w.Header().Set("X-ProcessingTime-Limit", strconv.Itoa(pr.Limit))
+				w.Header().Set("X-ProcessingTime-Remaining", strconv.Itoa(pr.Remaining))
+			}
+			if !pr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(pr.ResetAfter.Seconds())))
+				metrics.ProcessingTimeChecksTotal.WithLabelValues(def.Type, r.Header.Get(h.userTypeHeader), "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "processing time budget exceeded")
+				return
+			}
+			metrics.ProcessingTimeChecksTotal.WithLabelValues(def.Type, r.Header.Get(h.userTypeHeader), "allowed").Inc()
+		}
+	}
+
 	if h.semaphore != nil {
 		if !h.semaphore.TryAcquire(def.Model) {
 			writeError(w, http.StatusServiceUnavailable, "model too busy, retry later")
@@ -230,6 +279,8 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 	defer func() {
 		metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model).Observe(time.Since(start).Seconds())
 	}()
+
+	captureForPT := h.processingLimiter != nil
 
 	if len(def.Backends) == 0 {
 		metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, "500").Inc()
@@ -315,7 +366,22 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				}
 			}
 			w.WriteHeader(resp.StatusCode)
-			_, _ = io.Copy(w, resp.Body)
+			if captureForPT && resp.StatusCode < 400 {
+				respBody, _ := io.ReadAll(resp.Body)
+				_, _ = w.Write(respBody)
+				pt := extractProcessingTimeFromResponse(respBody)
+				if pt == 0 {
+					pt = time.Since(start).Seconds()
+				}
+				consumer, userType := h.resolveConsumerAndType(r)
+				if consumer != "" {
+					if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
+						slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+					}
+				}
+			} else {
+				_, _ = io.Copy(w, resp.Body)
+			}
 			return
 		}
 
@@ -350,6 +416,35 @@ func (sw *statusWriter) Status() int {
 		return http.StatusOK
 	}
 	return sw.status
+}
+
+// extractProcessingTimeFromResponse parses the processing_time field from a
+// JSON response body. Returns 0 if absent or not parseable.
+func extractProcessingTimeFromResponse(body []byte) float64 {
+	if len(body) == 0 {
+		return 0
+	}
+	var v struct {
+		ProcessingTime float64 `json:"processing_time"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return 0
+	}
+	return v.ProcessingTime
+}
+
+// resolveConsumerAndType reads consumer name and user type from request headers.
+func (h *SyncHandler) resolveConsumerAndType(r *http.Request) (consumer, userType string) {
+	if h.consumerHeader != "" {
+		consumer = r.Header.Get(h.consumerHeader)
+	}
+	userType = "*"
+	if h.userTypeHeader != "" {
+		if v := r.Header.Get(h.userTypeHeader); v != "" {
+			userType = v
+		}
+	}
+	return
 }
 
 // reconstructMultipart rebuilds the multipart body from the already-parsed form,

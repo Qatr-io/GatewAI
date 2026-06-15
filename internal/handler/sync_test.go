@@ -787,6 +787,93 @@ func TestSyncHandler_RateLimitHeaders_SetOnRejectedRequest(t *testing.T) {
 
 // TestSyncHandler_RateLimitHeaders_AbsentWhenNoLimiter verifies that no
 // X-RateLimit-* headers are set when the rate limiter is not configured.
+// mockProcessingLimiter is a test double for ratelimit.ProcessingTimeChecker.
+type mockProcessingLimiter struct {
+	checkResult ratelimit.CheckResult
+	addCalled   bool
+	addSeconds  float64
+}
+
+func (m *mockProcessingLimiter) CheckProcessingTime(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return m.checkResult, nil
+}
+
+func (m *mockProcessingLimiter) AddProcessingTime(_ context.Context, _, _, _ string, s float64) error {
+	m.addCalled = true
+	m.addSeconds = s
+	return nil
+}
+
+// TestSyncHandler_ProcessingTimeLimitDenied verifies that a 429 is returned when
+// the processing time budget is exhausted.
+func TestSyncHandler_ProcessingTimeLimitDenied(t *testing.T) {
+	limiter := &mockProcessingLimiter{
+		checkResult: ratelimit.CheckResult{Allowed: false, Limit: 100, Remaining: 0},
+	}
+	cfgs := []config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "whisper-large-v3",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		InferenceURL: "http://unused.example.com",
+	}}
+	h := handler.NewSyncHandler(service.NewRegistry(cfgs), "", nil, nil).
+		WithProcessingLimiter(limiter, "X-User-Type")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions",
+		strings.NewReader(`{"model":"whisper-large-v3"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 when processing time budget exceeded, got %d", w.Code)
+	}
+}
+
+// TestSyncHandler_ProcessingTimeLimitAddsAfterProxy verifies AddProcessingTime is
+// called with the processing_time from the upstream JSON response.
+func TestSyncHandler_ProcessingTimeLimitAddsAfterProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"text":"hello","processing_time":5.5}`)
+	}))
+	defer upstream.Close()
+
+	limiter := &mockProcessingLimiter{
+		checkResult: ratelimit.CheckResult{Allowed: true, Limit: 100, Remaining: 50},
+	}
+	cfgs := []config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "whisper-large-v3",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		InferenceURL: upstream.URL,
+	}}
+	h := handler.NewSyncHandler(service.NewRegistry(cfgs), "X-Consumer", nil, nil).
+		WithProcessingLimiter(limiter, "X-User-Type")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions",
+		strings.NewReader(`{"model":"whisper-large-v3"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Consumer", "consumer-x")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if !limiter.addCalled {
+		t.Fatal("expected AddProcessingTime to be called after successful proxy")
+	}
+	if limiter.addSeconds != 5.5 {
+		t.Errorf("expected addSeconds=5.5, got %v", limiter.addSeconds)
+	}
+}
+
 func TestSyncHandler_RateLimitHeaders_AbsentWhenNoLimiter(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
