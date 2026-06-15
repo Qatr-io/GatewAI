@@ -89,6 +89,7 @@ func buildRouter(
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
+		jobHandler.WithProcessingTimeLimiter(limiter)
 	}
 
 	r := chi.NewRouter()

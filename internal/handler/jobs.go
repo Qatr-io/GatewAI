@@ -48,15 +48,16 @@ var reservedJobFields = map[string]bool{
 
 // JobHandler handles job submission and status queries.
 type JobHandler struct {
-	registry          *service.Registry
-	store             s3Store // reuses the interface defined in sync.go
-	redis             asyncJobStore
-	priorityHeader    string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
-	consumerHeader    string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
-	rateLimiter       ratelimit.Checker // nil = no rate limiting
-	lifecycle         config.LifecycleConfig
-	concurrentLimiter ratelimit.ConcurrentChecker // nil = no concurrent limit
-	userTypeHeader    string                       // HTTP header carrying user type (e.g. "X-User-Type")
+	registry              *service.Registry
+	store                 s3Store // reuses the interface defined in sync.go
+	redis                 asyncJobStore
+	priorityHeader        string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
+	consumerHeader        string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
+	rateLimiter           ratelimit.Checker // nil = no rate limiting
+	lifecycle             config.LifecycleConfig
+	concurrentLimiter     ratelimit.ConcurrentChecker     // nil = no concurrent limit
+	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
+	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 }
 
 func NewJobHandler(
@@ -83,6 +84,12 @@ func NewJobHandler(
 func (h *JobHandler) WithConcurrentLimiter(l ratelimit.ConcurrentChecker, userTypeHeader string) *JobHandler {
 	h.concurrentLimiter = l
 	h.userTypeHeader = userTypeHeader
+	return h
+}
+
+// WithProcessingTimeLimiter sets the processing time budget limiter.
+func (h *JobHandler) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *JobHandler {
+	h.processingTimeLimiter = l
 	return h
 }
 
@@ -212,6 +219,26 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	userType := ""
 	if h.userTypeHeader != "" {
 		userType = r.Header.Get(h.userTypeHeader)
+	}
+
+	if h.processingTimeLimiter != nil {
+		pr, err := h.processingTimeLimiter.CheckProcessingTime(r.Context(), r, serviceType)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "processing time check failed", "error", err)
+			// fail open
+		} else {
+			if pr.Limit > 0 {
+				w.Header().Set("X-ProcessingTime-Limit", strconv.Itoa(pr.Limit))
+				w.Header().Set("X-ProcessingTime-Remaining", strconv.Itoa(pr.Remaining))
+			}
+			if !pr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(pr.ResetAfter.Seconds())))
+				metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, r.Header.Get(h.userTypeHeader), "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "processing time budget exceeded")
+				return
+			}
+			metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, r.Header.Get(h.userTypeHeader), "allowed").Inc()
+		}
 	}
 
 	if h.concurrentLimiter != nil {
