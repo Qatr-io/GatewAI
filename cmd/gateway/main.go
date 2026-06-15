@@ -83,9 +83,13 @@ func buildRouter(
 	logger *slog.Logger,
 	reloadFn func() error,
 	rl ratelimit.Checker,
+	limiter *ratelimit.Limiter,
 	llmHandler *llmproxy.Handler,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
+	if limiter != nil {
+		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
+	}
 
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
@@ -109,8 +113,12 @@ func buildRouter(
 	r.Post("/-/jobs/purge", jobHandler.AdminPurge)
 
 	if reg.HasSyncServices() {
-		syncHandler := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
+		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
+		if limiter != nil {
+			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
+		}
+		syncHandler := sh
 		r.Get("/v1/models", handler.ListModels(reg))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
@@ -177,6 +185,9 @@ func main() {
 	}
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
+	if limiter != nil {
+		manager.WithConcurrentLimiter(limiter).WithProcessingTimeLimiter(limiter)
+	}
 
 	// ── LLM proxy ─────────────────────────────────────────────────────────────
 	providerRegistry := provider.NewRegistry()
@@ -243,14 +254,14 @@ func main() {
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			limiter)
 
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, llmHandler)
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, llmHandler)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
