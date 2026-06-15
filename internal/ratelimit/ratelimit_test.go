@@ -442,3 +442,62 @@ func TestAddModelTokens_SetsWindowTTL(t *testing.T) {
 		t.Fatalf("expected positive TTL after first AddModelTokens, got %v", ttl)
 	}
 }
+
+func TestCheckAndIncrConcurrent(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {MaxConcurrent: 2}},
+	}
+	l, _ := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Consumer", "user1")
+
+	r1, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
+	if err != nil || !r1.Allowed {
+		t.Fatalf("first: want allowed, got %+v err=%v", r1, err)
+	}
+	r2, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
+	if err != nil || !r2.Allowed {
+		t.Fatalf("second: want allowed, got %+v err=%v", r2, err)
+	}
+	r3, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
+	if err != nil || r3.Allowed {
+		t.Fatalf("third: want rejected, got %+v err=%v", r3, err)
+	}
+	if err := l.DecrConcurrent(context.Background(), "user1", "*", "audio"); err != nil {
+		t.Fatalf("DecrConcurrent: %v", err)
+	}
+	r4, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
+	if err != nil || !r4.Allowed {
+		t.Fatalf("after decr: want allowed, got %+v err=%v", r4, err)
+	}
+}
+
+func TestCheckProcessingTime(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {ProcessingTime: 100, ProcessingPeriod: "1h"}},
+	}
+	l, _ := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Consumer", "user1")
+
+	r1, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || !r1.Allowed {
+		t.Fatalf("initial: want allowed, got %+v err=%v", r1, err)
+	}
+	// consume 95.7s → stored as 96 (ceil)
+	if err := l.AddProcessingTime(context.Background(), "user1", "*", "audio", 95.7); err != nil {
+		t.Fatalf("AddProcessingTime: %v", err)
+	}
+	r2, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || !r2.Allowed {
+		t.Fatalf("after 96s (limit 100): want allowed, got %+v err=%v", r2, err)
+	}
+	// consume 10 more → total 106, over limit
+	if err := l.AddProcessingTime(context.Background(), "user1", "*", "audio", 10); err != nil {
+		t.Fatalf("AddProcessingTime: %v", err)
+	}
+	r3, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || r3.Allowed {
+		t.Fatalf("over budget: want rejected, got %+v err=%v", r3, err)
+	}
+}

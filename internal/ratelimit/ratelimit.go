@@ -53,6 +53,27 @@ type Checker interface {
 	Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 }
 
+// ConcurrentChecker manages concurrent async job counts per consumer.
+type ConcurrentChecker interface {
+	// CheckAndIncrConcurrent atomically checks and increments the concurrent
+	// job counter. Returns Allowed=false when MaxConcurrent is reached.
+	// No-op (allowed) when MaxConcurrent is 0. Fail-open on Redis errors.
+	CheckAndIncrConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
+	// DecrConcurrent decrements the counter on job completion. consumer and
+	// userType come from the job record (not HTTP headers). Floors at 0.
+	DecrConcurrent(ctx context.Context, consumer, userType, serviceType string) error
+}
+
+// ProcessingTimeChecker checks and accumulates processing time budgets.
+type ProcessingTimeChecker interface {
+	// CheckProcessingTime checks whether the consumer has remaining processing
+	// time budget. Optimistic: check before, add after. Fail-open on Redis errors.
+	CheckProcessingTime(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
+	// AddProcessingTime records consumed seconds (ceiling rounded to int).
+	// Sets TTL on first write. No-op when ProcessingTime is 0 or seconds <= 0.
+	AddProcessingTime(ctx context.Context, consumer, userType, serviceType string, seconds float64) error
+}
+
 // TokenChecker is the interface for token-budget rate limiting implemented by Limiter.
 type TokenChecker interface {
 	// CheckTokens returns whether the caller still has token budget. Fail-open on Redis errors.
@@ -94,6 +115,24 @@ if count == delta then
     redis.call('EXPIRE', KEYS[1], ttl)
 end
 return count
+`)
+
+// checkAndIncrConcurrentScript atomically checks the concurrent counter and
+// increments it if below max. Returns {new_count, 1} if allowed, {current, 0} if rejected.
+// KEYS[1] = counter key, ARGV[1] = max_concurrent
+var checkAndIncrConcurrentScript = redis.NewScript(`
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count >= tonumber(ARGV[1]) then return {count, 0} end
+local new = redis.call('INCR', KEYS[1])
+return {new, 1}
+`)
+
+// decrConcurrentScript decrements the counter with a floor of 0.
+// KEYS[1] = counter key
+var decrConcurrentScript = redis.NewScript(`
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count <= 0 then return 0 end
+return redis.call('DECR', KEYS[1])
 `)
 
 // script atomically increments the counter, sets the TTL on first access,
@@ -382,6 +421,151 @@ func (l *Limiter) AddModelTokens(ctx context.Context, r *http.Request, model str
 		total,
 	).Err(); err != nil {
 		metrics.TokenRatelimitErrorsTotal.WithLabelValues("model:" + model).Inc()
+	}
+	return nil
+}
+
+// CheckAndIncrConcurrent implements ConcurrentChecker.
+func (l *Limiter) CheckAndIncrConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
+	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
+
+	if _, ok := l.limits[serviceType]; !ok {
+		return CheckResult{Allowed: true}, nil
+	}
+	if rlCfg.MaxConcurrent == 0 {
+		metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
+		return CheckResult{Allowed: true}, nil
+	}
+
+	key := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
+	vals, err := checkAndIncrConcurrentScript.Run(ctx, l.rdb, []string{key}, rlCfg.MaxConcurrent).Int64Slice()
+	if err != nil {
+		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		return CheckResult{Allowed: true}, fmt.Errorf("concurrent check script: %w", err)
+	}
+
+	current := vals[0]
+	allowed := vals[1] == 1
+	remaining := int(int64(rlCfg.MaxConcurrent) - current)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	result := "allowed"
+	if !allowed {
+		result = "rejected"
+	}
+	metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, result).Inc()
+
+	return CheckResult{
+		Allowed:   allowed,
+		Limit:     rlCfg.MaxConcurrent,
+		Remaining: remaining,
+	}, nil
+}
+
+// DecrConcurrent implements ConcurrentChecker.
+func (l *Limiter) DecrConcurrent(ctx context.Context, consumer, userType, serviceType string) error {
+	keyLimits, ok := l.limits[serviceType]
+	if !ok {
+		return nil
+	}
+	cfg, ok := keyLimits[userType]
+	if !ok {
+		cfg, ok = keyLimits["*"]
+	}
+	if !ok || cfg.MaxConcurrent == 0 {
+		return nil
+	}
+
+	key := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
+	if err := decrConcurrentScript.Run(ctx, l.rdb, []string{key}).Err(); err != nil {
+		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		return fmt.Errorf("concurrent decr script: %w", err)
+	}
+	return nil
+}
+
+// CheckProcessingTime implements ProcessingTimeChecker.
+func (l *Limiter) CheckProcessingTime(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
+	consumer, userType, cfg := l.resolveIdentity(r, serviceType)
+	if cfg.ProcessingTime == 0 {
+		return CheckResult{Allowed: true}, nil
+	}
+
+	period, err := time.ParseDuration(cfg.ProcessingPeriod)
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("pt:" + serviceType).Inc()
+		return CheckResult{Allowed: true}, fmt.Errorf("parse processing_period %q: %w", cfg.ProcessingPeriod, err)
+	}
+
+	key := fmt.Sprintf("ptrl:%s:%s:%s", consumer, serviceType, userType)
+	raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{key}, cfg.ProcessingTime).Slice()
+	if err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("pt:" + serviceType).Inc()
+		return CheckResult{Allowed: true}, nil // fail-open
+	}
+
+	count := raw[0].(int64)
+	ttl := raw[1].(int64)
+	allowed := count < int64(cfg.ProcessingTime)
+	remaining := cfg.ProcessingTime - int(count)
+	if remaining < 0 {
+		remaining = 0
+	}
+
+	result := "allowed"
+	if !allowed {
+		result = "rejected"
+	}
+	metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, userType, result).Inc()
+
+	var resetAfter time.Duration
+	if !allowed {
+		if ttl > 0 {
+			resetAfter = time.Duration(ttl) * time.Second
+		} else {
+			resetAfter = period
+		}
+	}
+
+	return CheckResult{
+		Allowed:    allowed,
+		Limit:      cfg.ProcessingTime,
+		Remaining:  remaining,
+		ResetAfter: resetAfter,
+	}, nil
+}
+
+// AddProcessingTime implements ProcessingTimeChecker.
+func (l *Limiter) AddProcessingTime(ctx context.Context, consumer, userType, serviceType string, seconds float64) error {
+	if seconds <= 0 {
+		return nil
+	}
+	keyLimits, ok := l.limits[serviceType]
+	if !ok {
+		return nil
+	}
+	cfg, ok := keyLimits[userType]
+	if !ok {
+		cfg, ok = keyLimits["*"]
+	}
+	if !ok || cfg.ProcessingTime == 0 {
+		return nil
+	}
+
+	period, err := time.ParseDuration(cfg.ProcessingPeriod)
+	if err != nil {
+		return fmt.Errorf("parse processing_period %q: %w", cfg.ProcessingPeriod, err)
+	}
+
+	key := fmt.Sprintf("ptrl:%s:%s:%s", consumer, serviceType, userType)
+	delta := int(math.Ceil(seconds))
+	if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
+		int(period.Seconds()),
+		delta,
+	).Err(); err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues("pt:" + serviceType).Inc()
 	}
 	return nil
 }
