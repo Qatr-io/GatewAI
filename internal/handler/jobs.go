@@ -146,6 +146,17 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	serviceType := chi.URLParam(r, "service_type")
 
+	// slotHeld tracks whether CheckConcurrent reserved an in-flight slot that
+	// must be released once SaveJob completes (success or failure).
+	slotHeld := false
+	defer func() {
+		if slotHeld && h.concurrentLimiter != nil {
+			if err := h.concurrentLimiter.ReleaseSlot(context.Background(), r, serviceType); err != nil {
+				slog.Warn("failed to release concurrent slot", "error", err)
+			}
+		}
+	}()
+
 	// Set the body size limit using the maximum across all models for this service
 	// type, before ParseMultipartForm. The model field inside the form is not yet
 	// readable at this point.
@@ -245,7 +256,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		cr, err := h.concurrentLimiter.CheckConcurrent(r.Context(), r, serviceType)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "concurrent limit check failed", "error", err)
-			// fail open
+			// fail open — slot NOT held
 		} else {
 			if cr.Limit > 0 {
 				w.Header().Set("X-Concurrent-Limit", strconv.Itoa(cr.Limit))
@@ -256,6 +267,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 				writeError(w, http.StatusTooManyRequests, "concurrent job limit exceeded")
 				return
 			}
+			slotHeld = true
 			metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
 		}
 	}

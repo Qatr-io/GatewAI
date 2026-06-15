@@ -767,12 +767,18 @@ func TestSubmit_RedisSaveFailure(t *testing.T) {
 
 // mockConcurrentLimiter is a test double for ratelimit.ConcurrentChecker.
 type mockConcurrentLimiter struct {
-	result   ratelimit.CheckResult
-	checkErr error
+	result       ratelimit.CheckResult
+	checkErr     error
+	releaseCalls int
 }
 
 func (m *mockConcurrentLimiter) CheckConcurrent(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
 	return m.result, m.checkErr
+}
+
+func (m *mockConcurrentLimiter) ReleaseSlot(_ context.Context, _ *http.Request, _ string) error {
+	m.releaseCalls++
+	return nil
 }
 
 // TestSubmit_ConcurrentLimit_Denied verifies that a 429 is returned when the
@@ -813,6 +819,75 @@ func (m *mockProcessingTimeLimiter) CheckProcessingTime(_ context.Context, _ *ht
 
 func (m *mockProcessingTimeLimiter) AddProcessingTime(_ context.Context, _, _, _ string, _ float64) error {
 	return nil
+}
+
+// TestSubmit_ConcurrentLimit_ReleaseOnSaveFailure verifies that ReleaseSlot is
+// called to free the in-flight slot when Redis save fails after a successful check.
+func TestSubmit_ConcurrentLimit_ReleaseOnSaveFailure(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{saveErr: fmt.Errorf("redis down")}
+	limiter := &mockConcurrentLimiter{
+		result: ratelimit.CheckResult{Allowed: true, Limit: 1, Remaining: 0},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithConcurrentLimiter(limiter, "X-User-Type").
+		Submit(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 on Redis save failure, got %d", w.Code)
+	}
+	if limiter.releaseCalls != 1 {
+		t.Errorf("expected ReleaseSlot called once to free the in-flight slot, got %d", limiter.releaseCalls)
+	}
+}
+
+// TestSubmit_ConcurrentLimit_ReleaseOnSuccess verifies that ReleaseSlot is called
+// on the success path so the in-flight slot is freed after the job is persisted.
+func TestSubmit_ConcurrentLimit_ReleaseOnSuccess(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	limiter := &mockConcurrentLimiter{
+		result: ratelimit.CheckResult{Allowed: true, Limit: 1, Remaining: 0},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithConcurrentLimiter(limiter, "X-User-Type").
+		Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if limiter.releaseCalls != 1 {
+		t.Errorf("expected ReleaseSlot called once after successful save, got %d", limiter.releaseCalls)
+	}
+}
+
+// TestSubmit_ConcurrentLimit_NoReleaseWhenDenied verifies that ReleaseSlot is NOT
+// called when the concurrent check rejects the request (no slot was acquired).
+func TestSubmit_ConcurrentLimit_NoReleaseWhenDenied(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	limiter := &mockConcurrentLimiter{
+		result: ratelimit.CheckResult{Allowed: false, Limit: 1, Remaining: 0},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithConcurrentLimiter(limiter, "X-User-Type").
+		Submit(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d", w.Code)
+	}
+	if limiter.releaseCalls != 0 {
+		t.Errorf("expected ReleaseSlot not called when denied, got %d", limiter.releaseCalls)
+	}
 }
 
 // TestSubmit_ProcessingTimeLimit_Denied verifies that a 429 is returned when the

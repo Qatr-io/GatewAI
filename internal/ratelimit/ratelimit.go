@@ -54,13 +54,17 @@ type Checker interface {
 }
 
 // ConcurrentChecker counts active (pending+processing) jobs per consumer
-// on-the-fly from the Redis job store. No external counter to maintain.
+// on-the-fly from the Redis job store, combined with a short-lived in-flight
+// slot to prevent TOCTOU races under concurrent submissions.
 type ConcurrentChecker interface {
 	// CheckConcurrent reads the consumer's active job list and returns
-	// Allowed=false when MaxConcurrent is reached. No-op (allowed) when
-	// MaxConcurrent is 0 or no consumer header is configured. Fail-open on
-	// Redis errors.
+	// Allowed=false when MaxConcurrent is reached. When allowed, it atomically
+	// increments a short-lived in-flight counter so concurrent submitters see
+	// each other's pending slot. Fail-open on Redis errors.
 	CheckConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
+	// ReleaseSlot decrements the in-flight counter after SaveJob completes
+	// (success or failure). Must be called exactly once per allowed CheckConcurrent.
+	ReleaseSlot(ctx context.Context, r *http.Request, serviceType string) error
 }
 
 // ProcessingTimeChecker checks and accumulates processing time budgets.
@@ -116,14 +120,18 @@ end
 return count
 `)
 
-// countActiveConcurrentScript iterates the consumer's job sorted set and counts
-// pending+processing jobs for the given service_type.
+// checkAndReserveScript counts active jobs from the consumer sorted set plus the
+// in-flight counter, then atomically reserves a slot if the total is below max.
+// This prevents TOCTOU races: concurrent submitters see each other's pending slot
+// before their job is persisted.
 // KEYS[1] = consumer:{name}:jobs (sorted set of job IDs)
-// ARGV[1] = max_concurrent (int), ARGV[2] = service_type (string)
-// Returns {count, 1} if count < max (allowed), {count, 0} otherwise (rejected).
-var countActiveConcurrentScript = redis.NewScript(`
+// KEYS[2] = jc:{consumer}:{service}:{userType} (in-flight counter)
+// ARGV[1] = max_concurrent (int), ARGV[2] = service_type (string),
+// ARGV[3] = slot_ttl (seconds — safety net for pod crashes)
+// Returns {total, 1} if slot reserved (allowed), {total, 0} if rejected.
+var checkAndReserveScript = redis.NewScript(`
 local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
-local count = 0
+local active = 0
 local svc = ARGV[2]
 for _, id in ipairs(ids) do
     local data = redis.call('GET', 'job:' .. id)
@@ -132,14 +140,26 @@ for _, id in ipairs(ids) do
         if ok and job then
             local s = job['status']
             if (s == 'pending' or s == 'processing') and job['service_type'] == svc then
-                count = count + 1
+                active = active + 1
             end
         end
     end
 end
+local inflight = tonumber(redis.call('GET', KEYS[2]) or '0')
+local total = active + inflight
 local max = tonumber(ARGV[1])
-if count >= max then return {count, 0} end
-return {count, 1}
+if total >= max then return {total, 0} end
+local new = redis.call('INCR', KEYS[2])
+redis.call('EXPIRE', KEYS[2], tonumber(ARGV[3]))
+return {new + active, 1}
+`)
+
+// releaseSlotScript decrements the in-flight counter with a floor of 0.
+// KEYS[1] = jc:{consumer}:{service}:{userType}
+var releaseSlotScript = redis.NewScript(`
+local count = tonumber(redis.call('GET', KEYS[1]) or '0')
+if count <= 0 then return 0 end
+return redis.call('DECR', KEYS[1])
 `)
 
 // script atomically increments the counter, sets the TTL on first access,
@@ -432,9 +452,14 @@ func (l *Limiter) AddModelTokens(ctx context.Context, r *http.Request, model str
 	return nil
 }
 
+// concurrentSlotTTL is the TTL applied to the in-flight slot counter as a
+// safety net in case the gateway crashes between CheckConcurrent and ReleaseSlot.
+// Normal usage always calls ReleaseSlot within milliseconds.
+const concurrentSlotTTL = 300 // 5 minutes
+
 // CheckConcurrent implements ConcurrentChecker.
-// It counts pending+processing jobs for the consumer from the Redis job store.
-// Skips enforcement when no consumer can be identified (anonymous).
+// Counts pending+processing jobs from the sorted set plus any in-flight slots
+// from concurrent submitters. Atomically reserves a slot when allowed.
 func (l *Limiter) CheckConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
 	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
 
@@ -446,17 +471,19 @@ func (l *Limiter) CheckConcurrent(ctx context.Context, r *http.Request, serviceT
 		return CheckResult{Allowed: true}, nil
 	}
 	if consumer == "anonymous" {
-		// No consumer header configured or header absent — cannot enforce per-consumer limit.
+		// No consumer header configured or absent — cannot enforce per-consumer limit.
 		return CheckResult{Allowed: true}, nil
 	}
 
-	key := fmt.Sprintf("consumer:%s:jobs", consumer)
-	vals, err := countActiveConcurrentScript.Run(ctx, l.rdb, []string{key},
-		rlCfg.MaxConcurrent, serviceType,
+	consumerJobsKey := fmt.Sprintf("consumer:%s:jobs", consumer)
+	inflightKey := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
+	vals, err := checkAndReserveScript.Run(ctx, l.rdb,
+		[]string{consumerJobsKey, inflightKey},
+		rlCfg.MaxConcurrent, serviceType, concurrentSlotTTL,
 	).Int64Slice()
 	if err != nil {
 		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return CheckResult{Allowed: true}, fmt.Errorf("concurrent count script: %w", err)
+		return CheckResult{Allowed: true}, fmt.Errorf("concurrent check script: %w", err)
 	}
 
 	current := vals[0]
@@ -477,6 +504,21 @@ func (l *Limiter) CheckConcurrent(ctx context.Context, r *http.Request, serviceT
 		Limit:     rlCfg.MaxConcurrent,
 		Remaining: remaining,
 	}, nil
+}
+
+// ReleaseSlot implements ConcurrentChecker.
+// Decrements the in-flight counter after SaveJob completes.
+func (l *Limiter) ReleaseSlot(ctx context.Context, r *http.Request, serviceType string) error {
+	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
+	if rlCfg.MaxConcurrent == 0 || consumer == "anonymous" {
+		return nil
+	}
+	key := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
+	if err := releaseSlotScript.Run(ctx, l.rdb, []string{key}).Err(); err != nil {
+		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		return fmt.Errorf("release slot script: %w", err)
+	}
+	return nil
 }
 
 // CheckProcessingTime implements ProcessingTimeChecker.
