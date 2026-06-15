@@ -472,7 +472,9 @@ func (l *Limiter) DecrConcurrent(ctx context.Context, consumer, userType, servic
 	}
 	cfg, ok := keyLimits[userType]
 	if !ok {
-		cfg, ok = keyLimits["*"]
+		if cfg, ok = keyLimits["*"]; ok {
+			userType = "*"
+		}
 	}
 	if !ok || cfg.MaxConcurrent == 0 {
 		return nil

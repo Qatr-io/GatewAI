@@ -249,6 +249,11 @@ func main() {
 			limiter = nil
 			rl = nil
 		}
+		if limiter != nil {
+			manager.WithConcurrentLimiter(limiter).WithProcessingTimeLimiter(limiter)
+		} else {
+			manager.WithConcurrentLimiter(nil).WithProcessingTimeLimiter(nil)
+		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
