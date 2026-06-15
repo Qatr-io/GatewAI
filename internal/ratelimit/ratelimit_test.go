@@ -443,32 +443,54 @@ func TestAddModelTokens_SetsWindowTTL(t *testing.T) {
 	}
 }
 
-func TestCheckAndIncrConcurrent(t *testing.T) {
+func TestCheckConcurrent(t *testing.T) {
 	limits := map[string]map[string]config.RateLimitConfig{
 		"audio": {"*": {MaxConcurrent: 2}},
 	}
-	l, _ := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	l, mr := newLimiter(t, limits, "X-Consumer", "X-User-Type")
 	req := httptest.NewRequest(http.MethodPost, "/", nil)
 	req.Header.Set("X-Consumer", "user1")
 
-	r1, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
-	if err != nil || !r1.Allowed {
-		t.Fatalf("first: want allowed, got %+v err=%v", r1, err)
+	seedConcJob := func(id, svcType, status string) {
+		t.Helper()
+		mr.Set("job:"+id, `{"status":"`+status+`","service_type":"`+svcType+`"}`)
+		if _, err := mr.ZAdd("consumer:user1:jobs", 0, id); err != nil {
+			t.Fatalf("ZAdd: %v", err)
+		}
 	}
-	r2, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
-	if err != nil || !r2.Allowed {
-		t.Fatalf("second: want allowed, got %+v err=%v", r2, err)
+
+	// 0 active jobs → allowed, remaining=2.
+	r0, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r0.Allowed || r0.Remaining != 2 {
+		t.Fatalf("0 jobs: want allowed remaining=2, got %+v err=%v", r0, err)
 	}
-	r3, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
-	if err != nil || r3.Allowed {
-		t.Fatalf("third: want rejected, got %+v err=%v", r3, err)
+
+	// 1 pending job → allowed, remaining=1.
+	seedConcJob("j1", "audio", "pending")
+	r1, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r1.Allowed || r1.Remaining != 1 {
+		t.Fatalf("1 job: want allowed remaining=1, got %+v err=%v", r1, err)
 	}
-	if err := l.DecrConcurrent(context.Background(), "user1", "*", "audio"); err != nil {
-		t.Fatalf("DecrConcurrent: %v", err)
+
+	// 2 active jobs (1 pending + 1 processing) → rejected, remaining=0.
+	seedConcJob("j2", "audio", "processing")
+	r2, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || r2.Allowed || r2.Remaining != 0 {
+		t.Fatalf("2 jobs: want rejected remaining=0, got %+v err=%v", r2, err)
 	}
-	r4, err := l.CheckAndIncrConcurrent(context.Background(), req, "audio")
-	if err != nil || !r4.Allowed {
-		t.Fatalf("after decr: want allowed, got %+v err=%v", r4, err)
+
+	// Completed job is not counted → back to 1 active, allowed again.
+	mr.Set("job:j2", `{"status":"completed","service_type":"audio"}`)
+	r3, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r3.Allowed || r3.Remaining != 1 {
+		t.Fatalf("after complete: want allowed remaining=1, got %+v err=%v", r3, err)
+	}
+
+	// Jobs for a different service_type are not counted.
+	seedConcJob("j3", "video", "pending")
+	r4, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r4.Allowed || r4.Remaining != 1 {
+		t.Fatalf("cross-service: want allowed remaining=1, got %+v err=%v", r4, err)
 	}
 }
 

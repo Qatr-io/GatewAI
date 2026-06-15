@@ -18,7 +18,6 @@ type Manager struct {
 	webhookSender *WebhookSender
 	sub           *Subscriber
 
-	concurrentLimiter    ratelimit.ConcurrentChecker    // nil = disabled
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 
 	mu        sync.Mutex
@@ -94,12 +93,6 @@ func (m *Manager) Reconcile(newReg *service.Registry) {
 	}
 }
 
-// WithConcurrentLimiter attaches a concurrent job limiter. Call before Start.
-func (m *Manager) WithConcurrentLimiter(l ratelimit.ConcurrentChecker) *Manager {
-	m.concurrentLimiter = l
-	return m
-}
-
 // WithProcessingTimeLimiter attaches a processing-time budget limiter. Call before Start.
 func (m *Manager) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *Manager {
 	m.processingTimeLimiter = l
@@ -134,12 +127,6 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 	}
 
 	m.redis.NotifyJobDone(ctx, jobID)
-
-	if m.concurrentLimiter != nil {
-		if err := m.concurrentLimiter.DecrConcurrent(ctx, job.ConsumerName, job.UserType, job.ServiceType); err != nil {
-			slog.Error("manager: failed to decrement concurrent counter", "job_id", jobID, "error", err)
-		}
-	}
 
 	if m.processingTimeLimiter != nil && job.ProcessingTime > 0 {
 		if err := m.processingTimeLimiter.AddProcessingTime(ctx, job.ConsumerName, job.UserType, job.ServiceType, job.ProcessingTime); err != nil {

@@ -187,7 +187,7 @@ func main() {
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
 	if limiter != nil {
-		manager.WithConcurrentLimiter(limiter).WithProcessingTimeLimiter(limiter)
+		manager.WithProcessingTimeLimiter(limiter)
 	}
 
 	// ── LLM proxy ─────────────────────────────────────────────────────────────
@@ -251,9 +251,9 @@ func main() {
 			rl = nil
 		}
 		if limiter != nil {
-			manager.WithConcurrentLimiter(limiter).WithProcessingTimeLimiter(limiter)
+			manager.WithProcessingTimeLimiter(limiter)
 		} else {
-			manager.WithConcurrentLimiter(nil).WithProcessingTimeLimiter(nil)
+			manager.WithProcessingTimeLimiter(nil)
 		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,

@@ -53,15 +53,14 @@ type Checker interface {
 	Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 }
 
-// ConcurrentChecker manages concurrent async job counts per consumer.
+// ConcurrentChecker counts active (pending+processing) jobs per consumer
+// on-the-fly from the Redis job store. No external counter to maintain.
 type ConcurrentChecker interface {
-	// CheckAndIncrConcurrent atomically checks and increments the concurrent
-	// job counter. Returns Allowed=false when MaxConcurrent is reached.
-	// No-op (allowed) when MaxConcurrent is 0. Fail-open on Redis errors.
-	CheckAndIncrConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
-	// DecrConcurrent decrements the counter on job completion. consumer and
-	// userType come from the job record (not HTTP headers). Floors at 0.
-	DecrConcurrent(ctx context.Context, consumer, userType, serviceType string) error
+	// CheckConcurrent reads the consumer's active job list and returns
+	// Allowed=false when MaxConcurrent is reached. No-op (allowed) when
+	// MaxConcurrent is 0 or no consumer header is configured. Fail-open on
+	// Redis errors.
+	CheckConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error)
 }
 
 // ProcessingTimeChecker checks and accumulates processing time budgets.
@@ -117,22 +116,30 @@ end
 return count
 `)
 
-// checkAndIncrConcurrentScript atomically checks the concurrent counter and
-// increments it if below max. Returns {new_count, 1} if allowed, {current, 0} if rejected.
-// KEYS[1] = counter key, ARGV[1] = max_concurrent
-var checkAndIncrConcurrentScript = redis.NewScript(`
-local count = tonumber(redis.call('GET', KEYS[1]) or '0')
-if count >= tonumber(ARGV[1]) then return {count, 0} end
-local new = redis.call('INCR', KEYS[1])
-return {new, 1}
-`)
-
-// decrConcurrentScript decrements the counter with a floor of 0.
-// KEYS[1] = counter key
-var decrConcurrentScript = redis.NewScript(`
-local count = tonumber(redis.call('GET', KEYS[1]) or '0')
-if count <= 0 then return 0 end
-return redis.call('DECR', KEYS[1])
+// countActiveConcurrentScript iterates the consumer's job sorted set and counts
+// pending+processing jobs for the given service_type.
+// KEYS[1] = consumer:{name}:jobs (sorted set of job IDs)
+// ARGV[1] = max_concurrent (int), ARGV[2] = service_type (string)
+// Returns {count, 1} if count < max (allowed), {count, 0} otherwise (rejected).
+var countActiveConcurrentScript = redis.NewScript(`
+local ids = redis.call('ZRANGE', KEYS[1], 0, -1)
+local count = 0
+local svc = ARGV[2]
+for _, id in ipairs(ids) do
+    local data = redis.call('GET', 'job:' .. id)
+    if data then
+        local ok, job = pcall(cjson.decode, data)
+        if ok and job then
+            local s = job['status']
+            if (s == 'pending' or s == 'processing') and job['service_type'] == svc then
+                count = count + 1
+            end
+        end
+    end
+end
+local max = tonumber(ARGV[1])
+if count >= max then return {count, 0} end
+return {count, 1}
 `)
 
 // script atomically increments the counter, sets the TTL on first access,
@@ -425,8 +432,10 @@ func (l *Limiter) AddModelTokens(ctx context.Context, r *http.Request, model str
 	return nil
 }
 
-// CheckAndIncrConcurrent implements ConcurrentChecker.
-func (l *Limiter) CheckAndIncrConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
+// CheckConcurrent implements ConcurrentChecker.
+// It counts pending+processing jobs for the consumer from the Redis job store.
+// Skips enforcement when no consumer can be identified (anonymous).
+func (l *Limiter) CheckConcurrent(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
 	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
 
 	if _, ok := l.limits[serviceType]; !ok {
@@ -436,12 +445,18 @@ func (l *Limiter) CheckAndIncrConcurrent(ctx context.Context, r *http.Request, s
 		metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
 		return CheckResult{Allowed: true}, nil
 	}
+	if consumer == "anonymous" {
+		// No consumer header configured or header absent — cannot enforce per-consumer limit.
+		return CheckResult{Allowed: true}, nil
+	}
 
-	key := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
-	vals, err := checkAndIncrConcurrentScript.Run(ctx, l.rdb, []string{key}, rlCfg.MaxConcurrent).Int64Slice()
+	key := fmt.Sprintf("consumer:%s:jobs", consumer)
+	vals, err := countActiveConcurrentScript.Run(ctx, l.rdb, []string{key},
+		rlCfg.MaxConcurrent, serviceType,
+	).Int64Slice()
 	if err != nil {
 		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return CheckResult{Allowed: true}, fmt.Errorf("concurrent check script: %w", err)
+		return CheckResult{Allowed: true}, fmt.Errorf("concurrent count script: %w", err)
 	}
 
 	current := vals[0]
@@ -462,30 +477,6 @@ func (l *Limiter) CheckAndIncrConcurrent(ctx context.Context, r *http.Request, s
 		Limit:     rlCfg.MaxConcurrent,
 		Remaining: remaining,
 	}, nil
-}
-
-// DecrConcurrent implements ConcurrentChecker.
-func (l *Limiter) DecrConcurrent(ctx context.Context, consumer, userType, serviceType string) error {
-	keyLimits, ok := l.limits[serviceType]
-	if !ok {
-		return nil
-	}
-	cfg, ok := keyLimits[userType]
-	if !ok {
-		if cfg, ok = keyLimits["*"]; ok {
-			userType = "*"
-		}
-	}
-	if !ok || cfg.MaxConcurrent == 0 {
-		return nil
-	}
-
-	key := fmt.Sprintf("jc:%s:%s:%s", consumer, serviceType, userType)
-	if err := decrConcurrentScript.Run(ctx, l.rdb, []string{key}).Err(); err != nil {
-		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return fmt.Errorf("concurrent decr script: %w", err)
-	}
-	return nil
 }
 
 // CheckProcessingTime implements ProcessingTimeChecker.

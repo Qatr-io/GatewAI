@@ -242,7 +242,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.concurrentLimiter != nil {
-		cr, err := h.concurrentLimiter.CheckAndIncrConcurrent(r.Context(), r, serviceType)
+		cr, err := h.concurrentLimiter.CheckConcurrent(r.Context(), r, serviceType)
 		if err != nil {
 			slog.ErrorContext(r.Context(), "concurrent limit check failed", "error", err)
 			// fail open
@@ -310,11 +310,6 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	// Step 2 — persist the job record in Redis (also enqueues to relay:<model>:pending).
 	if err := h.redis.SaveJob(r.Context(), job); err != nil {
 		slog.ErrorContext(r.Context(), "redis save failed", "job_id", jobID, "error", err)
-		if h.concurrentLimiter != nil {
-			if derr := h.concurrentLimiter.DecrConcurrent(r.Context(), consumerName, userType, serviceType); derr != nil {
-				slog.ErrorContext(r.Context(), "concurrent decr failed on save error", "error", derr)
-			}
-		}
 		writeError(w, http.StatusInternalServerError, "failed to save job")
 		return
 	}

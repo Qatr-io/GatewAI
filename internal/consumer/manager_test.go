@@ -16,19 +16,6 @@ import (
 
 // ── test doubles ─────────────────────────────────────────────────────────────
 
-type mockConcLimiter struct {
-	decrCalls []struct{ consumer, userType, svcType string }
-}
-
-func (m *mockConcLimiter) CheckAndIncrConcurrent(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
-	return ratelimit.CheckResult{Allowed: true}, nil
-}
-
-func (m *mockConcLimiter) DecrConcurrent(_ context.Context, consumer, userType, svcType string) error {
-	m.decrCalls = append(m.decrCalls, struct{ consumer, userType, svcType string }{consumer, userType, svcType})
-	return nil
-}
-
 type mockPTLimiter struct {
 	addCalls []struct {
 		consumer, userType, svcType string
@@ -70,33 +57,6 @@ func seedJob(t *testing.T, mr *miniredis.Miniredis, job *model.Job) {
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
-
-// TestOnComplete_CallsDecrConcurrent verifies DecrConcurrent is called with the
-// job's consumer, user_type, and service_type on job completion.
-func TestOnComplete_CallsDecrConcurrent(t *testing.T) {
-	rc, mr := newTestRedis(t)
-
-	job := &model.Job{
-		ID:           "j1",
-		ServiceType:  "transcription",
-		ConsumerName: "consumer-a",
-		UserType:     "premium",
-		Status:       model.JobStatusCompleted,
-	}
-	seedJob(t, mr, job)
-
-	conc := &mockConcLimiter{}
-	mgr := NewManager(rc, nil, false).WithConcurrentLimiter(conc)
-	mgr.onComplete(context.Background(), "j1")
-
-	if len(conc.decrCalls) != 1 {
-		t.Fatalf("expected 1 DecrConcurrent call, got %d", len(conc.decrCalls))
-	}
-	c := conc.decrCalls[0]
-	if c.consumer != "consumer-a" || c.userType != "premium" || c.svcType != "transcription" {
-		t.Errorf("unexpected DecrConcurrent args: %+v", c)
-	}
-}
 
 // TestOnComplete_CallsAddProcessingTime verifies AddProcessingTime is called
 // with the job's processing_time when it is non-zero.

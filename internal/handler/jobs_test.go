@@ -767,18 +767,12 @@ func TestSubmit_RedisSaveFailure(t *testing.T) {
 
 // mockConcurrentLimiter is a test double for ratelimit.ConcurrentChecker.
 type mockConcurrentLimiter struct {
-	result    ratelimit.CheckResult
-	checkErr  error
-	decrCalls int
+	result   ratelimit.CheckResult
+	checkErr error
 }
 
-func (m *mockConcurrentLimiter) CheckAndIncrConcurrent(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+func (m *mockConcurrentLimiter) CheckConcurrent(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
 	return m.result, m.checkErr
-}
-
-func (m *mockConcurrentLimiter) DecrConcurrent(_ context.Context, _, _, _ string) error {
-	m.decrCalls++
-	return nil
 }
 
 // TestSubmit_ConcurrentLimit_Denied verifies that a 429 is returned when the
@@ -821,29 +815,6 @@ func (m *mockProcessingTimeLimiter) AddProcessingTime(_ context.Context, _, _, _
 	return nil
 }
 
-// TestSubmit_ConcurrentLimit_DecrOnSaveFailure verifies that DecrConcurrent is
-// called to compensate when Redis save fails after a successful concurrent check.
-func TestSubmit_ConcurrentLimit_DecrOnSaveFailure(t *testing.T) {
-	s3 := &mockJobS3{}
-	store := &mockAsyncStore{saveErr: fmt.Errorf("redis down")}
-	limiter := &mockConcurrentLimiter{
-		result: ratelimit.CheckResult{Allowed: true, Limit: 5, Remaining: 4},
-	}
-
-	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
-	w := httptest.NewRecorder()
-	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
-		WithConcurrentLimiter(limiter, "X-User-Type").
-		Submit(w, req)
-
-	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 on Redis save failure, got %d", w.Code)
-	}
-	if limiter.decrCalls != 1 {
-		t.Errorf("expected DecrConcurrent called once to compensate, got %d", limiter.decrCalls)
-	}
-}
-
 // TestSubmit_ProcessingTimeLimit_Denied verifies that a 429 is returned when the
 // processing time budget is exhausted, with no S3/Redis side effects.
 func TestSubmit_ProcessingTimeLimit_Denied(t *testing.T) {
@@ -872,8 +843,8 @@ func TestSubmit_ProcessingTimeLimit_Denied(t *testing.T) {
 }
 
 // TestSubmit_ProcessingTimeLimit_DeniedBeforeConcurrent verifies that the
-// processing time check fires before the concurrent counter is incremented,
-// so a denied request does not consume a concurrent slot.
+// processing time check fires before the concurrent check, so a denied PT
+// request also skips the concurrent check (no S3/Redis side effects).
 func TestSubmit_ProcessingTimeLimit_DeniedBeforeConcurrent(t *testing.T) {
 	s3 := &mockJobS3{}
 	store := &mockAsyncStore{}
@@ -892,8 +863,11 @@ func TestSubmit_ProcessingTimeLimit_DeniedBeforeConcurrent(t *testing.T) {
 	if w.Code != http.StatusTooManyRequests {
 		t.Errorf("expected 429, got %d", w.Code)
 	}
-	if concLimiter.decrCalls != 0 {
-		t.Error("DecrConcurrent must not be called: concurrent slot should never have been acquired")
+	if s3.uploaded {
+		t.Error("S3 upload must not be called when PT budget is exceeded")
+	}
+	if store.saved {
+		t.Error("Redis SaveJob must not be called when PT budget is exceeded")
 	}
 }
 
