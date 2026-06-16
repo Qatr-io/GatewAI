@@ -76,6 +76,13 @@ data:
           token_rate:   {{ $cfg.tokenRate }}
           token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
+          {{- if $cfg.maxConcurrent }}
+          max_concurrent: {{ $cfg.maxConcurrent }}
+          {{- end }}
+          {{- if $cfg.processingTime }}
+          processing_time:   {{ $cfg.processingTime }}
+          processing_period: {{ $cfg.processingPeriod | quote }}
+          {{- end }}
         {{- end }}
       {{- end }}
     {{- end }}

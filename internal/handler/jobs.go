@@ -48,13 +48,16 @@ var reservedJobFields = map[string]bool{
 
 // JobHandler handles job submission and status queries.
 type JobHandler struct {
-	registry       *service.Registry
-	store          s3Store           // reuses the interface defined in sync.go
-	redis          asyncJobStore
-	priorityHeader string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
-	consumerHeader string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
-	rateLimiter    ratelimit.Checker // nil = no rate limiting
-	lifecycle      config.LifecycleConfig
+	registry              *service.Registry
+	store                 s3Store // reuses the interface defined in sync.go
+	redis                 asyncJobStore
+	priorityHeader        string            // HTTP header that triggers high-priority routing (e.g. "X-Priority")
+	consumerHeader        string            // HTTP header identifying the API consumer (e.g. "X-Consumer-Username")
+	rateLimiter           ratelimit.Checker // nil = no rate limiting
+	lifecycle             config.LifecycleConfig
+	concurrentLimiter     ratelimit.ConcurrentChecker     // nil = no concurrent limit
+	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
+	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 }
 
 func NewJobHandler(
@@ -66,7 +69,28 @@ func NewJobHandler(
 	rateLimiter ratelimit.Checker,
 	lifecycle config.LifecycleConfig,
 ) *JobHandler {
-	return &JobHandler{registry, store, redis, priorityHeader, consumerHeader, rateLimiter, lifecycle}
+	return &JobHandler{
+		registry:       registry,
+		store:          store,
+		redis:          redis,
+		priorityHeader: priorityHeader,
+		consumerHeader: consumerHeader,
+		rateLimiter:    rateLimiter,
+		lifecycle:      lifecycle,
+	}
+}
+
+// WithConcurrentLimiter sets the concurrent job limiter and the user-type header name.
+func (h *JobHandler) WithConcurrentLimiter(l ratelimit.ConcurrentChecker, userTypeHeader string) *JobHandler {
+	h.concurrentLimiter = l
+	h.userTypeHeader = userTypeHeader
+	return h
+}
+
+// WithProcessingTimeLimiter sets the processing time budget limiter.
+func (h *JobHandler) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *JobHandler {
+	h.processingTimeLimiter = l
+	return h
 }
 
 // submitResponse is the 202 body returned after a successful job submission.
@@ -121,6 +145,17 @@ type jobSummary struct {
 func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	serviceType := chi.URLParam(r, "service_type")
+
+	// slotHeld tracks whether CheckConcurrent reserved an in-flight slot that
+	// must be released once SaveJob completes (success or failure).
+	slotHeld := false
+	defer func() {
+		if slotHeld && h.concurrentLimiter != nil {
+			if err := h.concurrentLimiter.ReleaseSlot(context.Background(), r, serviceType); err != nil {
+				slog.Warn("failed to release concurrent slot", "error", err)
+			}
+		}
+	}()
 
 	// Set the body size limit using the maximum across all models for this service
 	// type, before ParseMultipartForm. The model field inside the form is not yet
@@ -192,6 +227,50 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if h.consumerHeader != "" {
 		consumerName = r.Header.Get(h.consumerHeader)
 	}
+	userType := ""
+	if h.userTypeHeader != "" {
+		userType = r.Header.Get(h.userTypeHeader)
+	}
+
+	if h.processingTimeLimiter != nil {
+		pr, err := h.processingTimeLimiter.CheckProcessingTime(r.Context(), r, serviceType)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "processing time check failed", "error", err)
+			// fail open
+		} else {
+			if pr.Limit > 0 {
+				w.Header().Set("X-ProcessingTime-Limit", strconv.Itoa(pr.Limit))
+				w.Header().Set("X-ProcessingTime-Remaining", strconv.Itoa(pr.Remaining))
+			}
+			if !pr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(pr.ResetAfter.Seconds())))
+				metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, r.Header.Get(h.userTypeHeader), "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "processing time budget exceeded")
+				return
+			}
+			metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, r.Header.Get(h.userTypeHeader), "allowed").Inc()
+		}
+	}
+
+	if h.concurrentLimiter != nil {
+		cr, err := h.concurrentLimiter.CheckConcurrent(r.Context(), r, serviceType)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "concurrent limit check failed", "error", err)
+			// fail open — slot NOT held
+		} else {
+			if cr.Limit > 0 {
+				w.Header().Set("X-Concurrent-Limit", strconv.Itoa(cr.Limit))
+				w.Header().Set("X-Concurrent-Remaining", strconv.Itoa(cr.Remaining))
+			}
+			if !cr.Allowed {
+				metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "denied").Inc()
+				writeError(w, http.StatusTooManyRequests, "concurrent job limit exceeded")
+				return
+			}
+			slotHeld = true
+			metrics.ConcurrentJobChecksTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
+		}
+	}
 
 	// Collect extra form fields to forward to the inference API.
 	// Reserved gateway fields are excluded.
@@ -234,6 +313,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		Params:       params,
 		CallbackURL:  callbackURL,
 		ConsumerName: consumerName,
+		UserType:     userType,
 		Priority:     priority,
 		CreatedAt:    now,
 		UpdatedAt:    now,

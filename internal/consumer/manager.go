@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
 )
@@ -16,6 +17,8 @@ type Manager struct {
 	redis         *storage.RedisClient
 	webhookSender *WebhookSender
 	sub           *Subscriber
+
+	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 
 	mu        sync.Mutex
 	parentCtx context.Context
@@ -90,6 +93,12 @@ func (m *Manager) Reconcile(newReg *service.Registry) {
 	}
 }
 
+// WithProcessingTimeLimiter attaches a processing-time budget limiter. Call before Start.
+func (m *Manager) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *Manager {
+	m.processingTimeLimiter = l
+	return m
+}
+
 // UpdatePersistsResult updates S3 result retention policy.
 // Safe to call concurrently with in-flight webhook goroutines.
 func (m *Manager) UpdatePersistsResult(v bool) {
@@ -118,6 +127,12 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 	}
 
 	m.redis.NotifyJobDone(ctx, jobID)
+
+	if m.processingTimeLimiter != nil && job.ProcessingTime > 0 {
+		if err := m.processingTimeLimiter.AddProcessingTime(ctx, job.ConsumerName, job.UserType, job.ServiceType, job.ProcessingTime); err != nil {
+			slog.Error("manager: failed to add processing time", "job_id", jobID, "error", err)
+		}
+	}
 
 	if job.CallbackURL != "" {
 		m.wg.Add(1)

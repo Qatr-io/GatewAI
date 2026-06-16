@@ -43,6 +43,13 @@ type RateLimitConfig struct {
 	Period      string `yaml:"period"`       // e.g. "1m", "1h", "24h"
 	TokenRate   int    `yaml:"token_rate"`   // max total tokens per TokenPeriod (0 = disabled)
 	TokenPeriod string `yaml:"token_period"` // e.g. "1h", "24h"
+	// MaxConcurrent caps the number of async jobs in pending+processing state
+	// per consumer per service type. 0 = disabled.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// ProcessingTime caps total inference processing seconds per consumer per
+	// service type within ProcessingPeriod. 0 = disabled.
+	ProcessingTime   int    `yaml:"processing_time"`
+	ProcessingPeriod string `yaml:"processing_period"` // e.g. "1h", "24h"
 }
 
 // MetricsConfig controls optional high-cardinality metric features.
@@ -344,6 +351,9 @@ func (c *Config) validate() error {
 		for userType, limit := range userLimits {
 			if limit.TokenRate > 0 && limit.TokenPeriod == "" {
 				return fmt.Errorf("rate_limits[%s][%s]: token_rate requires token_period", svcType, userType)
+			}
+			if limit.ProcessingTime > 0 && limit.ProcessingPeriod == "" {
+				return fmt.Errorf("rate_limits[%s][%s]: processing_time requires processing_period", svcType, userType)
 			}
 		}
 	}

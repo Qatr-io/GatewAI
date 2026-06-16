@@ -26,8 +26,14 @@ type Job struct {
 	InferenceURL  string            `json:"inference_url,omitempty"`
 	Params        map[string]string `json:"params,omitempty"`
 	ConsumerName  string            `json:"consumer_name,omitempty"` // set from configurable HTTP header (e.g. X-Consumer-Username)
-	Priority      bool              `json:"priority,omitempty"`      // true = inserted at head of relay queue (LPUSH)
+	// UserType is the value of server.user_type_header at submission time ("*" when absent).
+	// Persisted so the consumer can call DecrConcurrent/AddProcessingTime without the original request.
+	UserType      string            `json:"user_type,omitempty"`
+	Priority      bool              `json:"priority,omitempty"` // true = inserted at head of relay queue (LPUSH)
 	Error         string            `json:"error,omitempty"`
+	// ProcessingTime is the inference processing duration in seconds, extracted
+	// from the result JSON by the relay and written back into the job record.
+	ProcessingTime float64          `json:"processing_time,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
 	// QueuePosition is not persisted — populated transiently by the storage layer for pending jobs.
