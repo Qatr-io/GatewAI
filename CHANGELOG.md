@@ -16,6 +16,20 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.16.1] — 2026-06-16
+
+#### Added
+
+- **Concurrent job limit** (`max_concurrent`): per-consumer, per-service-type, per-user-type cap on the number of async jobs simultaneously in `pending` or `processing` state. Enforced at submission time; returns `429` on breach. Redis key: `cjl:{consumer}:{serviceType}:{userType}`.
+- **Processing time budget** (`processing_time` / `processing_period`): per-consumer, per-service-type, per-user-type cap on cumulative inference seconds per time window. Applies to both async and sync calls. The relay propagates `processing_time` from `result.json` through `PublishResult`; the gateway records it on completion. Returns `429` on breach.
+
+#### Fixed
+
+- **TOCTOU race in concurrent job limit**: count-on-the-fly via `LPOS` replaces the previous optimistic counter, preventing over-admission under concurrent submissions.
+- **Decrement never fired after hot reload or wildcard user type**: `ConcurrentChecker` now correctly decrements the gauge in all code paths.
+
+---
+
 ### [v0.16.0] — 2026-06-12
 
 #### Added
@@ -595,6 +609,14 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [v0.7.3] — 2026-06-16
+
+#### Added
+
+- **Processing time propagation**: `processing_time` field from `result.json` is now extracted and included in `PublishResult`, allowing the gateway to account for inference duration in processing time budgets.
+
+---
 
 ### [v0.7.2] — 2026-06-12
 

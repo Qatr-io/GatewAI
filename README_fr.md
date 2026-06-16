@@ -164,9 +164,11 @@ metrics:
   top_consumers: 10      # expose le top-N dans Prometheus via Redis sorted sets; 0 = désactivé
 
 # Rate limiting par consumer, service type et user type (Redis fixed-window).
-# rate / period        → max requêtes par fenêtre.
-# token_rate / token_period → max total tokens (prompt+completion) par fenêtre
-#                        (LLM proxy uniquement ; rate: 0 ou absent = pas de limite).
+# rate / period              → max requêtes par fenêtre.
+# token_rate / token_period  → max total tokens (prompt+completion) par fenêtre
+#                              (LLM proxy uniquement ; rate: 0 ou absent = pas de limite).
+# max_concurrent             → max jobs asynchrones simultanés (pending+processing) ; 0 = illimité.
+# processing_time / processing_period → max secondes d'inférence cumulées par fenêtre ; 0 = illimité.
 rate_limits:
   audio:
     unlimited:           # rate: 0 = aucune limite (Redis non consulté)
@@ -174,6 +176,9 @@ rate_limits:
     sa:                  # header user_type_header = "sa"
       rate: 100
       period: 1m
+      max_concurrent: 10          # au plus 10 jobs en vol simultanément
+      processing_time: 7200       # au plus 2 h d'inférence par heure
+      processing_period: 1h
     user:
       rate: 20
       period: 1m
