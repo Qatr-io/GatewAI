@@ -61,7 +61,7 @@ type mockPublisher struct {
 	err   error
 }
 
-func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string) error {
+func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64) error {
 	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg})
 	return p.err
 }
@@ -321,5 +321,25 @@ func TestProcess_S3PutTransientError_RetriesOnce(t *testing.T) {
 	}
 	if len(pub.calls) != 1 || pub.calls[0].status != model.JobStatusCompleted {
 		t.Errorf("expected one completed result, got %v", pub.calls)
+	}
+}
+
+func TestExtractProcessingTime(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    []byte
+		expected float64
+	}{
+		{"present", []byte(`{"text":"hello","processing_time":9.71558}`), 9.71558},
+		{"absent", []byte(`{"text":"hello"}`), 0},
+		{"invalid", []byte(`not json`), 0},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := extractProcessingTime(tc.input)
+			if got != tc.expected {
+				t.Errorf("got %v, want %v", got, tc.expected)
+			}
+		})
 	}
 }

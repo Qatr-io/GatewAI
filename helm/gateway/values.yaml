@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/qatr-io/gatewai/gateway
-  tag: "v0.16.0"
+  tag: "v0.16.1"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -42,15 +42,27 @@ server:
 # rate: 0 = unlimited sentinel (no Redis check performed).
 # Requires server.consumerHeader and server.userTypeHeader to be set.
 #
+# Available limit fields per entry:
+#   rate / period              — max requests per window
+#   tokenRate / tokenPeriod    — max cumulative tokens per window (LLM only)
+#   maxConcurrent              — max async jobs in pending+processing simultaneously
+#   processingTime / processingPeriod — max cumulative inference seconds per window
+#
 # Example:
 # rateLimits:
 #   audio:
 #     premium:
 #       rate: 100
 #       period: "1m"
+#       maxConcurrent: 10
+#       processingTime: 7200
+#       processingPeriod: "1h"
 #     "*":
 #       rate: 10
 #       period: "1m"
+#       maxConcurrent: 1
+#       processingTime: 120
+#       processingPeriod: "1h"
 #   llm:
 #     "*":
 #       rate: 20

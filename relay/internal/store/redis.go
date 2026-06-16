@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -47,11 +48,12 @@ func (s *Store) GetJob(ctx context.Context, id string) (*model.Job, error) {
 }
 
 // updateJobScript atomically reads a job JSON, skips already-terminal jobs
-// (completed/failed), patches status/result_ref/error/updated_at, and
-// re-writes the blob with the same TTL (falling back to 72 h if none is set).
+// (completed/failed/cancelled), patches status/result_ref/error/updated_at and
+// optionally processing_time, and re-writes with the same TTL (fallback 72 h).
 //
 // KEYS[1] = job:{id}
-// ARGV[1] = status, ARGV[2] = result_ref, ARGV[3] = error, ARGV[4] = updated_at
+// ARGV[1] = status, ARGV[2] = result_ref, ARGV[3] = error,
+// ARGV[4] = updated_at, ARGV[5] = processing_time (float string, "" to skip)
 var updateJobScript = redis.NewScript(`
 local data = redis.call('GET', KEYS[1])
 if not data then
@@ -65,6 +67,9 @@ job['status']     = ARGV[1]
 job['result_ref'] = ARGV[2]
 job['error']      = ARGV[3]
 job['updated_at'] = ARGV[4]
+if ARGV[5] ~= '' then
+    job['processing_time'] = tonumber(ARGV[5])
+end
 local ttl = tonumber(redis.call('TTL', KEYS[1]))
 if ttl <= 0 then
     ttl = ` + fmt.Sprintf("%d", defaultTTLSecs) + `
@@ -73,14 +78,16 @@ redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ttl)
 return redis.status_reply('OK')
 `)
 
-// UpdateJobResult atomically patches the job record's status, result_ref, and
-// error fields using a Lua script that preserves the existing TTL.
-// Terminal jobs (completed/failed) are silently skipped.
-func (s *Store) UpdateJobResult(ctx context.Context, id string, status model.JobStatus, resultRef, errMsg string) error {
+// UpdateJobResult atomically patches the job record. processingTime 0 means absent.
+func (s *Store) UpdateJobResult(ctx context.Context, id string, status model.JobStatus, resultRef, errMsg string, processingTime float64) error {
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	ptArg := ""
+	if processingTime > 0 {
+		ptArg = strconv.FormatFloat(processingTime, 'f', -1, 64)
+	}
 	err := updateJobScript.Run(ctx, s.rdb,
 		[]string{jobKey(id)},
-		string(status), resultRef, errMsg, updatedAt,
+		string(status), resultRef, errMsg, updatedAt, ptArg,
 	).Err()
 	if err != nil {
 		return fmt.Errorf("updating job %q: %w", id, err)

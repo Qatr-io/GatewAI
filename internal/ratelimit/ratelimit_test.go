@@ -442,3 +442,99 @@ func TestAddModelTokens_SetsWindowTTL(t *testing.T) {
 		t.Fatalf("expected positive TTL after first AddModelTokens, got %v", ttl)
 	}
 }
+
+func TestCheckConcurrent(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {MaxConcurrent: 1}},
+	}
+	l, mr := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Consumer", "user1")
+
+	seedConcJob := func(id, svcType, status string) {
+		t.Helper()
+		mr.Set("job:"+id, `{"status":"`+status+`","service_type":"`+svcType+`"}`)
+		if _, err := mr.ZAdd("consumer:user1:jobs", 0, id); err != nil {
+			t.Fatalf("ZAdd: %v", err)
+		}
+	}
+
+	// 0 jobs, 0 in-flight → allowed; in-flight counter becomes 1.
+	r0, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r0.Allowed {
+		t.Fatalf("first check: want allowed, got %+v err=%v", r0, err)
+	}
+
+	// 0 jobs, 1 in-flight → rejected (concurrent submitter is using the slot).
+	r1, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || r1.Allowed {
+		t.Fatalf("second check (concurrent): want rejected, got %+v err=%v", r1, err)
+	}
+
+	// Release the in-flight slot (simulates SaveJob completing).
+	if err := l.ReleaseSlot(context.Background(), req, "audio"); err != nil {
+		t.Fatalf("ReleaseSlot: %v", err)
+	}
+
+	// 0 jobs, 0 in-flight → allowed again.
+	r2, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r2.Allowed {
+		t.Fatalf("after release: want allowed, got %+v err=%v", r2, err)
+	}
+	if err := l.ReleaseSlot(context.Background(), req, "audio"); err != nil {
+		t.Fatalf("ReleaseSlot: %v", err)
+	}
+
+	// 1 pending job in sorted set, 0 in-flight → rejected (active=1 >= max=1).
+	seedConcJob("j1", "audio", "pending")
+	r3, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || r3.Allowed {
+		t.Fatalf("1 pending job: want rejected, got %+v err=%v", r3, err)
+	}
+
+	// Job completes → 0 active, 0 in-flight → allowed.
+	mr.Set("job:j1", `{"status":"completed","service_type":"audio"}`)
+	r4, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r4.Allowed {
+		t.Fatalf("after completion: want allowed, got %+v err=%v", r4, err)
+	}
+	l.ReleaseSlot(context.Background(), req, "audio") //nolint
+
+	// Jobs for a different service_type are not counted.
+	seedConcJob("j2", "video", "pending")
+	r5, err := l.CheckConcurrent(context.Background(), req, "audio")
+	if err != nil || !r5.Allowed {
+		t.Fatalf("cross-service job: want allowed, got %+v err=%v", r5, err)
+	}
+	l.ReleaseSlot(context.Background(), req, "audio") //nolint
+}
+
+func TestCheckProcessingTime(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {ProcessingTime: 100, ProcessingPeriod: "1h"}},
+	}
+	l, _ := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Consumer", "user1")
+
+	r1, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || !r1.Allowed {
+		t.Fatalf("initial: want allowed, got %+v err=%v", r1, err)
+	}
+	// consume 95.7s → stored as 96 (ceil)
+	if err := l.AddProcessingTime(context.Background(), "user1", "*", "audio", 95.7); err != nil {
+		t.Fatalf("AddProcessingTime: %v", err)
+	}
+	r2, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || !r2.Allowed {
+		t.Fatalf("after 96s (limit 100): want allowed, got %+v err=%v", r2, err)
+	}
+	// consume 10 more → total 106, over limit
+	if err := l.AddProcessingTime(context.Background(), "user1", "*", "audio", 10); err != nil {
+		t.Fatalf("AddProcessingTime: %v", err)
+	}
+	r3, err := l.CheckProcessingTime(context.Background(), req, "audio")
+	if err != nil || r3.Allowed {
+		t.Fatalf("over budget: want rejected, got %+v err=%v", r3, err)
+	}
+}
