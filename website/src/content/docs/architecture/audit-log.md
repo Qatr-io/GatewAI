@@ -65,7 +65,8 @@ Each record is a single `slog.InfoContext` call with the message `"llm request"`
 
 ## PII warning
 
-!!! warning
-    Setting `prompt: true` writes the full request body to your log output. If clients send messages containing PII, those payloads will appear in logs.
+:::caution
+Setting `prompt: true` writes the full request body to your log output. If clients send messages containing PII, those payloads will appear in logs.
 
-    Consider pairing `prompt: true` with [PII guardrails](guardrails.md), which blocks PII-containing requests before they reach the backend — and therefore before they are logged.
+Consider pairing `prompt: true` with [PII guardrails](guardrails.md), which blocks PII-containing requests before they reach the backend — and therefore before they are logged.
+:::

@@ -59,8 +59,9 @@ When set to a positive integer, enables Redis sorted-set tracking of per-consume
 
 Only suitable when `server.consumer_header` is configured. Requires `server.user_type_header` for `user_type` labelling.
 
-!!! warning
-    Do **not** use `consumer_labels: true` with more than ~50 consumers. Each consumer creates a new Prometheus time series; at 100 k+ consumers this causes OOM. Use `top_consumers` instead.
+:::caution
+Do **not** use `consumer_labels: true` with more than ~50 consumers. Each consumer creates a new Prometheus time series; at 100 k+ consumers this causes OOM. Use `top_consumers` instead.
+:::
 
 ## Rate limits
 
@@ -117,8 +118,9 @@ Generate a key:
 openssl rand -hex 32
 ```
 
-!!! warning
-    The encryption key must be identical on all gateway and relay instances.
+:::caution
+The encryption key must be identical on all gateway and relay instances.
+:::
 
 ## Redis
 

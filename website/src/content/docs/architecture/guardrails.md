@@ -64,7 +64,8 @@ Incremented once per blocked request. Labels match the service entry.
 
 ## False positives
 
-!!! warning
-    The `siren` pattern (`\b\d{9}\b`) matches any 9-digit number. The `siret` pattern (`\b\d{14}\b`) similarly matches any 14-digit sequence. Both have materially higher false-positive rates than the other patterns.
+:::caution
+The `siren` pattern (`\b\d{9}\b`) matches any 9-digit number. The `siret` pattern (`\b\d{14}\b`) similarly matches any 14-digit sequence. Both have materially higher false-positive rates than the other patterns.
 
-    Enable `guardrails.pii: true` only after reviewing a representative sample of your payload content.
+Enable `guardrails.pii: true` only after reviewing a representative sample of your payload content.
+:::
