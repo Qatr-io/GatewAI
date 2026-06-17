@@ -5,14 +5,13 @@ on:
     branches:
       - main
     paths:
-      - "docs/**"
-      - "mkdocs.yml"
+      - "website/**"
 
   workflow_dispatch:
 
 jobs:
   deploy:
-    name: Build & deploy MkDocs
+    name: Build & deploy Astro site
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -20,20 +19,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history for git-revision-date plugin
+          fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-node@v4
         with:
-          python-version: "3.12"
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: website/package-lock.json
 
-      - name: Install MkDocs + Material
-        run: |
-          pip install \
-            mkdocs-material==9.6.* \
-            mkdocs==1.6.*
+      - name: Install dependencies
+        working-directory: website
+        run: npm ci
 
       - name: Build site
-        run: mkdocs build --strict
+        working-directory: website
+        run: npm run build
 
       - name: Deploy to gh-pages (preserve Helm chart files)
         run: |
@@ -41,7 +41,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
           # Stash the built site
-          cp -r site /tmp/mkdocs-site
+          cp -r website/dist /tmp/astro-site
 
           # Checkout gh-pages and preserve Helm artefacts
           git fetch origin gh-pages
@@ -55,12 +55,12 @@ jobs:
           # Wipe and replace with built site
           git rm -rf . --quiet || true
 
-          cp -r /tmp/mkdocs-site/. .
+          cp -r /tmp/astro-site/. .
 
           # Restore Helm artefacts
           [ -f /tmp/helm-preserve/index.yaml ] && cp /tmp/helm-preserve/index.yaml .
           for f in /tmp/helm-preserve/*.tgz; do [ -f "$f" ] && cp "$f" .; done
 
           git add .
-          git diff --cached --quiet || git commit -m "docs: deploy MkDocs site from ${GITHUB_SHA::8}"
+          git diff --cached --quiet || git commit -m "docs: deploy Astro site from ${GITHUB_SHA::8}"
           git push origin gh-pages
