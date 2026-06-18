@@ -44,6 +44,12 @@ export default defineConfig({
           ],
         },
         {
+          label: 'Observe',
+          items: [
+            { label: 'Prometheus', slug: 'observe/prometheus' },
+          ],
+        },
+        {
           label: 'Manage',
           items: [
             { label: 'Runbooks', slug: 'manage/runbooks' },
@@ -52,7 +58,8 @@ export default defineConfig({
         {
           label: 'Reference',
           items: [
-            { label: 'Changelog', slug: 'reference/changelog' },
+            { label: 'Changelog',        slug: 'reference/changelog' },
+            { label: 'Metrics',          slug: 'reference/metrics' },
           ],
         },
         {
