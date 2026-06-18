@@ -5,8 +5,62 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
+	"go.opentelemetry.io/otel"
 )
+
+// otelResponseWriter wraps http.ResponseWriter to capture the status code.
+type otelResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *otelResponseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}
+
+// OtelMiddleware starts a server span for every request.
+// It extracts W3C traceparent from incoming headers, creates a child span,
+// and updates the span name with the chi route pattern after routing.
+func OtelMiddleware(tracer trace.Tracer) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Extract parent context from incoming W3C headers (if any).
+			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
+
+			ctx, span := tracer.Start(ctx, r.Method,
+				trace.WithSpanKind(trace.SpanKindServer),
+				trace.WithAttributes(
+					attribute.String("http.method", r.Method),
+					attribute.String("net.host.name", r.Host),
+				),
+			)
+			defer span.End()
+
+			rw := &otelResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+			next.ServeHTTP(rw, r.WithContext(ctx))
+
+			// Route pattern is available after chi routing completes.
+			if rctx := chi.RouteContext(r.Context()); rctx != nil {
+				if route := rctx.RoutePattern(); route != "" {
+					span.SetName(r.Method + " " + route)
+					span.SetAttributes(attribute.String("http.route", route))
+				}
+			}
+			span.SetAttributes(attribute.Int("http.status_code", rw.statusCode))
+			if rw.statusCode >= 500 {
+				span.SetStatus(codes.Error, "server error")
+			}
+		})
+	}
+}
 
 // StructuredLogger returns a chi-compatible middleware that emits one
 // structured slog entry per request (JSON in production, text in dev).
