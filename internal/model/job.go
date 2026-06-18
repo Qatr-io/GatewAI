@@ -38,6 +38,9 @@ type Job struct {
 	UpdatedAt     time.Time         `json:"updated_at"`
 	// QueuePosition is not persisted — populated transiently by the storage layer for pending jobs.
 	QueuePosition *int64 `json:"queue_position,omitempty"`
+	// TraceContext carries the W3C traceparent of the submit request so the relay
+	// can create a child span under the gateway's trace.
+	TraceContext string `json:"trace_context,omitempty"`
 }
 
 // InputEvent is pushed to the model-specific Redis relay queue.
