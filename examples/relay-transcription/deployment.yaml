@@ -1,0 +1,52 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisper-large-v3
+  namespace: <namespace>
+spec:
+  replicas: 0   # managed by KEDA ScaledObject
+  selector:
+    matchLabels:
+      app: whisper-large-v3
+  template:
+    metadata:
+      labels:
+        app: whisper-large-v3
+    spec:
+      containers:
+        - name: inference
+          image: <inference-image>:<tag>
+          ports:
+            - containerPort: 9000
+          resources:
+            limits:
+              nvidia.com/gpu: "1"
+
+        - name: relay
+          image: ghcr.io/qatr-io/gatewai/relay:<relay-tag>
+          env:
+            - name: CONFIG_PATH
+              value: /etc/relay/config.yaml
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: <s3-secret>
+                  key: access-key
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: <s3-secret>
+                  key: secret-key
+          volumeMounts:
+            - name: config
+              mountPath: /etc/relay
+
+      volumes:
+        - name: config
+          configMap:
+            name: relay-transcription-config
+
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule

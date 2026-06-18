@@ -1,0 +1,56 @@
+---
+import Default from '@astrojs/starlight/components/Head.astro';
+---
+
+<Default {...Astro.props}><slot /></Default>
+
+<style>
+  .sl-lightbox-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    background: rgba(0, 0, 0, 0.85);
+    cursor: zoom-out;
+    align-items: center;
+    justify-content: center;
+  }
+  .sl-lightbox-overlay.open {
+    display: flex;
+  }
+  .sl-lightbox-overlay img {
+    max-width: 90vw;
+    max-height: 90vh;
+    object-fit: contain;
+    border-radius: 4px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  }
+  .sl-markdown-content img {
+    cursor: zoom-in;
+  }
+</style>
+
+<div class="sl-lightbox-overlay" id="sl-lightbox" aria-modal="true" role="dialog">
+  <img id="sl-lightbox-img" src="" alt="" />
+</div>
+
+<script>
+  const overlay = document.getElementById('sl-lightbox');
+  const lightboxImg = document.getElementById('sl-lightbox-img') as HTMLImageElement;
+
+  document.querySelectorAll('.sl-markdown-content img').forEach((img) => {
+    (img as HTMLElement).addEventListener('click', () => {
+      lightboxImg.src = (img as HTMLImageElement).src;
+      lightboxImg.alt = (img as HTMLImageElement).alt;
+      overlay!.classList.add('open');
+    });
+  });
+
+  overlay!.addEventListener('click', () => {
+    overlay!.classList.remove('open');
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') overlay!.classList.remove('open');
+  });
+</script>

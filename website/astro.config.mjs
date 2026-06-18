@@ -10,6 +10,7 @@ export default defineConfig({
       components: {
         SiteTitle: './src/components/SiteTitle.astro',
         Hero: './src/components/Hero.astro',
+        Head: './src/components/Head.astro',
       },
       customCss: ['./src/styles/landing.css'],
       social: [

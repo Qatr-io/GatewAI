@@ -87,17 +87,17 @@ extraEnvVars:
 
 The relay runs as a standalone Deployment alongside the inference container. Each pod processes one job and exits — KEDA creates a new pod when the Redis queue is non-empty.
 
-Apply the manifests from the repository:
+Example manifests for a Whisper transcription service are in [`examples/relay-transcription/`](https://github.com/Qatr-io/GatewAI/tree/main/examples/relay-transcription/). Copy and adapt them to your cluster, then apply:
 
 ```bash
 # ConfigMap (relay config.yaml)
-kubectl apply -f k8s/relay-cm.yaml
+kubectl apply -f examples/relay-transcription/relay-cm.yaml
 
 # Deployment (2 containers: inference model + relay)
-kubectl apply -f k8s/deployment-transcription.yaml
+kubectl apply -f examples/relay-transcription/deployment.yaml
 
 # KEDA ScaledObject (scales on Redis list length)
-kubectl apply -f k8s/keda-transcription.yaml
+kubectl apply -f examples/relay-transcription/keda-scaledobject.yaml
 ```
 
-The KEDA ScaledObject targets `relay:<model>:pending` list length with `listLength: 1` and `minReplicaCount: 0` — pods scale to zero when the queue is empty. Replace the `<placeholder>` values (Redis address, secret names, image tags) before applying.
+The KEDA ScaledObject targets `relay:<model>:pending` list length with `listLength: 1` and `minReplicaCount: 0` — pods scale to zero when the queue is empty. Replace all `<placeholder>` values (namespace, Redis address, secret names, image tags) before applying.

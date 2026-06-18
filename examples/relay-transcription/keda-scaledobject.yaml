@@ -1,0 +1,18 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: whisper-large-v3
+  namespace: <namespace>
+spec:
+  scaleTargetRef:
+    name: whisper-large-v3
+  minReplicaCount: 0
+  maxReplicaCount: 4
+  triggers:
+    - type: redis
+      metadata:
+        address: <redis-addr>:6379
+        listName: "relay:whisper-large-v3:pending"
+        listLength: "1"
+      authenticationRef:
+        name: redis-trigger-auth   # optional — omit if Redis has no auth
