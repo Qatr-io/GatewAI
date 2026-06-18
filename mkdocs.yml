@@ -74,6 +74,8 @@ nav:
       - Priority routing: architecture/priority.md
       - LLM proxy: architecture/llm-proxy.md
       - Rate limiting: architecture/rate-limiting.md
+      - PII guardrails: architecture/guardrails.md
+      - Audit log: architecture/audit-log.md
   - Deployment:
       - Helm chart: deployment/helm.md
       - Configuration reference: deployment/configuration.md
