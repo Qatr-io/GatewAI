@@ -18,27 +18,46 @@ export default defineConfig({
       sidebar: [
         {
           label: 'Get started',
-          items: [{ label: 'Overview', slug: 'get-started' }],
+          items: [
+            { label: 'Overview',       slug: 'get-started/overview' },
+            { label: 'Request flows',  slug: 'get-started/request-flows' },
+          ],
         },
         {
           label: 'Set up',
-          items: [{ label: 'Overview', slug: 'set-up' }],
+          items: [
+            { label: 'Helm chart',        slug: 'set-up/helm' },
+            { label: 'Relay queue',       slug: 'set-up/queue' },
+          ],
         },
         {
           label: 'Configure',
-          items: [{ label: 'Overview', slug: 'configure' }],
+          items: [
+            { label: 'Configuration reference', slug: 'configure/configuration' },
+            { label: 'Service registry',        slug: 'configure/service-registry' },
+            { label: 'Priority routing',        slug: 'configure/priority-routing' },
+            { label: 'LLM proxy',               slug: 'configure/llm-proxy' },
+            { label: 'Rate limiting',           slug: 'configure/rate-limiting' },
+            { label: 'PII guardrails',          slug: 'configure/guardrails' },
+            { label: 'Audit log',               slug: 'configure/audit-log' },
+          ],
         },
         {
           label: 'Manage',
-          items: [{ label: 'Overview', slug: 'manage' }],
+          items: [{ autogenerate: { directory: 'manage' } }],
         },
         {
           label: 'Reference',
-          items: [{ label: 'Overview', slug: 'reference' }],
+          items: [
+            { label: 'Changelog', slug: 'reference/changelog' },
+          ],
         },
         {
           label: 'Community',
-          items: [{ label: 'Overview', slug: 'community' }],
+          items: [
+            { label: 'Gitflow',   slug: 'community/gitflow' },
+            { label: 'Releasing', slug: 'community/releasing' },
+          ],
         },
       ],
     }),

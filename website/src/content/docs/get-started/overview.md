@@ -11,7 +11,7 @@ GatewAI consists of two independent components deployed separately:
 
 ## Infrastructure dependencies
 
-![Architecture overview](overview.png)
+![Architecture overview](/GatewAI/schema/overview.png)
 
 ## Component responsibilities
 

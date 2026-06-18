@@ -8,7 +8,7 @@ title: Request flows
 
 `POST /jobs/{service_type}` — fire and forget, poll for result.
 
-![Async flow](async-flow.png)
+![Async flow](/GatewAI/schema/async-flow.png)
 
 **Priority path:** when `server.priority_header` is set and the header is present in the request, `LPUSH` est utilisé à la place de `RPUSH` — le job atterrit en tête de queue et est traité en premier par le prochain pod relay.
 
@@ -69,4 +69,4 @@ Streaming (stream: true): SSE piped directly, no cache, no translation.
 
 ## Routing decision
 
-![Routing decision](routing.png)
+![Routing decision](/GatewAI/schema/routing.png)
