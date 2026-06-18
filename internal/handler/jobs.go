@@ -13,6 +13,11 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/metrics"
@@ -293,7 +298,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if err := h.store.Upload(r.Context(), inputRef, file, header.Size, header.Header.Get("Content-Type")); err != nil {
 		slog.ErrorContext(r.Context(), "s3 upload failed", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to store file")
-		return
+		return //nolint:nilerr
 	}
 
 	priority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
@@ -301,6 +306,11 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if priority {
 		mode = "async-priority"
 	}
+
+	// Propagate the current span context into the job so the relay can create
+	// a child span even though communication happens via Redis (not HTTP).
+	carrier := propagation.MapCarrier{}
+	otel.GetTextMapPropagator().Inject(r.Context(), carrier)
 
 	now := time.Now().UTC()
 	job := &model.Job{
@@ -317,16 +327,28 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		Priority:     priority,
 		CreatedAt:    now,
 		UpdatedAt:    now,
+		TraceContext: carrier["traceparent"],
 	}
 
+	ctx, span := otel.Tracer("gatewai/gateway").Start(r.Context(), "gateway.job.submit",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("service_type", serviceType),
+			attribute.String("model", def.Model),
+			attribute.String("consumer", consumerName),
+		))
+	defer func() { span.End() }()
+
 	// Step 2 — persist the job record in Redis (also enqueues to relay:<model>:pending).
-	if err := h.redis.SaveJob(r.Context(), job); err != nil {
-		slog.ErrorContext(r.Context(), "redis save failed", "job_id", jobID, "error", err)
+	if err := h.redis.SaveJob(ctx, job); err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		slog.ErrorContext(ctx, "redis save failed", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save job")
 		return
 	}
 
-	slog.InfoContext(r.Context(), "job submitted",
+	slog.InfoContext(ctx, "job submitted",
 		"job_id", jobID,
 		"service_type", serviceType,
 		"model", def.Model,
