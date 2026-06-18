@@ -37,32 +37,27 @@ jobs:
 
       - name: Deploy to gh-pages (preserve Helm chart files)
         run: |
+          # Preserve Helm artefacts from current gh-pages
+          git fetch origin gh-pages
+          mkdir -p /tmp/helm-preserve
+          git show origin/gh-pages:index.yaml > /tmp/helm-preserve/index.yaml 2>/dev/null || true
+          for tgz in $(git ls-tree --name-only origin/gh-pages | grep '\.tgz$'); do
+            git show "origin/gh-pages:${tgz}" > "/tmp/helm-preserve/${tgz}" 2>/dev/null || true
+          done
+
+          # Prepare deploy dir from Astro build output
+          cp -r website/dist /tmp/deploy
+          touch /tmp/deploy/.nojekyll
+          [ -s /tmp/helm-preserve/index.yaml ] && cp /tmp/helm-preserve/index.yaml /tmp/deploy/
+          for f in /tmp/helm-preserve/*.tgz; do [ -f "$f" ] && cp "$f" /tmp/deploy/; done
+
+          # Fresh git repo → force-push to gh-pages (avoids workspace contamination)
+          cd /tmp/deploy
+          git init
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          # Stash the built site
-          cp -r website/dist /tmp/astro-site
-
-          # Checkout gh-pages and preserve Helm artefacts
-          git fetch origin gh-pages
-          git checkout gh-pages
-
-          # Save Helm index and chart packages
-          mkdir -p /tmp/helm-preserve
-          [ -f index.yaml ] && cp index.yaml /tmp/helm-preserve/
-          for f in *.tgz; do [ -f "$f" ] && cp "$f" /tmp/helm-preserve/; done
-
-          # Wipe tracked and untracked files (prevents node_modules leaking into gh-pages)
-          git rm -rf . --quiet || true
-          git clean -fdx --quiet
-
-          cp -r /tmp/astro-site/. .
-          touch .nojekyll
-
-          # Restore Helm artefacts
-          [ -f /tmp/helm-preserve/index.yaml ] && cp /tmp/helm-preserve/index.yaml .
-          for f in /tmp/helm-preserve/*.tgz; do [ -f "$f" ] && cp "$f" .; done
-
           git add .
-          git diff --cached --quiet || git commit -m "docs: deploy Astro site from ${GITHUB_SHA::8}"
-          git push --force origin gh-pages
+          git commit -m "docs: deploy Astro site from ${GITHUB_SHA::8}"
+          git push --force \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" \
+            HEAD:gh-pages
