@@ -43,6 +43,16 @@ func buildModelLimits(services []config.ServiceConfig) map[string]map[string]con
 	return m
 }
 
+// tokenChecker returns l as a ratelimit.TokenChecker, or a true nil interface
+// when l is nil. Passing a typed-nil *Limiter directly would yield a non-nil
+// interface, defeating the handler's nil check and panicking on first use.
+func tokenChecker(l *ratelimit.Limiter) ratelimit.TokenChecker {
+	if l == nil {
+		return nil
+	}
+	return l
+}
+
 // routerHolder is an atomically-swappable http.Handler.
 // The outer http.Server always points to this wrapper; hot reload replaces the inner router.
 type routerHolder struct {
@@ -204,7 +214,7 @@ func main() {
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
-		limiter)
+		tokenChecker(limiter))
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
@@ -258,7 +268,7 @@ func main() {
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
-			limiter)
+			tokenChecker(limiter))
 
 		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler)
 		holder.p.Store(newRouter)

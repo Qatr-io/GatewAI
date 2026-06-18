@@ -546,9 +546,9 @@ func buildLLMHandler(backendURL string) *llmproxy.Handler {
 	return llmproxy.New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, llmproxy.AuditConfig{}, nil)
 }
 
-// buildLLMRegistry returns a registry with a single openai LLM service,
-// with the PII guardrail enabled when piiEnabled is true.
-func buildLLMRegistry(backendURL string, piiEnabled bool) *service.Registry {
+// buildLLMRegistryDisabled returns a registry with a single openai LLM service
+// with guardrails disabled.
+func buildLLMRegistryDisabled(backendURL string) *service.Registry {
 	cfgs := []config.ServiceConfig{{
 		Type:     "llm",
 		Model:    "gpt-4o",
@@ -558,7 +558,23 @@ func buildLLMRegistry(backendURL string, piiEnabled bool) *service.Registry {
 		},
 		InferenceURL: backendURL,
 		Backends:     []config.BackendConfig{{URL: backendURL, Weight: 1}},
-		Guardrails:   config.GuardrailsConfig{PII: piiEnabled},
+		Guardrails:   config.GuardrailsConfig{},
+	}}
+	return service.NewRegistry(cfgs)
+}
+
+// buildLLMRegistryWithGuardrails returns a registry with explicit action+checks guardrails config.
+func buildLLMRegistryWithGuardrails(backendURL string, action string, checks []string) *service.Registry {
+	cfgs := []config.ServiceConfig{{
+		Type:     "llm",
+		Model:    "gpt-4o",
+		Provider: "openai",
+		Operations: map[string][]string{
+			"chat": {"/v1/chat/completions"},
+		},
+		InferenceURL: backendURL,
+		Backends:     []config.BackendConfig{{URL: backendURL, Weight: 1}},
+		Guardrails:   config.GuardrailsConfig{Action: action, Checks: checks},
 	}}
 	return service.NewRegistry(cfgs)
 }
@@ -572,7 +588,7 @@ func piiJSONRequest(content string) *http.Request {
 }
 
 // TestSyncHandler_Guardrails_PII_Blocked verifies that a request containing a
-// recognised PII pattern (email) is rejected with 400 when guardrails.pii is true.
+// recognised PII pattern (email) is rejected with 422 when the guardrails block action is set.
 func TestSyncHandler_Guardrails_PII_Blocked(t *testing.T) {
 	backendCalled := false
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -581,25 +597,25 @@ func TestSyncHandler_Guardrails_PII_Blocked(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	reg := buildLLMRegistry(backend.URL, true)
+	reg := buildLLMRegistryWithGuardrails(backend.URL, "block", []string{"pii"})
 	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
 
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, piiJSONRequest("Mon email est alice@example.com"))
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400 for PII request, got %d", w.Code)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for PII request, got %d", w.Code)
 	}
 	if backendCalled {
 		t.Error("backend must not be called when PII is detected")
 	}
-	if !strings.Contains(w.Body.String(), "PII detected") {
-		t.Errorf("expected 'PII detected' in body, got: %s", w.Body.String())
+	if !strings.Contains(w.Body.String(), "guardrails violation") {
+		t.Errorf("expected 'guardrails violation' in body, got: %s", w.Body.String())
 	}
 }
 
 // TestSyncHandler_Guardrails_PII_Disabled_AllowsThrough verifies that PII content
-// passes through unchanged when guardrails.pii is false.
+// passes through unchanged when guardrails are disabled.
 func TestSyncHandler_Guardrails_PII_Disabled_AllowsThrough(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -608,7 +624,7 @@ func TestSyncHandler_Guardrails_PII_Disabled_AllowsThrough(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	reg := buildLLMRegistry(backend.URL, false) // PII disabled
+	reg := buildLLMRegistryDisabled(backend.URL) // guardrails disabled
 	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
 
 	w := httptest.NewRecorder()
@@ -619,8 +635,14 @@ func TestSyncHandler_Guardrails_PII_Disabled_AllowsThrough(t *testing.T) {
 	}
 }
 
+// buildLLMRegistry returns a registry with a single openai LLM service with the
+// guardrails block action enabled (checks: [pii]).
+func buildLLMRegistry(backendURL string) *service.Registry {
+	return buildLLMRegistryWithGuardrails(backendURL, "block", []string{"pii"})
+}
+
 // TestSyncHandler_Guardrails_NoPII_PassesThrough verifies that a clean request is
-// not blocked when guardrails.pii is enabled.
+// not blocked when the guardrails block action is enabled.
 func TestSyncHandler_Guardrails_NoPII_PassesThrough(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -629,7 +651,7 @@ func TestSyncHandler_Guardrails_NoPII_PassesThrough(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	reg := buildLLMRegistry(backend.URL, true) // PII enabled
+	reg := buildLLMRegistry(backend.URL) // guardrails block action enabled
 	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
 
 	w := httptest.NewRecorder()
@@ -648,7 +670,7 @@ func TestSyncHandler_Guardrails_PII_MetricIncremented(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	reg := buildLLMRegistry(backend.URL, true)
+	reg := buildLLMRegistry(backend.URL)
 	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
 
 	counter := metrics.GuardrailsPiiBlockedTotal.WithLabelValues("llm", "gpt-4o")
@@ -671,16 +693,100 @@ func TestSyncHandler_Guardrails_ConsumerHeader_LoggedOnBlock(t *testing.T) {
 	}))
 	defer backend.Close()
 
-	reg := buildLLMRegistry(backend.URL, true)
+	reg := buildLLMRegistry(backend.URL)
 	h := handler.NewSyncHandler(reg, "X-Consumer-Username", nil, buildLLMHandler(backend.URL))
 
-	req := piiJSONRequest("Tel: 0612345678")
+	req := piiJSONRequest("Tel: +33612345678")
 	req.Header.Set("X-Consumer-Username", "alice")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, req)
 
-	if w.Code != http.StatusBadRequest {
-		t.Errorf("expected 400, got %d", w.Code)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422, got %d", w.Code)
+	}
+}
+
+// TestSyncHandler_Guardrails_Action_Block verifies that action=block rejects
+// the request with 422 and does not call the backend.
+func TestSyncHandler_Guardrails_Action_Block(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	reg := buildLLMRegistryWithGuardrails(backend.URL, "block", []string{"pii"})
+	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, piiJSONRequest("Mon email est alice@example.com"))
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("expected 422 for block action, got %d", w.Code)
+	}
+	if backendCalled {
+		t.Error("backend must not be called when action=block and PII detected")
+	}
+}
+
+// TestSyncHandler_Guardrails_Action_Redact verifies that action=redact forwards the
+// request to the backend with PII replaced, not the original body.
+func TestSyncHandler_Guardrails_Action_Redact(t *testing.T) {
+	var forwardedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`)
+	}))
+	defer backend.Close()
+
+	reg := buildLLMRegistryWithGuardrails(backend.URL, "redact", []string{"pii"})
+	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, piiJSONRequest("Mon email est alice@example.com"))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for redact action, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(forwardedBody) == 0 {
+		t.Fatal("backend was not called")
+	}
+	if strings.Contains(string(forwardedBody), "alice@example.com") {
+		t.Errorf("raw PII must not appear in the forwarded body; got: %s", string(forwardedBody))
+	}
+}
+
+// TestSyncHandler_Guardrails_Action_Flag verifies that action=flag forwards the
+// ORIGINAL body to the backend (no blocking, no redaction).
+func TestSyncHandler_Guardrails_Action_Flag(t *testing.T) {
+	const piiContent = "Mon email est alice@example.com"
+	var forwardedBody []byte
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		forwardedBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"ok"}}],"usage":{}}`)
+	}))
+	defer backend.Close()
+
+	reg := buildLLMRegistryWithGuardrails(backend.URL, "flag", []string{"pii"})
+	h := handler.NewSyncHandler(reg, "", nil, buildLLMHandler(backend.URL))
+
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, piiJSONRequest(piiContent))
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for flag action, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(forwardedBody) == 0 {
+		t.Fatal("backend was not called")
+	}
+	// Flag action must forward the ORIGINAL body, PII intact.
+	if !strings.Contains(string(forwardedBody), "alice@example.com") {
+		t.Errorf("original body must be forwarded for flag action; got: %s", string(forwardedBody))
 	}
 }
 

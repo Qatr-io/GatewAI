@@ -12,6 +12,13 @@ import (
 	"gatewai/gateway/internal/config"
 )
 
+// GuardrailsSpec is the resolved guardrails configuration for a service.
+type GuardrailsSpec struct {
+	Enabled bool
+	Checks  []string // resolved group names to run
+	Action  string   // "block" | "redact" | "flag"
+}
+
 // Def describes a registered inference service type.
 type Def struct {
 	Type          string
@@ -29,10 +36,10 @@ type Def struct {
 	Operations       map[string][]string // operation name → URL paths (all indexed; first used for async)
 	InferenceHeaders map[string]string   // headers injected on every sync-direct proxy request to the backend
 	Provider         string
-	BackendModel     string        // real model name sent to backend; empty = use Model (the alias)
+	BackendModel     string // real model name sent to backend; empty = use Model (the alias)
 	ResponseCacheTTL time.Duration
-	Retries          int  // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
-	GuardrailsPII    bool // scan LLM message content for PII before forwarding
+	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
+	Guardrails       GuardrailsSpec // resolved guardrails configuration
 }
 
 // OperationPath returns the first path for the given operation name.
@@ -126,10 +133,10 @@ func matchModelSegment(pattern, actual string) (model string, ok bool) {
 // wildcardRoute holds services registered under a path prefix wildcard (e.g. "/v1/*").
 // It matches any request path that starts with prefix (the path with "*" stripped).
 type wildcardRoute struct {
-	pattern  string          // original pattern, e.g. "/v1/*"
-	prefix   string          // prefix to match against, e.g. "/v1/"
-	byModel  map[string]*Def
-	deflt    *Def // default def when model is empty or not found by name
+	pattern string // original pattern, e.g. "/v1/*"
+	prefix  string // prefix to match against, e.g. "/v1/"
+	byModel map[string]*Def
+	deflt   *Def // default def when model is empty or not found by name
 }
 
 // Registry maps (service_type, model) pairs to their runtime definitions.
@@ -140,6 +147,20 @@ type Registry struct {
 	defaultByPath map[string]*Def            // exact openai_path → default Def
 	byPattern     []*pathPattern             // pattern paths containing {model}
 	byWildcard    []*wildcardRoute           // wildcard prefix paths ending with /*
+}
+
+// resolveGuardrails converts a config.GuardrailsConfig into a runtime GuardrailsSpec.
+// When Checks are provided the guardrail is enabled with those checks and Action
+// (defaulting to "block" when Action is empty). Otherwise the zero (disabled) spec is returned.
+func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
+	if len(cfg.Checks) > 0 {
+		action := cfg.Action
+		if action == "" {
+			action = "block"
+		}
+		return GuardrailsSpec{Enabled: true, Checks: cfg.Checks, Action: action}
+	}
+	return GuardrailsSpec{}
 }
 
 func NewRegistry(cfgs []config.ServiceConfig) *Registry {
@@ -172,15 +193,15 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			MaxFileSizeMB:     cfg.MaxFileSizeMB,
 			SupportsAsync:     len(cfg.AcceptedExts) > 0,
 			MaxConcurrentSync: cfg.MaxConcurrentSync,
-			InferenceURL:         primaryURL,
-			Backends:             backends,
-			Operations:           cfg.Operations,
-			InferenceHeaders:     cfg.InferenceHeaders,
-			Provider:             cfg.Provider,
-			BackendModel:         cfg.BackendModel,
-			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
-			Retries:              cfg.Retries,
-			GuardrailsPII:        cfg.Guardrails.PII,
+			InferenceURL:      primaryURL,
+			Backends:          backends,
+			Operations:        cfg.Operations,
+			InferenceHeaders:  cfg.InferenceHeaders,
+			Provider:          cfg.Provider,
+			BackendModel:      cfg.BackendModel,
+			ResponseCacheTTL:  time.Duration(cfg.ResponseCacheTTL) * time.Second,
+			Retries:           cfg.Retries,
+			Guardrails:        resolveGuardrails(cfg.Guardrails),
 		}
 
 		if r.byTypeModel[cfg.Type] == nil {
@@ -506,4 +527,3 @@ func (r *Registry) All() []*Def {
 	}
 	return defs
 }
-

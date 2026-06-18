@@ -10,14 +10,14 @@ import (
 )
 
 type Config struct {
-	Server     ServerConfig                          `yaml:"server"`
-	S3         S3Config                              `yaml:"s3"`
-	Redis      RedisConfig                           `yaml:"redis"`
-	Lifecycle  LifecycleConfig                       `yaml:"lifecycle"`
-	Services   []ServiceConfig                       `yaml:"services"`
-	Encryption EncryptionConfig                      `yaml:"encryption"`
-	Metrics    MetricsConfig                         `yaml:"metrics"`
-	AuditLog   AuditLogConfig                        `yaml:"audit_log"`
+	Server     ServerConfig     `yaml:"server"`
+	S3         S3Config         `yaml:"s3"`
+	Redis      RedisConfig      `yaml:"redis"`
+	Lifecycle  LifecycleConfig  `yaml:"lifecycle"`
+	Services   []ServiceConfig  `yaml:"services"`
+	Encryption EncryptionConfig `yaml:"encryption"`
+	Metrics    MetricsConfig    `yaml:"metrics"`
+	AuditLog   AuditLogConfig   `yaml:"audit_log"`
 	// RateLimits maps service type → user type → limit.
 	// User type "*" is the fallback applied when the user_type_header is absent
 	// or the specific type has no entry.
@@ -98,8 +98,8 @@ type ServerConfig struct {
 
 // S3Config holds S3-compatible object storage credentials and settings.
 type S3Config struct {
-	Endpoint  string `yaml:"endpoint"`   // e.g. https://s3.fr-par.scw.cloud
-	Region    string `yaml:"region"`     // e.g. fr-par
+	Endpoint  string `yaml:"endpoint"` // e.g. https://s3.fr-par.scw.cloud
+	Region    string `yaml:"region"`   // e.g. fr-par
 	AccessKey string `yaml:"access_key"`
 	SecretKey string `yaml:"secret_key"`
 	Bucket    string `yaml:"bucket"`
@@ -201,9 +201,9 @@ type ServiceConfig struct {
 	// precedence over inference_url and enables blue/green, canary, and fallback routing.
 	// weight > 0 = eligible for primary selection (weighted random).
 	// weight = 0 = fallback-only (tried only if all weight>0 backends fail).
-	Backends []BackendConfig `yaml:"backends"`
-	AcceptedExts  []string `yaml:"accepted_exts"`
-	MaxFileSizeMB int64    `yaml:"max_file_size_mb"`
+	Backends      []BackendConfig `yaml:"backends"`
+	AcceptedExts  []string        `yaml:"accepted_exts"`
+	MaxFileSizeMB int64           `yaml:"max_file_size_mb"`
 	// MaxConcurrentSync limits the number of simultaneous sync proxy calls for this model.
 	// 0 (default) means no limit. When exceeded, the handler returns 503.
 	MaxConcurrentSync int `yaml:"max_concurrent_sync"`
@@ -252,12 +252,14 @@ type ServiceConfig struct {
 	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
 }
 
-// GuardrailsConfig controls PII detection for a service's LLM requests.
+// GuardrailsConfig controls PII/secrets detection for a service's LLM requests.
+// Configure via Action and Checks; there is no legacy shorthand.
 type GuardrailsConfig struct {
-	// PII enables scanning of message content for personally identifiable
-	// information (email, French phone numbers, IBAN, credit cards, SIREN/SIRET).
-	// Requests with detected PII are rejected with HTTP 400.
-	PII bool `yaml:"pii"`
+	// Action applied when a check matches: "block" (default), "redact", or "flag".
+	Action string `yaml:"action"`
+	// Checks selects which guardrail groups to run:
+	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
+	Checks []string `yaml:"checks"`
 }
 
 // Load reads and validates the YAML config file at path.
@@ -376,6 +378,19 @@ func (c *Config) validate() error {
 		for userType, limit := range svc.TokenLimits {
 			if limit.TokenRate > 0 && limit.TokenPeriod == "" {
 				return fmt.Errorf("service %q: token_limits[%q]: token_rate requires token_period", svc.Model, userType)
+			}
+		}
+		validActions := map[string]bool{"block": true, "redact": true, "flag": true}
+		if svc.Guardrails.Action != "" && !validActions[svc.Guardrails.Action] {
+			return fmt.Errorf("service %q: guardrails.action %q is invalid (valid: block, redact, flag)", svc.Type, svc.Guardrails.Action)
+		}
+		validChecks := map[string]bool{
+			"pii": true, "pii_fr": true, "pii_us": true, "pii_uk": true,
+			"pii_es": true, "pii_it": true, "secrets": true,
+		}
+		for _, check := range svc.Guardrails.Checks {
+			if !validChecks[check] {
+				return fmt.Errorf("service %q: guardrails.checks contains unknown check %q (valid: pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets)", svc.Type, check)
 			}
 		}
 	}

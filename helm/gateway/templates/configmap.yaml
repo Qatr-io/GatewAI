@@ -138,7 +138,12 @@ data:
         {{- end }}
         {{- if .guardrails }}
         guardrails:
-          pii: {{ .guardrails.pii | default false }}
+          {{- if .guardrails.action }}
+          action: {{ .guardrails.action | quote }}
+          {{- end }}
+          {{- if .guardrails.checks }}
+          checks: [{{ range $i, $c := .guardrails.checks }}{{ if $i }}, {{ end }}{{ $c | quote }}{{ end }}]
+          {{- end }}
         {{- end }}
         {{- if .inferenceHeaders }}
         inference_headers:
