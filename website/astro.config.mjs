@@ -17,38 +17,29 @@ export default defineConfig({
       ],
       sidebar: [
         {
-          label: 'Architecture',
-          items: [
-            { label: 'Overview',         slug: 'architecture/overview' },
-            { label: 'Request flows',    slug: 'architecture/request-flows' },
-            { label: 'Service registry', slug: 'architecture/service-registry' },
-            { label: 'Priority routing', slug: 'architecture/priority' },
-            { label: 'LLM proxy',        slug: 'architecture/llm-proxy' },
-            { label: 'Rate limiting',    slug: 'architecture/rate-limiting' },
-            { label: 'PII guardrails',   slug: 'architecture/guardrails' },
-            { label: 'Audit log',        slug: 'architecture/audit-log' },
-          ],
+          label: 'Get started',
+          items: [{ label: 'Overview', slug: 'get-started' }],
         },
         {
-          label: 'Deployment',
-          items: [
-            { label: 'Helm chart',              slug: 'deployment/helm' },
-            { label: 'Configuration reference', slug: 'deployment/configuration' },
-            { label: 'Relay queue (Redis)',      slug: 'deployment/queue' },
-          ],
+          label: 'Set up',
+          items: [{ label: 'Overview', slug: 'set-up' }],
         },
         {
-          label: 'Contributing',
-          items: [
-            { label: 'Gitflow',   slug: 'contributing/gitflow' },
-            { label: 'Releasing', slug: 'contributing/releasing' },
-          ],
+          label: 'Configure',
+          items: [{ label: 'Overview', slug: 'configure' }],
         },
         {
-          label: 'Runbooks',
-          items: [{ autogenerate: { directory: 'runbooks' } }],
+          label: 'Manage',
+          items: [{ label: 'Overview', slug: 'manage' }],
         },
-        { label: 'Changelog', slug: 'changelog' },
+        {
+          label: 'Reference',
+          items: [{ label: 'Overview', slug: 'reference' }],
+        },
+        {
+          label: 'Community',
+          items: [{ label: 'Overview', slug: 'community' }],
+        },
       ],
     }),
   ],
