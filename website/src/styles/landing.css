@@ -68,7 +68,51 @@
   width: auto;
 }
 
-/* Comparison section */
+/* Mode cards */
+.mode-cards {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1rem;
+  margin: 1.5rem 0 2.5rem;
+}
+
+@media (max-width: 768px) {
+  .mode-cards { grid-template-columns: 1fr; }
+}
+
+.mode-card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--sl-color-black);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.mode-title {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--sl-color-white);
+}
+
+.mode-endpoint {
+  font-size: 0.78rem;
+  background: var(--sl-color-gray-6);
+  color: var(--sl-color-gray-2);
+  border-radius: 0.25rem;
+  padding: 0.2rem 0.5rem;
+  width: fit-content;
+}
+
+.mode-desc {
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-2);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* CTA */
 .cta-center {
   display: flex;
   justify-content: center;

@@ -1,0 +1,29 @@
+---
+const modes = [
+  {
+    title: 'Async',
+    endpoint: 'POST /jobs/{type}',
+    description: 'Fichiers lourds, tâches longues (>30s), résultat via webhook.',
+  },
+  {
+    title: 'Sync',
+    endpoint: 'POST /v1/*',
+    description: 'SDK OpenAI, faible latence, réponse directe.',
+  },
+  {
+    title: 'LLM proxy',
+    endpoint: 'POST /v1/* + provider',
+    description: 'OpenAI · Anthropic · Ollama · vLLM avec cache Redis et métriques.',
+  },
+];
+---
+
+<div class="mode-cards">
+  {modes.map((m) => (
+    <div class="mode-card">
+      <span class="mode-title">{m.title}</span>
+      <code class="mode-endpoint">{m.endpoint}</code>
+      <p class="mode-desc">{m.description}</p>
+    </div>
+  ))}
+</div>

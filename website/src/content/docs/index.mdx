@@ -23,14 +23,6 @@ import { LinkButton } from '@astrojs/starlight/components';
 
 <FeatureGrid />
 
-## Modes
-
-| Mode | Endpoint | Cas d'usage | Upload fichier | Webhook | Cache |
-|---|---|---|---|---|---|
-| **Async** | `POST /jobs/{type}` | Tâches longues (>30s), gros fichiers | ✓ S3 | ✓ | — |
-| **Sync proxy** | `POST /v1/*` | SDK OpenAI, faible latence | — | — | — |
-| **LLM proxy** | `POST /v1/*` + `provider` | OpenAI / Anthropic / Ollama / vLLM | — | — | ✓ Redis |
-
 <div class="cta-center">
   <LinkButton href="/GatewAI/architecture/overview/">Read the docs →</LinkButton>
 </div>
