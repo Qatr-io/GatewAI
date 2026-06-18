@@ -349,3 +349,56 @@ configReloader:
   image: "ghcr.io/jimmidyson/configmap-reload:v0.14.0"
   # Port exposed by the configmap-reload metrics/web server.
   listenPort: 9533
+
+# ── OpenTelemetry ─────────────────────────────────────────────────────────────
+# Configures OTLP export for traces, metrics, and logs.
+# When opentelemetry-collector sub-chart is enabled (below), the default
+# endpoint points to the bundled collector's OTLP/HTTP receiver.
+opentelemetry:
+  enabled: false
+  exporter:
+    endpoint: "http://{{ .Release.Name }}-opentelemetry-collector:4318"
+    insecure: true
+  traces:
+    enabled: true
+    sampleRatio: 1.0
+  metrics:
+    enabled: false
+    interval: "60s"
+  logs:
+    enabled: false
+
+# ── OpenTelemetry Collector sub-chart (optional) ──────────────────────────────
+# Adds an OTel Collector deployment to receive OTLP from gateway (and relay)
+# and forward to any observability backend (Grafana, Jaeger, Tempo, Datadog…).
+# Enable by setting opentelemetry-collector.enabled: true and providing a
+# config (mode: deployment is suitable for gateway-local use).
+#
+# Helm repo: helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+opentelemetry-collector:
+  enabled: false
+  mode: deployment
+  config:
+    receivers:
+      otlp:
+        protocols:
+          http:
+            endpoint: "0.0.0.0:4318"
+    exporters:
+      # Replace with your backend — examples:
+      # otlp/tempo:
+      #   endpoint: "http://tempo:4317"
+      # otlphttp/jaeger:
+      #   endpoint: "http://jaeger-collector:4318"
+      debug: {}
+    service:
+      pipelines:
+        traces:
+          receivers: [otlp]
+          exporters: [debug]
+        metrics:
+          receivers: [otlp]
+          exporters: [debug]
+        logs:
+          receivers: [otlp]
+          exporters: [debug]
