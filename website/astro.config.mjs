@@ -28,7 +28,14 @@ export default defineConfig({
           label: 'Set up',
           items: [
             { label: 'Helm chart',        slug: 'set-up/helm' },
+            { label: 'Configuration',     slug: 'set-up/config' },
             { label: 'Relay queue',       slug: 'set-up/queue' },
+          ],
+        },
+        {
+          label: 'Relay',
+          items: [
+            { label: 'Async flow', slug: 'relay/async' },
           ],
         },
         {
@@ -41,6 +48,7 @@ export default defineConfig({
             { label: 'Rate limiting',           slug: 'configure/rate-limiting' },
             { label: 'PII guardrails',          slug: 'configure/guardrails' },
             { label: 'Audit log',               slug: 'configure/audit-log' },
+            { label: 'Encryption',              slug: 'configure/encryption' },
           ],
         },
         {
@@ -52,14 +60,16 @@ export default defineConfig({
         {
           label: 'Manage',
           items: [
-            { label: 'Runbooks', slug: 'manage/runbooks' },
+            { label: 'Upgrade guide', slug: 'manage/upgrade' },
+            { label: 'Runbooks',      slug: 'manage/runbooks' },
           ],
         },
         {
           label: 'Reference',
           items: [
-            { label: 'Changelog',        slug: 'reference/changelog' },
-            { label: 'Metrics',          slug: 'reference/metrics' },
+            { label: 'API',       slug: 'reference/api' },
+            { label: 'Metrics',   slug: 'reference/metrics' },
+            { label: 'Changelog', slug: 'reference/changelog' },
           ],
         },
         {
