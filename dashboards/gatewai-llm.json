@@ -10,7 +10,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -52,6 +52,18 @@
         "refresh": 2,
         "regex": "",
         "allValue": ".*"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource Traces (Tempo)",
+        "multi": false,
+        "name": "datasource_tempo",
+        "options": [],
+        "query": "tempo",
+        "refresh": 1,
+        "type": "datasource"
       }
     ]
   },
@@ -230,7 +242,8 @@
           },
           "expr": "histogram_quantile(0.50, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p50 {{model}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -239,7 +252,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p95 {{model}}",
-          "refId": "B"
+          "refId": "B",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -248,7 +262,8 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p99 {{model}}",
-          "refId": "C"
+          "refId": "C",
+          "exemplar": true
         }
       ]
     },
@@ -414,7 +429,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, provider) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p95 {{provider}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         }
       ]
     },
@@ -1357,6 +1373,142 @@
           "refId": "A"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 73
+      },
+      "id": 20,
+      "title": "Traces LLM Proxy",
+      "type": "row"
+    },
+    {
+      "id": 21,
+      "title": "Traces — gateway.llm.request",
+      "type": "traces",
+      "gridPos": {
+        "x": 0,
+        "y": 74,
+        "w": 14,
+        "h": 12
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "limit": 20,
+          "query": "{span.name=\"gateway.llm.request\"}",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "spans"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 22,
+      "title": "Traces LLM en erreur",
+      "type": "traces",
+      "gridPos": {
+        "x": 14,
+        "y": 74,
+        "w": 10,
+        "h": 12
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "limit": 20,
+          "query": "{span.name=\"gateway.llm.request\", status=error}",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "spans"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 23,
+      "title": "Durée p95 gateway.llm.request (TraceQL)",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 86,
+        "w": 24,
+        "h": 8
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "queryType": "traceql",
+          "query": "{span.name=\"gateway.llm.request\"} | quantile_over_time(duration, 0.95) by(span.llm.backend_model)",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 8,
+            "lineWidth": 2,
+            "pointSize": 5,
+            "showPoints": "auto",
+            "spanNulls": false
+          },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ],
   "links": [
@@ -1366,6 +1518,13 @@
       "type": "link",
       "icon": "external link",
       "targetBlank": false
+    },
+    {
+      "title": "Traces",
+      "type": "link",
+      "url": "/d/gatewai-traces-v1",
+      "icon": "external link",
+      "targetBlank": true
     }
   ]
 }
