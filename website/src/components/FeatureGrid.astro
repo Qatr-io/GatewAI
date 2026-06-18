@@ -1,0 +1,46 @@
+---
+import { Icon } from '@astrojs/starlight/components';
+
+const features = [
+  {
+    icon: 'puzzle' as const,
+    title: 'Config-driven',
+    description: 'Ajouter un modèle = un bloc YAML, aucun changement de code.',
+  },
+  {
+    icon: 'rocket' as const,
+    title: 'Async + sync',
+    description: 'Upload vers S3, queue Redis, ou proxy OpenAI-compatible direct.',
+  },
+  {
+    icon: 'sun' as const,
+    title: 'LLM proxy',
+    description: 'OpenAI / Anthropic / Ollama / vLLM avec traduction de format.',
+  },
+  {
+    icon: 'seti:db' as const,
+    title: 'Response cache',
+    description: 'Cache Redis exact-match, header X-Cache, TTL configurable.',
+  },
+  {
+    icon: 'seti:lock' as const,
+    title: 'Rate limiting + PII',
+    description: 'Limites par consumer/user-type, détection email/IBAN/SIREN.',
+  },
+  {
+    icon: 'magnifier' as const,
+    title: 'Observabilité',
+    description: 'Prometheus metrics, top-N consumers, KEDA autoscaling.',
+  },
+];
+---
+
+<div class="feature-grid">
+  {features.map((f) => (
+    <div class="feature-card">
+      <Icon name={f.icon} size="1.5rem" />
+      <h3>{f.title}</h3>
+      <p>{f.description}</p>
+    </div>
+  ))}
+</div>
