@@ -7,6 +7,11 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'GatewAI',
+      components: {
+        SiteTitle: './src/components/SiteTitle.astro',
+        Hero: './src/components/Hero.astro',
+      },
+      customCss: ['./src/styles/landing.css'],
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/Qatr-io/GatewAI' },
       ],

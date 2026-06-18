@@ -1,0 +1,76 @@
+/* Feature grid */
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+  margin: 2rem 0 3rem;
+}
+
+@media (max-width: 1024px) {
+  .feature-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .feature-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.feature-card {
+  border: 1px solid var(--sl-color-gray-5);
+  border-radius: 0.5rem;
+  padding: 1.25rem 1.5rem;
+  background: var(--sl-color-black);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.feature-card svg {
+  color: var(--sl-color-accent);
+  flex-shrink: 0;
+}
+
+.feature-card h3 {
+  font-size: 1rem;
+  font-weight: 600;
+  margin: 0.25rem 0 0;
+  color: var(--sl-color-white);
+}
+
+.feature-card p {
+  font-size: 0.875rem;
+  color: var(--sl-color-gray-2);
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Hero brand title */
+.hero h1 {
+  font-size: clamp(3rem, 8vw, 5rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+}
+
+/* "AI" gradient — extrait du logo original */
+.brand-ai {
+  background: linear-gradient(90deg, #22898e 0%, #2ab4a5 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Nav logo sizing */
+.site-title img {
+  height: 1.75rem;
+  width: auto;
+}
+
+/* Comparison section */
+.cta-center {
+  display: flex;
+  justify-content: center;
+  margin-top: 2rem;
+}

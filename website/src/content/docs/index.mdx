@@ -1,0 +1,36 @@
+---
+title: GatewAI
+description: AI inference job gateway for Kubernetes
+template: splash
+hero:
+  title: 'Gatew<span class="brand-ai">AI</span>'
+  tagline: "Async job queue · OpenAI-compatible proxy · LLM gateway"
+  actions:
+    - text: Get started
+      link: /GatewAI/architecture/overview/
+      icon: right-arrow
+      variant: primary
+    - text: GitHub
+      link: https://github.com/Qatr-io/GatewAI
+      icon: github
+      variant: secondary
+---
+
+import FeatureGrid from '../../components/FeatureGrid.astro';
+import { LinkButton } from '@astrojs/starlight/components';
+
+## Features
+
+<FeatureGrid />
+
+## Modes
+
+| Mode | Endpoint | Cas d'usage | Upload fichier | Webhook | Cache |
+|---|---|---|---|---|---|
+| **Async** | `POST /jobs/{type}` | Tâches longues (>30s), gros fichiers | ✓ S3 | ✓ | — |
+| **Sync proxy** | `POST /v1/*` | SDK OpenAI, faible latence | — | — | — |
+| **LLM proxy** | `POST /v1/*` + `provider` | OpenAI / Anthropic / Ollama / vLLM | — | — | ✓ Redis |
+
+<div class="cta-center">
+  <LinkButton href="/GatewAI/architecture/overview/">Read the docs →</LinkButton>
+</div>
