@@ -44,3 +44,27 @@ inference:
     response_format: "json"
     # language: "fr"
     # prompt: "Extract all text visible in this document."
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenTelemetry (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# opentelemetry:
+#   enabled: false
+#
+#   exporter:
+#     endpoint: "http://otel-collector:4318"
+#     insecure: false
+#
+#   traces:
+#     enabled: true
+#     sample_ratio: 1.0
+#
+#   # OTLP metrics push is especially useful here: the relay runs as a
+#   # Kubernetes Job (one pod = one inference), so Prometheus scraping is
+#   # impractical. Use OTLP push to ship metrics to the collector instead.
+#   metrics:
+#     enabled: true
+#     interval: "60s"
+#
+#   logs:
+#     enabled: false
