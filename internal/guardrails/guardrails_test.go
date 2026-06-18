@@ -203,6 +203,169 @@ func TestRedact_NonMessageBody_Unchanged(t *testing.T) {
 	}
 }
 
+// ── ScanResponse ─────────────────────────────────────────────────────────────
+
+func TestScanResponse_DetectsPIIAndSecret(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-1","object":"chat.completion","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Contact bob@example.org or use key AKIAIOSFODNN7EXAMPLE123"},"finish_reason":"stop"}]}`)
+	got := checker.ScanResponse(body, nil)
+	assertViolation(t, got, "email")
+	assertViolation(t, got, "aws_access_key")
+}
+
+func TestScanResponse_GroupFilter_SecretsOnly(t *testing.T) {
+	// email present but only secrets group enabled — email must not be reported.
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"Email bob@example.org key AKIAIOSFODNN7EXAMPLE123"},"finish_reason":"stop"}]}`)
+	got := checker.ScanResponse(body, []string{guardrails.CheckSecrets})
+	assertViolation(t, got, "aws_access_key")
+	for _, v := range got {
+		if v == "email" {
+			t.Errorf("email should not be reported when enabled=[secrets]")
+		}
+	}
+}
+
+func TestScanResponse_NonResponseBody_ReturnsNil(t *testing.T) {
+	// A request body — no "choices" key.
+	body := []byte(`{"messages":[{"role":"user","content":"bob@example.org"}]}`)
+	got := checker.ScanResponse(body, nil)
+	if got != nil {
+		t.Errorf("expected nil for non-response body, got %v", got)
+	}
+}
+
+func TestScanResponse_ArrayOfParts(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":[{"type":"text","text":"SSN: 123-45-6789"}]},"finish_reason":"stop"}]}`)
+	got := checker.ScanResponse(body, []string{guardrails.CheckPIIUS})
+	assertViolation(t, got, "us_ssn")
+}
+
+// ── RedactResponse ────────────────────────────────────────────────────────────
+
+func TestRedactResponse_ReplacesEmailAndSSN(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-1","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Email: alice@example.com SSN: 123-45-6789"},"finish_reason":"stop"}]}`)
+	out, cats := checker.RedactResponse(body, nil)
+
+	if !json.Valid(out) {
+		t.Fatalf("RedactResponse returned invalid JSON: %s", out)
+	}
+
+	assertViolation(t, cats, "email")
+	assertViolation(t, cats, "us_ssn")
+
+	content := extractFirstChoiceContent(t, out)
+	assertNotContains(t, content, "alice@example.com")
+	assertNotContains(t, content, "123-45-6789")
+	assertContains(t, content, "[REDACTED_EMAIL]")
+	assertContains(t, content, "[REDACTED_US_SSN]")
+}
+
+func TestRedactResponse_PreservesOtherFields(t *testing.T) {
+	body := []byte(`{"id":"chatcmpl-42","model":"gpt-4","choices":[{"index":0,"message":{"role":"assistant","content":"Email: alice@example.com"},"finish_reason":"stop"}]}`)
+	out, _ := checker.RedactResponse(body, nil)
+
+	var payload map[string]any
+	if err := json.Unmarshal(out, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["id"] != "chatcmpl-42" {
+		t.Errorf("id field lost: %v", payload["id"])
+	}
+	if payload["model"] != "gpt-4" {
+		t.Errorf("model field lost: %v", payload["model"])
+	}
+	choices := payload["choices"].([]any)
+	choice := choices[0].(map[string]any)
+	if choice["finish_reason"] != "stop" {
+		t.Errorf("finish_reason field lost: %v", choice["finish_reason"])
+	}
+	msg := choice["message"].(map[string]any)
+	if msg["role"] != "assistant" {
+		t.Errorf("role field lost: %v", msg["role"])
+	}
+}
+
+func TestRedactResponse_Idempotent(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":"alice@example.com SSN 123-45-6789"},"finish_reason":"stop"}]}`)
+	out1, cats1 := checker.RedactResponse(body, nil)
+	out2, cats2 := checker.RedactResponse(out1, nil)
+
+	if string(out1) != string(out2) {
+		t.Errorf("RedactResponse is not idempotent:\n  pass1: %s\n  pass2: %s", out1, out2)
+	}
+	if cats2 != nil {
+		t.Errorf("second RedactResponse pass should return nil categories, got %v", cats2)
+	}
+	_ = cats1
+}
+
+func TestRedactResponse_NonResponseBody_Unchanged(t *testing.T) {
+	// A request body (has "messages", not "choices").
+	body := []byte(`{"messages":[{"role":"user","content":"alice@example.com"}]}`)
+	out, cats := checker.RedactResponse(body, nil)
+	if string(out) != string(body) {
+		t.Errorf("non-response body should be returned unchanged, got %s", out)
+	}
+	if cats != nil {
+		t.Errorf("expected nil categories for non-response body, got %v", cats)
+	}
+
+	// Arbitrary JSON without "choices".
+	body2 := []byte(`{"foo":1}`)
+	out2, cats2 := checker.RedactResponse(body2, nil)
+	if string(out2) != string(body2) {
+		t.Errorf("non-response body2 should be returned unchanged, got %s", out2)
+	}
+	if cats2 != nil {
+		t.Errorf("expected nil categories for body2, got %v", cats2)
+	}
+}
+
+// ── ScanStrings ───────────────────────────────────────────────────────────────
+
+func TestScanStrings_DetectsAcrossFragments(t *testing.T) {
+	texts := []string{
+		"Hello from alice@example.com",
+		"and her SSN is 123-45-6789",
+	}
+	got := checker.ScanStrings(texts, nil)
+	assertViolation(t, got, "email")
+	assertViolation(t, got, "us_ssn")
+}
+
+func TestScanStrings_DeDuplicated(t *testing.T) {
+	texts := []string{"alice@example.com", "bob@example.org"}
+	got := checker.ScanStrings(texts, nil)
+	count := 0
+	for _, v := range got {
+		if v == "email" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("email should appear exactly once (de-duplicated), got count=%d in %v", count, got)
+	}
+}
+
+func TestScanStrings_GroupFilter(t *testing.T) {
+	texts := []string{"alice@example.com key AKIAIOSFODNN7EXAMPLE123"}
+	got := checker.ScanStrings(texts, []string{guardrails.CheckSecrets})
+	assertViolation(t, got, "aws_access_key")
+	for _, v := range got {
+		if v == "email" {
+			t.Errorf("email should not be reported when enabled=[secrets]")
+		}
+	}
+}
+
+func TestScanStrings_Empty_ReturnsNil(t *testing.T) {
+	if got := checker.ScanStrings(nil, nil); got != nil {
+		t.Errorf("expected nil for nil input, got %v", got)
+	}
+	if got := checker.ScanStrings([]string{}, nil); got != nil {
+		t.Errorf("expected nil for empty input, got %v", got)
+	}
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func assertViolation(t *testing.T, violations []string, want string) {
@@ -257,4 +420,20 @@ func extractFirstContent(t *testing.T, body []byte) string {
 		t.Fatalf("could not parse output body: %v", err)
 	}
 	return payload.Messages[0].Content
+}
+
+// extractFirstChoiceContent extracts the string "content" from the first choice's message.
+func extractFirstChoiceContent(t *testing.T, body []byte) string {
+	t.Helper()
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
+		t.Fatalf("could not parse output body: %v", err)
+	}
+	return payload.Choices[0].Message.Content
 }

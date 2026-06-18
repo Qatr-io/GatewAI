@@ -12,11 +12,17 @@ import (
 	"gatewai/gateway/internal/config"
 )
 
-// GuardrailsSpec is the resolved guardrails configuration for a service.
-type GuardrailsSpec struct {
+// GuardrailsStage is the resolved guardrails configuration for a single pipeline stage.
+type GuardrailsStage struct {
 	Enabled bool
 	Checks  []string // resolved group names to run
 	Action  string   // "block" | "redact" | "flag"
+}
+
+// GuardrailsSpec holds resolved guardrails for both the input and output stages.
+type GuardrailsSpec struct {
+	Input  GuardrailsStage
+	Output GuardrailsStage
 }
 
 // Def describes a registered inference service type.
@@ -149,18 +155,30 @@ type Registry struct {
 	byWildcard    []*wildcardRoute           // wildcard prefix paths ending with /*
 }
 
-// resolveGuardrails converts a config.GuardrailsConfig into a runtime GuardrailsSpec.
-// When Checks are provided the guardrail is enabled with those checks and Action
-// (defaulting to "block" when Action is empty). Otherwise the zero (disabled) spec is returned.
-func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
-	if len(cfg.Checks) > 0 {
-		action := cfg.Action
+// resolveStage converts a check list and action string into a GuardrailsStage.
+// When checks are non-empty, the stage is enabled with those checks and action
+// (defaulting to "block" when action is empty). Otherwise the zero (disabled)
+// stage is returned.
+func resolveStage(checks []string, action string) GuardrailsStage {
+	if len(checks) > 0 {
 		if action == "" {
 			action = "block"
 		}
-		return GuardrailsSpec{Enabled: true, Checks: cfg.Checks, Action: action}
+		return GuardrailsStage{Enabled: true, Checks: checks, Action: action}
 	}
-	return GuardrailsSpec{}
+	return GuardrailsStage{}
+}
+
+// resolveGuardrails converts a config.GuardrailsConfig into a runtime GuardrailsSpec.
+// The top-level Checks/Action fields map to the Input stage. The Output sub-key
+// maps to the Output stage. Both default to disabled when not configured.
+func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
+	input := resolveStage(cfg.Checks, cfg.Action)
+	var output GuardrailsStage
+	if cfg.Output != nil {
+		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
+	}
+	return GuardrailsSpec{Input: input, Output: output}
 }
 
 func NewRegistry(cfgs []config.ServiceConfig) *Registry {

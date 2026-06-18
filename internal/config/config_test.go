@@ -495,3 +495,89 @@ services:
 		t.Error("expected error for unknown guardrails check name")
 	}
 }
+
+// ── Output guardrails config tests ───────────────────────────────────────────
+
+func TestLoad_Guardrails_Output_Valid(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    guardrails:
+      action: block
+      checks:
+        - pii
+      output:
+        action: redact
+        checks:
+          - pii
+          - secrets
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error loading config with output guardrails: %v", err)
+	}
+	out := cfg.Services[0].Guardrails.Output
+	if out == nil {
+		t.Fatal("expected output guardrails to be non-nil")
+	}
+	if out.Action != "redact" {
+		t.Errorf("expected output.action=redact, got %q", out.Action)
+	}
+	if len(out.Checks) != 2 {
+		t.Errorf("expected 2 output checks, got %d", len(out.Checks))
+	}
+}
+
+func TestLoad_Guardrails_Output_InvalidAction_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    guardrails:
+      output:
+        action: quarantine
+        checks:
+          - pii
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid guardrails.output.action")
+	}
+}
+
+func TestLoad_Guardrails_Output_InvalidCheck_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    guardrails:
+      output:
+        action: block
+        checks:
+          - pii
+          - ssn_us
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for unknown guardrails.output check name")
+	}
+}

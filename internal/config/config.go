@@ -252,14 +252,27 @@ type ServiceConfig struct {
 	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
 }
 
+// GuardrailsStageConfig controls PII/secrets detection for one stage (input or output).
+type GuardrailsStageConfig struct {
+	// Action applied when a check matches: "block" (default), "redact", or "flag".
+	Action string `yaml:"action"`
+	// Checks selects which guardrail groups to run:
+	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
+	Checks []string `yaml:"checks"`
+}
+
 // GuardrailsConfig controls PII/secrets detection for a service's LLM requests.
-// Configure via Action and Checks; there is no legacy shorthand.
+// Configure via Action and Checks (top-level, applied to input) or via the
+// Input/Output sub-keys for stage-specific configuration.
 type GuardrailsConfig struct {
 	// Action applied when a check matches: "block" (default), "redact", or "flag".
 	Action string `yaml:"action"`
 	// Checks selects which guardrail groups to run:
 	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
 	Checks []string `yaml:"checks"`
+	// Output configures output-stage DLP guardrails (applied to LLM responses).
+	// When nil, output guardrails are disabled.
+	Output *GuardrailsStageConfig `yaml:"output"`
 }
 
 // Load reads and validates the YAML config file at path.
@@ -381,16 +394,26 @@ func (c *Config) validate() error {
 			}
 		}
 		validActions := map[string]bool{"block": true, "redact": true, "flag": true}
-		if svc.Guardrails.Action != "" && !validActions[svc.Guardrails.Action] {
-			return fmt.Errorf("service %q: guardrails.action %q is invalid (valid: block, redact, flag)", svc.Type, svc.Guardrails.Action)
-		}
 		validChecks := map[string]bool{
 			"pii": true, "pii_fr": true, "pii_us": true, "pii_uk": true,
 			"pii_es": true, "pii_it": true, "secrets": true,
 		}
+		if svc.Guardrails.Action != "" && !validActions[svc.Guardrails.Action] {
+			return fmt.Errorf("service %q: guardrails.action %q is invalid (valid: block, redact, flag)", svc.Type, svc.Guardrails.Action)
+		}
 		for _, check := range svc.Guardrails.Checks {
 			if !validChecks[check] {
 				return fmt.Errorf("service %q: guardrails.checks contains unknown check %q (valid: pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets)", svc.Type, check)
+			}
+		}
+		if out := svc.Guardrails.Output; out != nil {
+			if out.Action != "" && !validActions[out.Action] {
+				return fmt.Errorf("service %q: guardrails.output.action %q is invalid (valid: block, redact, flag)", svc.Type, out.Action)
+			}
+			for _, check := range out.Checks {
+				if !validChecks[check] {
+					return fmt.Errorf("service %q: guardrails.output.checks contains unknown check %q (valid: pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets)", svc.Type, check)
+				}
 			}
 		}
 	}

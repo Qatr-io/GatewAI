@@ -175,6 +175,10 @@ services:
   #     action: redact
   #     # Check groups (all opt-in): pii (universal), pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
   #     checks: [pii, secrets]
+  #     # Optional output stage — scan/redact the model RESPONSE (streaming degrades to flag).
+  #     output:
+  #       checks: [pii, secrets]
+  #       action: redact
 
   # ── Multi-backend : blue/green, canary, fallback ─────────────────────────
   # Remplace inferenceURL par une liste backends. Mutuellement exclusif avec

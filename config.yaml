@@ -188,6 +188,11 @@ services:
   #     #               pii_fr (phone FR, NIR, SIREN/SIRET), pii_us (SSN), pii_uk (NINO),
   #     #               pii_es (DNI), pii_it (Codice Fiscale), secrets (API keys, tokens, private keys)
   #     checks: [pii, secrets]
+  #     # Optional output stage — scan/redact the model RESPONSE (output DLP).
+  #     # Streaming responses always degrade to flag (cannot redact/block mid-stream).
+  #     output:
+  #       checks: [pii, secrets]
+  #       action: redact
   #
   # Anthropic — translate OpenAI-format requests to the Messages API automatically.
   # - type: llm

@@ -3,10 +3,10 @@
 package llmproxy
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
-	"bufio"
 	"io"
 	"log/slog"
 	"net/http"
@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
@@ -43,6 +44,7 @@ type Handler struct {
 	tracker        metrics.ConsumerTracker
 	audit          AuditConfig
 	tokenLimiter   ratelimit.TokenChecker // nil = token rate limiting disabled
+	guard          *guardrails.Checker    // output DLP scanner
 }
 
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
@@ -59,6 +61,7 @@ func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader st
 		tracker:        tracker,
 		audit:          audit,
 		tokenLimiter:   tl,
+		guard:          guardrails.New(),
 	}
 }
 
@@ -269,6 +272,37 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		}
 	}
 
+	// ── Output DLP guardrails ─────────────────────────────────────────────────
+	// Applied after response translation; only on successful (2xx) responses.
+	outputBlocked := false
+	if def.Guardrails.Output.Enabled && h.guard != nil && finalStatus < 300 {
+		switch def.Guardrails.Output.Action {
+		case "redact":
+			redacted, found := h.guard.RedactResponse(finalBody, def.Guardrails.Output.Checks)
+			if len(found) > 0 {
+				finalBody = redacted
+				slog.WarnContext(r.Context(), "llm response redacted by output guardrails",
+					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "redact", "redacted").Inc()
+			}
+		case "flag":
+			if found := h.guard.ScanResponse(finalBody, def.Guardrails.Output.Checks); len(found) > 0 {
+				slog.WarnContext(r.Context(), "llm response flagged by output guardrails",
+					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "flag", "flagged").Inc()
+			}
+		default: // "block"
+			if found := h.guard.ScanResponse(finalBody, def.Guardrails.Output.Checks); len(found) > 0 {
+				slog.WarnContext(r.Context(), "llm response blocked by output guardrails",
+					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "block", "blocked").Inc()
+				finalStatus = http.StatusUnprocessableEntity
+				finalBody = []byte(`{"error":"response blocked by guardrails"}`)
+				outputBlocked = true
+			}
+		}
+	}
+
 	// ── Write response (before cache-fill to avoid blocking the client) ───────
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
@@ -293,8 +327,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
 		finalStatus, time.Since(start).Milliseconds(), false, body, usage)
 
-	// ── Cache-fill async (only 200 responses, non-streaming) ─────────────────
-	if cacheable && cacheKey != "" && finalStatus == http.StatusOK {
+	// ── Cache-fill async (only 200 responses, non-streaming, not output-blocked) ─
+	if !outputBlocked && cacheable && cacheKey != "" && finalStatus == http.StatusOK {
 		entry := &cache.Entry{
 			Body:        finalBody,
 			ContentType: "application/json",
@@ -478,10 +512,12 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	// Pipe SSE lines to the client, flushing after each line.
 	// We track the last non-[DONE] data payload to extract usage counts once
 	// the stream is complete (token rate limiting, metrics).
+	// We also accumulate delta content for output DLP scanning.
 	flusher, canFlush := w.(http.Flusher)
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1*1024*1024)
 	var lastDataPayload string
+	var deltaTexts []string
 	for scanner.Scan() {
 		line := scanner.Text()
 		if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
@@ -492,6 +528,20 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		}
 		if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
 			lastDataPayload = after
+			// Accumulate delta.content for output DLP scanning.
+			if def.Guardrails.Output.Enabled {
+				var chunk struct {
+					Choices []struct {
+						Delta struct {
+							Content string `json:"content"`
+						} `json:"delta"`
+					} `json:"choices"`
+				}
+				if jsonErr := json.Unmarshal([]byte(after), &chunk); jsonErr == nil &&
+					len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+					deltaTexts = append(deltaTexts, chunk.Choices[0].Delta.Content)
+				}
+			}
 		}
 	}
 
@@ -510,6 +560,21 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		}
 	}
 
+	// ── Output DLP guardrails (streaming) ─────────────────────────────────────
+	// Block and redact are not feasible on already-flushed SSE streams; we always
+	// degrade to flag-only to at least emit a metric and log entry.
+	if def.Guardrails.Output.Enabled && h.guard != nil && len(deltaTexts) > 0 {
+		// Join the per-token deltas before scanning: a single delta rarely holds a
+		// full match (e.g. an email streams as "bob","@","example",".","com"), so
+		// scanning fragments individually would miss PII split across chunks.
+		full := strings.Join(deltaTexts, "")
+		if found := h.guard.ScanStrings([]string{full}, def.Guardrails.Output.Checks); len(found) > 0 {
+			slog.WarnContext(r.Context(), "llm stream response flagged by output guardrails (block/redact degrade to flag for streams)",
+				"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+			metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "flag", "flagged").Inc()
+		}
+	}
+
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
 		resp.StatusCode, time.Since(start).Milliseconds(), true, body, streamUsage)
 }
@@ -521,16 +586,16 @@ func (h *Handler) auditLog(ctx context.Context, def *service.Def, consumer, user
 		return
 	}
 	args := []any{
-		"service_type",  def.Type,
-		"model",         def.Model,
+		"service_type", def.Type,
+		"model", def.Model,
 		"backend_model", backendModel,
-		"provider",      def.Provider,
-		"consumer",      consumer,
-		"user_type",     userType,
-		"status",        status,
-		"duration_ms",   durationMs,
-		"backend_url",   backendURL,
-		"stream",        stream,
+		"provider", def.Provider,
+		"consumer", consumer,
+		"user_type", userType,
+		"status", status,
+		"duration_ms", durationMs,
+		"backend_url", backendURL,
+		"stream", stream,
 	}
 	if usage != nil {
 		args = append(args,

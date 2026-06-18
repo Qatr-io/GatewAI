@@ -4,7 +4,7 @@ title: Guardrails
 
 # Guardrails
 
-GatewAI can scan LLM requests for **PII** and **secrets** before they reach the backend. Guardrails run on the sync LLM-proxy path (`POST /v1/*`) and are configured per service.
+GatewAI can scan for **PII** and **secrets** both on the way **in** (the request, before it reaches the backend) and on the way **out** (the model's response, before it returns to the client — output DLP). Guardrails run on the sync LLM-proxy path (`POST /v1/*`) and are configured per service.
 
 ## Configuration
 
@@ -21,6 +21,25 @@ services:
 ```
 
 Guardrails are **opt-in per service** — omit the `guardrails` block (or leave `checks` empty) to disable them. There is no global toggle.
+
+## Stages: input and output
+
+The top-level `checks`/`action` are the **input** stage (scans the request). Add an optional **`output`** block to also scan the model's *response* (output DLP):
+
+```yaml
+guardrails:
+  checks: [pii, secrets]   # input stage — the request
+  action: redact
+  output:                  # output stage — the response (optional)
+    checks: [pii, secrets]
+    action: redact         # block | redact | flag
+```
+
+Output actions mirror input but operate on `choices[*].message.content`: `redact` masks matches before the response is returned (and the redacted body is what gets cached), `block` returns `422 {"error":"response blocked by guardrails"}`, `flag` logs only.
+
+:::note
+**Streaming responses are never modified or blocked.** When the response streams (`stream: true`), the output stage always degrades to `flag` — it detects, logs, and increments the metric after the stream completes, but cannot redact or block bytes already sent. Use a non-streaming request if you need output `redact`/`block` enforcement.
+:::
 
 ## Actions
 
@@ -65,7 +84,7 @@ Content-Type: application/json
 ## Metrics
 
 ```
-gatewai_guardrails_total{service_type, model, action, result}   # result = blocked | redacted | flagged
+gatewai_guardrails_total{service_type, model, stage, action, result}   # stage = input | output; result = blocked | redacted | flagged
 gatewai_guardrails_pii_blocked_total{service_type, model}        # retained for continuity (block only)
 ```
 

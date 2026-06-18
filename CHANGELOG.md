@@ -23,10 +23,12 @@ Versioning: each component is versioned independently — see tag conventions be
 - **Configurable guardrails pipeline**: each service's `guardrails` block now supports an `action` (`block` → reject `422`, `redact` → mask matches in-place and forward the cleaned body, `flag` → log + metric only) and a `checks` list selecting which detector groups to run. New Prometheus counter `gatewai_guardrails_total{service_type, model, action, result}` (the legacy `gatewai_guardrails_pii_blocked_total` is retained).
 - **Multi-country PII detection**: check groups `pii` (universal: email, credit card, IBAN, IPv4, E.164 phone), `pii_fr` (phone FR, NIR, SIREN/SIRET), `pii_us` (SSN), `pii_uk` (NINO), `pii_es` (DNI), `pii_it` (Codice Fiscale).
 - **Secrets detection** (`secrets` group): AWS access keys, private-key blocks, JWTs, GitHub/Slack/Google tokens — prevents credentials leaking to external LLM providers.
+- **Output (response) DLP**: optional `guardrails.output` block (`checks` + `action`) scans the model *response* before returning it to the client. `redact` masks matches in `choices[*].message.content` (and caches the redacted body), `block` returns `422 {"error":"response blocked by guardrails"}`, `flag` logs only. Non-streaming responses are fully enforced; streaming responses always degrade to `flag` (cannot redact/block mid-stream). The top-level `checks`/`action` remain the input stage.
 
 #### Changed
 
 - **Guardrails block status** is now `422 Unprocessable Entity` (was `400`).
+- **`gatewai_guardrails_total` gained a `stage` label** (`input` | `output`) — label set is now `{service_type, model, stage, action, result}`. Update any dashboards/alerts that query this counter.
 
 #### Breaking Changes
 

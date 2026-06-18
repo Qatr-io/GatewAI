@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
+
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
@@ -400,7 +402,7 @@ func TestRewriteBodyModel_InvalidJSON(t *testing.T) {
 
 // testTracker records Track calls for assertion in tests.
 type testTracker struct {
-	mu   sync.Mutex
+	mu    sync.Mutex
 	calls []trackCall
 }
 
@@ -505,6 +507,43 @@ func TestServeJSON_Streaming_PipedToClient(t *testing.T) {
 	}
 	if rr.Body.String() != sseChunks {
 		t.Errorf("body mismatch: got %q", rr.Body.String())
+	}
+}
+
+// TestServeJSON_Streaming_OutputFlag_DetectsSplitPII guards the cross-chunk fix:
+// an email streamed as separate token deltas ("bob","@example",".com") must still
+// be detected by joining the deltas before scanning. Streaming never redacts —
+// the body passes through unmodified — but the flag metric must still fire.
+func TestServeJSON_Streaming_OutputFlag_DetectsSplitPII(t *testing.T) {
+	sseChunks := "data: {\"choices\":[{\"delta\":{\"content\":\"bob\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\"@example\"}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{\"content\":\".com\"}}]}\n\n" +
+		"data: [DONE]\n\n"
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseChunks)
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	def := llmDefWithOutput("redact", []string{"pii"}) // redact degrades to flag for streams
+	setBackend(def, backend.URL)
+
+	ctr := metrics.GuardrailsTotal.WithLabelValues("llm", "my-alias", "output", "flag", "flagged")
+	before := testutil.ToFloat64(ctr)
+
+	rr := doServeJSON(h, def, streamBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	// Stream is never modified: the (split) raw content is forwarded as-is.
+	if !strings.Contains(rr.Body.String(), "bob") || !strings.Contains(rr.Body.String(), "@example") {
+		t.Error("streamed body should pass through unmodified")
+	}
+	if got := testutil.ToFloat64(ctr) - before; got != 1 {
+		t.Errorf("expected output flag metric +1 for split-PII stream, got +%v", got)
 	}
 }
 
@@ -928,5 +967,114 @@ func TestServeJSON_ModelTokenLimit_Rejected(t *testing.T) {
 	}
 	if rr.Header().Get("Retry-After") == "" {
 		t.Error("expected Retry-After header on model token limit rejection")
+	}
+}
+
+// ── output DLP guardrails ────────────────────────────────────────────────────
+
+// fakeResponseWithEmail returns an OpenAI-format response whose assistant message
+// contains a plain email address — detected by the "pii" check group.
+const fakeResponseWithPII = `{"id":"chatcmpl-2","object":"chat.completion","model":"my-alias","choices":[{"index":0,"message":{"role":"assistant","content":"Contact me at test@example.com please"},"finish_reason":"stop"}],"usage":{"prompt_tokens":5,"completion_tokens":8}}`
+
+// llmDefWithOutput builds a service.Def that enables output DLP guardrails.
+func llmDefWithOutput(action string, checks []string) *service.Def {
+	def := llmDef("passthrough", "", 60*time.Second)
+	def.Guardrails.Output = service.GuardrailsStage{
+		Enabled: true,
+		Checks:  checks,
+		Action:  action,
+	}
+	return def
+}
+
+func TestOutputGuardrails_Redact_RemovesPIIFromBody(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponseWithPII)
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+
+	def := llmDefWithOutput("redact", []string{"pii"})
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if strings.Contains(body, "test@example.com") {
+		t.Error("email should have been redacted from response body")
+	}
+	if !strings.Contains(body, "[REDACTED") {
+		t.Error("expected a redaction placeholder in response body")
+	}
+}
+
+func TestOutputGuardrails_Block_Returns422_AndSkipsCache(t *testing.T) {
+	callCount := 0
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponseWithPII)
+	}))
+	defer backend.Close()
+
+	mc, filled := newMemCacheWithNotify()
+	reg := provider.NewRegistry()
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+
+	def := llmDefWithOutput("block", []string{"pii"})
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422 when output blocked by guardrails, got %d", rr.Code)
+	}
+	body := rr.Body.String()
+	if !strings.Contains(body, "response blocked by guardrails") {
+		t.Errorf("expected block error message, got: %q", body)
+	}
+
+	// Cache must not be filled after a block.
+	select {
+	case <-filled:
+		t.Error("cache should not be filled when output guardrails block the response")
+	case <-time.After(200 * time.Millisecond):
+		// expected: no cache fill
+	}
+	if len(mc.data) != 0 {
+		t.Errorf("cache should be empty after output block, got %d entries", len(mc.data))
+	}
+}
+
+func TestOutputGuardrails_Flag_LeavesBodyUnchanged(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, fakeResponseWithPII)
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+
+	def := llmDefWithOutput("flag", []string{"pii"})
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200 with flag action, got %d", rr.Code)
+	}
+	// Body must be the original — flag does not modify it.
+	if !strings.Contains(rr.Body.String(), "test@example.com") {
+		t.Error("flag action must leave the email in the body unchanged")
 	}
 }
