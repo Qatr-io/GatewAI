@@ -173,9 +173,14 @@ rate_limits:
 
 **`token_limits`** (top-level config block): per-consumer, per-service-type token budget limits for LLM proxy. Optimistic enforcement (tokens known post-response); streaming skips counting.
 
-### Guardrails PII
+### Guardrails
 
-`internal/guardrails/`: PII detection for LLM JSON requests (email, phone FR, IBAN, credit card, SIREN/SIRET). Enabled per service via `guardrails.pii: true`. Blocked requests return 422 and are logged as security events. Prometheus counter: `GatewAI_guardrails_pii_blocked_total{service_type, model}`.
+`internal/guardrails/`: PII and secrets detection for LLM JSON requests, applied on the sync LLM-proxy path (`POST /v1/*`) per service. Configurable pipeline with a per-service **action** and a set of **check groups**:
+
+- **Action** (`guardrails.action`): `block` (reject `422`, default), `redact` (mask matches in-place with placeholders like `[REDACTED_EMAIL]` and forward the cleaned body), or `flag` (log + metric only, forward unchanged).
+- **Check groups** (`guardrails.checks`): `pii` (universal: email, credit card, IBAN, IPv4, E.164 phone), `pii_fr` (phone FR, NIR, SIREN/SIRET), `pii_us` (SSN), `pii_uk` (NINO), `pii_es` (DNI), `pii_it` (Codice Fiscale), `secrets` (AWS key, private-key block, JWT, GitHub/Slack/Google tokens). Country groups are strictly opt-in.
+
+Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, action, result}` and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
 
 ### Service headers
 

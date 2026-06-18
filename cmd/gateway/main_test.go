@@ -6,7 +6,24 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"gatewai/gateway/internal/ratelimit"
 )
+
+// TestTokenChecker_NilStaysNilInterface guards against the typed-nil interface
+// trap: passing a nil *ratelimit.Limiter as a ratelimit.TokenChecker would
+// otherwise yield a non-nil interface, defeating the handler's nil check and
+// panicking on first use (LLM proxy request with rate limiting disabled).
+func TestTokenChecker_NilStaysNilInterface(t *testing.T) {
+	var l *ratelimit.Limiter // nil
+	if got := tokenChecker(l); got != nil {
+		t.Fatalf("tokenChecker(nil) = non-nil interface %v, want nil", got)
+	}
+	real := ratelimit.New(nil, nil, nil, "", "")
+	if got := tokenChecker(real); got == nil {
+		t.Fatal("tokenChecker(non-nil) = nil, want the limiter")
+	}
+}
 
 // TestReservedGatewayPath verifies the path guard against the full list of
 // reserved gateway routes.

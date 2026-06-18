@@ -16,6 +16,28 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+#### Added
+
+- **Configurable guardrails pipeline**: each service's `guardrails` block now supports an `action` (`block` → reject `422`, `redact` → mask matches in-place and forward the cleaned body, `flag` → log + metric only) and a `checks` list selecting which detector groups to run. New Prometheus counter `gatewai_guardrails_total{service_type, model, action, result}` (the legacy `gatewai_guardrails_pii_blocked_total` is retained).
+- **Multi-country PII detection**: check groups `pii` (universal: email, credit card, IBAN, IPv4, E.164 phone), `pii_fr` (phone FR, NIR, SIREN/SIRET), `pii_us` (SSN), `pii_uk` (NINO), `pii_es` (DNI), `pii_it` (Codice Fiscale).
+- **Secrets detection** (`secrets` group): AWS access keys, private-key blocks, JWTs, GitHub/Slack/Google tokens — prevents credentials leaking to external LLM providers.
+
+#### Changed
+
+- **Guardrails block status** is now `422 Unprocessable Entity` (was `400`).
+
+#### Breaking Changes
+
+- **`guardrails.pii` boolean removed**: the legacy `guardrails.pii: true` shorthand has been removed. Use `guardrails.checks` (+ optional `guardrails.action`) instead — e.g. `checks: [pii, secrets]` with `action: block`.
+
+#### Fixed
+
+- **LLM proxy nil-pointer panic**: an LLM-proxy request (`POST /v1/*`) would crash the request when rate limiting was disabled — a nil `*ratelimit.Limiter` passed as a `TokenChecker` interface became a non-nil typed-nil, defeating the handler's nil guard. The limiter is now converted to a true nil interface when unset.
+
+---
+
 ### [v0.16.1] — 2026-06-16
 
 #### Added
