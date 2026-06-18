@@ -14,6 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
@@ -102,6 +107,17 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	if h.userTypeHeader != "" {
 		userType = r.Header.Get(h.userTypeHeader)
 	}
+
+	ctx, span := otel.Tracer("gatewai/gateway").Start(r.Context(), "gateway.llm.request",
+		trace.WithAttributes(
+			attribute.String("service_type", def.Type),
+			attribute.String("model", def.Model),
+			attribute.String("provider", def.Provider),
+			attribute.String("consumer", consumer),
+		))
+	defer span.End()
+	r = r.WithContext(ctx)
+
 	start := time.Now()
 	prov, err := h.providers.Get(def.Provider)
 	if err != nil {
@@ -228,6 +244,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		break // success or 4xx — do not retry
 	}
 	if resp == nil {
+		span.RecordError(fmt.Errorf("all backends failed: %s", lastBackendErr))
+		span.SetStatus(codes.Error, "all backends failed")
 		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastBackendErr)
 		return
@@ -252,6 +270,13 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	}
 
 	statusStr := strconv.Itoa(finalStatus)
+	span.SetAttributes(
+		attribute.Int("http.status_code", finalStatus),
+		attribute.String("llm.backend_model", winningBackendModel),
+	)
+	if finalStatus >= 500 {
+		span.SetStatus(codes.Error, "backend error")
+	}
 	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
 	metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType).Observe(time.Since(start).Seconds())
 
