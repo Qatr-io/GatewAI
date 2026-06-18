@@ -11,6 +11,12 @@ import (
 	"path/filepath"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"gatewai/relay/internal/adapter"
 	"gatewai/relay/internal/metrics"
 	"gatewai/relay/internal/model"
@@ -33,6 +39,7 @@ type Processor struct {
 	adapter   adapter.Adapter
 	s3        objectStore
 	publisher eventPublisher
+	tracer    trace.Tracer
 }
 
 // New creates a Processor. pub handles persisting the result and notifying the gateway.
@@ -41,6 +48,7 @@ func New(adp adapter.Adapter, s3 *storage.S3Client, pub eventPublisher) *Process
 		adapter:   adp,
 		s3:        s3,
 		publisher: pub,
+		tracer:    otel.Tracer("gatewai/relay"),
 	}
 }
 
@@ -62,6 +70,20 @@ func (p *Processor) Process(ctx context.Context, job *model.Job) error {
 // fresh S3 download (the previous stream is exhausted).
 // The initial GetObject is not retried — an infra error there is escalated directly.
 func (p *Processor) process(ctx context.Context, job *model.Job) error {
+	// Restore trace context from the gateway so this span is a child of the
+	// submit request even though the relay runs in a separate process.
+	if job.TraceContext != "" {
+		carrier := propagation.MapCarrier{"traceparent": job.TraceContext}
+		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+	}
+	ctx, span := p.tracer.Start(ctx, "relay.process_job",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("service_type", job.ServiceType),
+			attribute.String("model", job.Model),
+		))
+	defer span.End()
+
 	log := slog.With("job_id", job.ID, "service_type", job.ServiceType)
 	log.Info("processing job", "input_ref", job.InputRef)
 
@@ -145,7 +167,21 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 }
 
 // runInference calls the adapter and records timing metrics.
-func (p *Processor) runInference(ctx context.Context, job *model.Job, body io.Reader, size int64, contentType string) ([]byte, error) {
+func (p *Processor) runInference(ctx context.Context, job *model.Job, body io.Reader, size int64, contentType string) (_ []byte, err error) {
+	ctx, span := p.tracer.Start(ctx, "relay.inference_call",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("model", job.Model),
+			attribute.String("inference_url", job.InferenceURL),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	inferStart := time.Now()
 	result, err := p.adapter.Call(ctx, adapter.CallInput{
 		JobID:        job.ID,
