@@ -65,4 +65,4 @@ jobs:
 
           git add .
           git diff --cached --quiet || git commit -m "docs: deploy Astro site from ${GITHUB_SHA::8}"
-          git push origin gh-pages
+          git push --force origin gh-pages
