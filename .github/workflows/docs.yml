@@ -52,10 +52,12 @@ jobs:
           [ -f index.yaml ] && cp index.yaml /tmp/helm-preserve/
           for f in *.tgz; do [ -f "$f" ] && cp "$f" /tmp/helm-preserve/; done
 
-          # Wipe and replace with built site
+          # Wipe tracked and untracked files (prevents node_modules leaking into gh-pages)
           git rm -rf . --quiet || true
+          git clean -fdx --quiet
 
           cp -r /tmp/astro-site/. .
+          touch .nojekyll
 
           # Restore Helm artefacts
           [ -f /tmp/helm-preserve/index.yaml ] && cp /tmp/helm-preserve/index.yaml .
