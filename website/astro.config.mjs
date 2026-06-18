@@ -44,7 +44,9 @@ export default defineConfig({
         },
         {
           label: 'Manage',
-          items: [{ autogenerate: { directory: 'manage' } }],
+          items: [
+            { label: 'Runbooks', slug: 'manage/runbooks' },
+          ],
         },
         {
           label: 'Reference',
