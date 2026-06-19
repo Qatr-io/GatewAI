@@ -16,19 +16,23 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [Unreleased]
+### [v0.17.0] — 2026-06-19
 
 #### Added
 
+- **OpenTelemetry observability**: built-in distributed tracing, OTLP metrics push, and structured log forwarding via OTLP/HTTP. Configured under the `opentelemetry:` block; all signals disabled by default, zero overhead when off. Spans cover the full async lifecycle: `gateway.http.server`, `gateway.job.submit`, `gateway.s3.*`, `gateway.redis.enqueue`, `gateway.llm.request`, `gateway.consumer.job_completed`, `gateway.webhook.send`. Trace context is propagated to the relay via the `trace_context` field of the Redis job record (W3C traceparent). See [Span reference](https://qatr-io.github.io/GatewAI/observe/spans).
 - **Configurable guardrails pipeline**: each service's `guardrails` block now supports an `action` (`block` → reject `422`, `redact` → mask matches in-place and forward the cleaned body, `flag` → log + metric only) and a `checks` list selecting which detector groups to run. New Prometheus counter `gatewai_guardrails_total{service_type, model, action, result}` (the legacy `gatewai_guardrails_pii_blocked_total` is retained).
 - **Multi-country PII detection**: check groups `pii` (universal: email, credit card, IBAN, IPv4, E.164 phone), `pii_fr` (phone FR, NIR, SIREN/SIRET), `pii_us` (SSN), `pii_uk` (NINO), `pii_es` (DNI), `pii_it` (Codice Fiscale).
 - **Secrets detection** (`secrets` group): AWS access keys, private-key blocks, JWTs, GitHub/Slack/Google tokens — prevents credentials leaking to external LLM providers.
-- **Output (response) DLP**: optional `guardrails.output` block (`checks` + `action`) scans the model *response* before returning it to the client. `redact` masks matches in `choices[*].message.content` (and caches the redacted body), `block` returns `422 {"error":"response blocked by guardrails"}`, `flag` logs only. Non-streaming responses are fully enforced; streaming responses always degrade to `flag` (cannot redact/block mid-stream). The top-level `checks`/`action` remain the input stage.
+- **Output (response) DLP**: optional `guardrails.output` block (`checks` + `action`) scans the model *response* before returning it to the client. `redact` masks matches in `choices[*].message.content` (and caches the redacted body), `block` returns `422 {"error":"response blocked by guardrails"}`, `flag` logs only. Non-streaming responses are fully enforced; streaming responses always degrade to `flag` (cannot redact/block mid-stream).
+- **Helm: OTel Collector options**: `otlp.enabled` deploys the `opentelemetry-collector` sub-chart (aliased `otlp`); `otlpOperator.enabled` creates an `OpenTelemetryCollector` CR for clusters with the OTel Operator installed (validates CRD presence via `Capabilities.APIVersions`).
+- **Grafana dashboards**: new `gatewai-traces.json` dashboard (Tempo datasource — service map, RED metrics via TraceQL, per-operation trace search); exemplar links added to latency panels of `gatewai.json` and `gatewai-llm.json`.
 
 #### Changed
 
 - **Guardrails block status** is now `422 Unprocessable Entity` (was `400`).
 - **`gatewai_guardrails_total` gained a `stage` label** (`input` | `output`) — label set is now `{service_type, model, stage, action, result}`. Update any dashboards/alerts that query this counter.
+- **Dockerfile**: base image updated to `golang:1.25-alpine` (OTel SDK v1.44 requires Go ≥ 1.25).
 
 #### Breaking Changes
 
@@ -633,6 +637,15 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [v0.8.0] — 2026-06-19
+
+#### Added
+
+- **OpenTelemetry observability**: distributed tracing and OTLP push (traces, metrics, logs) via the `opentelemetry:` config block. Spans: `relay.process_job` (restores gateway trace context from `job.trace_context`) and `relay.inference_call` (injects W3C `traceparent` header into the HTTP call to the inference API). OTLP metrics push is especially useful since the relay runs as a one-shot k8s Job and cannot be Prometheus-scraped; a deferred 10-second shutdown ensures `ForceFlush` completes before pod exit.
+- **OTel SDK upgraded to v1.44.0** (requires Go 1.25); Dockerfile updated to `golang:1.25-alpine`.
+
+---
 
 ### [v0.7.3] — 2026-06-16
 
