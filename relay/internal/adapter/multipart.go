@@ -8,6 +8,9 @@ import (
 	"net/http"
 	"sort"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"gatewai/relay/internal/config"
 )
 
@@ -75,6 +78,9 @@ func (a *multipartAdapter) Call(ctx context.Context, input CallInput) ([]byte, e
 	if a.inf.APIKey != "" {
 		req.Header.Set("Authorization", "Bearer "+a.inf.APIKey)
 	}
+	// Propagate the active span as W3C traceparent so the inference API can
+	// create child spans under the relay's trace if it supports OTel.
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
 
 	resp, err := a.client.Do(req)
 	if err != nil {

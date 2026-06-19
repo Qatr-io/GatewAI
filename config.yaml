@@ -181,6 +181,18 @@ services:
   #   inference_url: ""               # empty = defaults to https://api.openai.com
   #   inference_headers:
   #     Authorization: "Bearer ${OPENAI_API_KEY}"
+  #   guardrails:                     # detect PII / secrets in LLM requests (sync /v1/* path)
+  #     # action: block (reject 422) | redact (mask matches in-place, forward cleaned body) | flag (log only)
+  #     action: redact
+  #     # check groups (all opt-in): pii (universal: email, credit card, IBAN, IPv4, phone E.164),
+  #     #               pii_fr (phone FR, NIR, SIREN/SIRET), pii_us (SSN), pii_uk (NINO),
+  #     #               pii_es (DNI), pii_it (Codice Fiscale), secrets (API keys, tokens, private keys)
+  #     checks: [pii, secrets]
+  #     # Optional output stage — scan/redact the model RESPONSE (output DLP).
+  #     # Streaming responses always degrade to flag (cannot redact/block mid-stream).
+  #     output:
+  #       checks: [pii, secrets]
+  #       action: redact
   #
   # Anthropic — translate OpenAI-format requests to the Messages API automatically.
   # - type: llm
@@ -303,3 +315,30 @@ services:
 #       period: 1m
 #       token_rate: 100000        # 100 k tokens / hour
 #       token_period: 1h
+
+# ─────────────────────────────────────────────────────────────────────────────
+# OpenTelemetry (optional)
+# ─────────────────────────────────────────────────────────────────────────────
+# opentelemetry:
+#   enabled: false
+#
+#   # Base exporter — applies to all signals unless overridden per-signal.
+#   exporter:
+#     endpoint: "http://otel-collector:4318"   # OTLP/HTTP
+#     insecure: false
+#     # headers:
+#     #   Authorization: "Bearer ${OTEL_TOKEN}"
+#
+#   traces:
+#     enabled: true
+#     sample_ratio: 1.0   # 1.0 = always sample, 0.1 = 10 %
+#
+#   # OTLP metrics push (useful for short-lived processes or when Prometheus
+#   # scrape is not available, e.g. relay running as a Kubernetes Job).
+#   metrics:
+#     enabled: false
+#     interval: "60s"
+#
+#   # Forward structured logs (slog) via OTLP.
+#   logs:
+#     enabled: false

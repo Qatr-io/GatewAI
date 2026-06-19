@@ -69,15 +69,18 @@ Avoid `consumerLabels: true` with large or dynamic consumer sets — it creates 
 
 ## Dashboards
 
-Three Grafana dashboards are available in [`dashboards/`](https://github.com/Qatr-io/GatewAI/tree/main/dashboards/):
+Four Grafana dashboards are available in [`dashboards/`](https://github.com/Qatr-io/GatewAI/tree/main/dashboards/):
 
-| Dashboard | File | Panels |
-|-----------|------|--------|
-| GatewAI — Gateway & Relay | `gatewai.json` | 40 |
-| GatewAI — LLM Proxy | `gatewai-llm.json` | 19 |
-| GatewAI — Audit Trail LLM | `gatewai-audit-trail.json` | 22 |
+| Dashboard | File | Datasource |
+|-----------|------|------------|
+| GatewAI — Gateway & Relay | `gatewai.json` | Prometheus + Tempo |
+| GatewAI — LLM Proxy | `gatewai-llm.json` | Prometheus + Tempo |
+| GatewAI — Audit Trail LLM | `gatewai-audit-trail.json` | Prometheus + Loki |
+| GatewAI — Traces | `gatewai-traces.json` | Tempo |
 
-Import them via the Grafana UI (**Dashboards → Import → Upload JSON file**) or provision them through your GitOps pipeline.
+Import via **Dashboards → Import → Upload JSON file**. The Prometheus dashboards include latency panels with [exemplar](/observe/opentelemetry#grafana--tempo-exemplars) support — clicking an exemplar dot jumps to the corresponding trace in Tempo.
+
+For traces, OTLP metrics push (relay), and log forwarding see [OpenTelemetry](/observe/opentelemetry).
 
 ## Alerts
 

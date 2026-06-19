@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"gatewai/relay/internal/telemetry"
 )
 
 // Config holds all relay runtime configuration.
@@ -19,7 +21,8 @@ type Config struct {
 	// QueuePopTimeout is how long Pop waits for a job before returning ErrNoJob.
 	// Use when a pod may start after its queue item was already cancelled.
 	// Defaults to 30s. Set to "0" to block indefinitely (legacy behaviour).
-	QueuePopTimeout string `yaml:"queue_pop_timeout"`
+	QueuePopTimeout string              `yaml:"queue_pop_timeout"`
+	Otel            telemetry.OtelConfig `yaml:"opentelemetry"`
 }
 
 // QueuePopTimeoutDuration returns the configured queue pop timeout.

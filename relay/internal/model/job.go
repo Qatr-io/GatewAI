@@ -19,4 +19,7 @@ type Job struct {
 	InputRef     string            `json:"input_ref"`
 	InferenceURL string            `json:"inference_url,omitempty"`
 	Params       map[string]string `json:"params,omitempty"`
+	// TraceContext carries the W3C traceparent injected by the gateway at
+	// submit time, enabling the relay to create a child span in the same trace.
+	TraceContext string `json:"trace_context,omitempty"`
 }

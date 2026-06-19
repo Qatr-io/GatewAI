@@ -1,0 +1,42 @@
+{{- if .Values.otlpOperator.enabled }}
+{{- /*
+  Validate that the OpenTelemetry Operator CRDs are available on the target cluster.
+  This check runs during `helm install / upgrade` and `helm upgrade --dry-run`.
+  It is skipped during `helm template` (offline — no cluster connection).
+  For offline validation pass: --api-versions opentelemetry.io/v1beta1
+*/ -}}
+{{- if not (or
+    (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")
+    (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1")
+  ) }}
+  {{- fail "otlpOperator.enabled=true but the OpenTelemetry Operator CRDs are not installed on this cluster (opentelemetry.io/v1beta1 not found). Install the operator first: kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml" }}
+{{- end }}
+{{- $apiVersion := "opentelemetry.io/v1beta1" }}
+{{- if and (not (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")) (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1") }}
+  {{- $apiVersion = "opentelemetry.io/v1alpha1" }}
+{{- end }}
+apiVersion: {{ $apiVersion }}
+kind: OpenTelemetryCollector
+metadata:
+  name: {{ include "gatewai-gateway.fullname" . }}
+  labels:
+    {{- include "gatewai-gateway.labels" . | nindent 4 }}
+  {{- with .Values.otlpOperator.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  mode: {{ .Values.otlpOperator.mode | default "deployment" }}
+  {{- with .Values.otlpOperator.replicas }}
+  replicas: {{ . }}
+  {{- end }}
+  {{- with .Values.otlpOperator.resources }}
+  resources:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+  {{- with .Values.otlpOperator.serviceAccount }}
+  serviceAccount: {{ . }}
+  {{- end }}
+  config:
+    {{- toYaml .Values.otlpOperator.config | nindent 4 }}
+{{- end }}

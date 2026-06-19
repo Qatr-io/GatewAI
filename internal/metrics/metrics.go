@@ -160,6 +160,13 @@ var (
 		Help: "Total requests blocked by the PII guardrail.",
 	}, []string{"service_type", "model"})
 
+	// GuardrailsTotal counts guardrails evaluations that matched, by stage, action and result.
+	// Labels: service_type, model, stage ("input"|"output"), action, result.
+	GuardrailsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_total",
+		Help: "Total guardrails matches by stage, action and result (blocked|redacted|flagged).",
+	}, []string{"service_type", "model", "stage", "action", "result"})
+
 	AsyncStaleJobsSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_stale_jobs_swept_total",
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",

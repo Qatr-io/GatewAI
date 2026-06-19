@@ -368,3 +368,98 @@ func TestRegistry_SyncPaths_IncludesWildcard(t *testing.T) {
 		t.Errorf("SyncPaths should include /v1/*; got %v", paths)
 	}
 }
+
+// ── resolveGuardrails tests ──────────────────────────────────────────────────
+
+func guardrailsCfg(action string, checks []string) config.GuardrailsConfig {
+	return config.GuardrailsConfig{Action: action, Checks: checks}
+}
+
+func buildRegistryWithGuardrails(cfg config.GuardrailsConfig) *service.Def {
+	cfgs := []config.ServiceConfig{{
+		Type:         "llm",
+		Model:        "gpt-4o",
+		Provider:     "passthrough",
+		InferenceURL: "http://llm.svc",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		Guardrails:   cfg,
+	}}
+	reg := service.NewRegistry(cfgs)
+	def, _ := reg.RouteAsync("llm", "gpt-4o")
+	return def
+}
+
+// TestResolveGuardrails_ExplicitChecksAndAction verifies that explicit checks+action are honored
+// on the Input stage.
+func TestResolveGuardrails_ExplicitChecksAndAction(t *testing.T) {
+	def := buildRegistryWithGuardrails(guardrailsCfg("redact", []string{"pii", "secrets"}))
+	g := def.Guardrails.Input
+	if !g.Enabled {
+		t.Error("expected Input.Enabled=true for explicit checks")
+	}
+	if g.Action != "redact" {
+		t.Errorf("expected Input.Action=redact, got %q", g.Action)
+	}
+	if len(g.Checks) != 2 {
+		t.Errorf("expected 2 checks, got %v", g.Checks)
+	}
+}
+
+// TestResolveGuardrails_DefaultActionBlock verifies that action defaults to "block"
+// when omitted with explicit checks.
+func TestResolveGuardrails_DefaultActionBlock(t *testing.T) {
+	def := buildRegistryWithGuardrails(guardrailsCfg("", []string{"pii_us"}))
+	g := def.Guardrails.Input
+	if !g.Enabled {
+		t.Error("expected Input.Enabled=true when checks set")
+	}
+	if g.Action != "block" {
+		t.Errorf("expected default Input.Action=block, got %q", g.Action)
+	}
+}
+
+// TestResolveGuardrails_Disabled verifies that guardrails are disabled when checks are empty.
+func TestResolveGuardrails_Disabled(t *testing.T) {
+	def := buildRegistryWithGuardrails(guardrailsCfg("", nil))
+	if def.Guardrails.Input.Enabled {
+		t.Error("expected Input.Enabled=false when no checks set")
+	}
+}
+
+// TestResolveGuardrails_OutputStage verifies that output guardrails are resolved correctly.
+func TestResolveGuardrails_OutputStage(t *testing.T) {
+	cfg := config.GuardrailsConfig{
+		Action: "block",
+		Checks: []string{"pii"},
+		Output: &config.GuardrailsStageConfig{
+			Action: "redact",
+			Checks: []string{"pii", "secrets"},
+		},
+	}
+	def := buildRegistryWithGuardrails(cfg)
+
+	in := def.Guardrails.Input
+	if !in.Enabled || in.Action != "block" || len(in.Checks) != 1 {
+		t.Errorf("unexpected Input stage: %+v", in)
+	}
+
+	out := def.Guardrails.Output
+	if !out.Enabled {
+		t.Error("expected Output.Enabled=true when output checks are set")
+	}
+	if out.Action != "redact" {
+		t.Errorf("expected Output.Action=redact, got %q", out.Action)
+	}
+	if len(out.Checks) != 2 {
+		t.Errorf("expected 2 output checks, got %v", out.Checks)
+	}
+}
+
+// TestResolveGuardrails_OutputDisabledWhenNil verifies that the output stage is disabled
+// when the Output key is absent in config.
+func TestResolveGuardrails_OutputDisabledWhenNil(t *testing.T) {
+	def := buildRegistryWithGuardrails(guardrailsCfg("block", []string{"pii"}))
+	if def.Guardrails.Output.Enabled {
+		t.Error("expected Output.Enabled=false when output config is nil")
+	}
+}

@@ -1,0 +1,180 @@
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gatewai-relay
+  namespace: default
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gatewai-relay-pod-annotator
+  namespace: default
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gatewai-relay-pod-annotator
+  namespace: default
+subjects:
+  - kind: ServiceAccount
+    name: gatewai-relay
+    namespace: default
+roleRef:
+  kind: Role
+  name: gatewai-relay-pod-annotator
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: whisper-transcription
+  namespace: default
+  labels:
+    app: whisper-transcription
+spec:
+  selector:
+    matchLabels:
+      app: whisper-transcription
+  template:
+    metadata:
+      labels:
+        app: whisper-transcription
+    spec:
+      serviceAccountName: gatewai-relay
+      terminationGracePeriodSeconds: 13000
+      nodeSelector:
+        nvidia.com/mig.config: all-1g.10gb
+        nvidia.com/mig.config.state: success
+      containers:
+        # ── Inference model ──────────────────────────────────────────────────
+        - name: kserve-container
+          image: ghcr.io/ia-generative/whisper-diarization-api:0.0.0-rc10-gpu
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 9000
+              protocol: TCP
+          env:
+            - name: MODEL_DIR
+              value: /mnt/models/models/pyannote/speaker-diarization-community-1
+            - name: HTTP_PORT
+              value: '9000'
+            - name: HF_HOME
+              value: /mnt/models
+            - name: WHISPER_MODEL
+              value: large-v3-turbo
+            - name: MODEL_NAME
+              value: whisper-diarization
+            - name: ENABLE_DIARIZATION
+              value: 'true'
+            - name: XDG_CACHE_HOME
+              value: /mnt/models
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  key: token
+                  name: huggingface-token
+                  optional: true
+          volumeMounts:
+            - mountPath: /mnt/models
+              name: kserve-pvc-source
+          resources:
+            requests:
+              cpu: "2"
+              memory: 24Gi
+              nvidia.com/mig-1g.10gb: "1"
+            limits:
+              cpu: "4"
+              memory: 32Gi
+              nvidia.com/mig-1g.10gb: "1"
+        # ── Relay consumer ───────────────────────────────────────────────────
+        - name: relay
+          image: ghcr.io/qatr-io/gatewai/relay:v0.8.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              name: http1
+              protocol: TCP
+          env:
+            - name: CONFIG_PATH
+              value: /etc/gatewai/config.yaml
+            - name: INFERENCE_PORT
+              value: "9000"
+            - name: S3_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gatewai-s3-credentials
+                  key: S3_ACCESS_KEY
+            - name: S3_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gatewai-s3-credentials
+                  key: S3_SECRET_KEY
+            - name: S3_BUCKET
+              value: mirai-hp-gatewai-jobs
+            - name: ENCRYPTION_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: gatewai-encryption-key
+                  key: ENCRYPTION_KEY
+                  optional: true
+            - name: INFERENCE_TIMEOUT
+              value: "13000s"
+          volumeMounts:
+            - mountPath: /etc/gatewai/
+              name: gatewai-relay
+              readOnly: true
+          readinessProbe:
+            failureThreshold: 6
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+      tolerations:
+        - key: workload
+          operator: Equal
+          value: gpu
+        - key: mig
+          operator: Equal
+          value: 'true'
+      volumes:
+        - name: kserve-pvc-source
+          persistentVolumeClaim:
+            claimName: kserve-models-claim
+        - configMap:
+            name: gatewai-relay
+          name: gatewai-relay
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: whisper-transcription
+  namespace: default
+spec:
+  type: ClusterIP
+  selector:
+    app: whisper-transcription
+  ports:
+    - port: 9000
+      targetPort: 9000
+      protocol: TCP

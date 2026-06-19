@@ -54,7 +54,9 @@ export default defineConfig({
         {
           label: 'Observe',
           items: [
-            { label: 'Prometheus', slug: 'observe/prometheus' },
+            { label: 'Prometheus',      slug: 'observe/prometheus' },
+            { label: 'OpenTelemetry',   slug: 'observe/opentelemetry' },
+            { label: 'Span reference',  slug: 'observe/spans' },
           ],
         },
         {

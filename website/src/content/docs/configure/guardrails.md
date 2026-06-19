@@ -1,14 +1,14 @@
 ---
-title: PII guardrails
+title: Guardrails
 ---
 
-# PII guardrails
+# Guardrails
 
-GatewAI includes a PII detection layer for LLM requests. When enabled on a service, incoming `POST /v1/*` JSON requests are scanned before being forwarded to the backend. Requests containing PII are rejected with `400 Bad Request`.
+GatewAI can scan for **PII** and **secrets** both on the way **in** (the request, before it reaches the backend) and on the way **out** (the model's response, before it returns to the client — output DLP). Guardrails run on the sync LLM-proxy path (`POST /v1/*`) and are configured per service.
 
 ## Configuration
 
-Enable per service in `config.yaml`:
+Guardrails are enabled on a service by declaring a non-empty `checks` list:
 
 ```yaml
 services:
@@ -16,56 +16,80 @@ services:
     model: "chat-smart"
     provider: passthrough
     guardrails:
-      pii: true
+      checks: [pii, secrets]   # which detector groups to run
+      action: block            # block (default) | redact | flag
 ```
 
-`guardrails.pii` is `false` by default. There is no global toggle — enable selectively per model after assessing your payload characteristics.
+Guardrails are **opt-in per service** — omit the `guardrails` block (or leave `checks` empty) to disable them. There is no global toggle.
+
+## Stages: input and output
+
+The top-level `checks`/`action` are the **input** stage (scans the request). Add an optional **`output`** block to also scan the model's *response* (output DLP):
+
+```yaml
+guardrails:
+  checks: [pii, secrets]   # input stage — the request
+  action: redact
+  output:                  # output stage — the response (optional)
+    checks: [pii, secrets]
+    action: redact         # block | redact | flag
+```
+
+Output actions mirror input but operate on `choices[*].message.content`: `redact` masks matches before the response is returned (and the redacted body is what gets cached), `block` returns `422 {"error":"response blocked by guardrails"}`, `flag` logs only.
+
+:::note
+**Streaming responses are never modified or blocked.** When the response streams (`stream: true`), the output stage always degrades to `flag` — it detects, logs, and increments the metric after the stream completes, but cannot redact or block bytes already sent. Use a non-streaming request if you need output `redact`/`block` enforcement.
+:::
+
+## Actions
+
+| Action | Behaviour |
+|---|---|
+| `block` (default) | Reject the request with `422 Unprocessable Entity`; the backend is never called. |
+| `redact` | Replace each match in-place with a placeholder (e.g. `[REDACTED_EMAIL]`) and forward the cleaned body. |
+| `flag` | Forward the request unchanged; only emit a log line and a metric. |
+
+## Check groups
+
+`checks` selects which detector groups run. Country groups are **strictly opt-in**.
+
+| Group | Detects |
+|---|---|
+| `pii` | email, credit card, IBAN, IPv4 address, international (E.164) phone |
+| `pii_fr` | French phone, NIR (social security), SIREN, SIRET |
+| `pii_us` | US Social Security Number |
+| `pii_uk` | UK National Insurance Number |
+| `pii_es` | Spanish DNI / NIF |
+| `pii_it` | Italian Codice Fiscale |
+| `secrets` | AWS access keys, private-key blocks, JWTs, GitHub / Slack / Google tokens |
 
 ## How it works
 
-The scanner deserialises the `messages` array of the OpenAI-compatible JSON body and extracts all text content:
+The scanner reads the `messages` array of the OpenAI-compatible JSON body and inspects all text content:
 
 - `messages[*].content` as a string (standard chat payload)
 - `messages[*].content[*].text` as content parts (multimodal payloads)
 
-Each text is matched against six compiled regular expressions. The first match per category stops scanning for that category.
+For `redact`, matches are replaced inside that content and the body is re-serialised as valid JSON; all other fields are preserved. Placeholders are not re-matched, so redaction is idempotent.
 
-## Patterns detected
-
-| Pattern | What it matches | Notes |
-|---|---|---|
-| `email` | Standard email addresses | Low false-positive rate |
-| `phone_fr` | French phone numbers (`+33`, `0033`, or `0x` format, groups of 2 digits) | |
-| `iban` | IBAN (`CC99XXXX…`) | |
-| `credit_card` | 13–16 digit sequences, optionally space- or dash-separated | Can match long numeric strings |
-| `siret` | 14-digit SIRET | Checked before SIREN to avoid double-reporting |
-| `siren` | 9-digit SIREN | Higher false-positive rate — any 9-digit number matches |
-
-## HTTP response
-
-On detection, the gateway returns:
+## HTTP response (block)
 
 ```
-HTTP/1.1 400 Bad Request
+HTTP/1.1 422 Unprocessable Entity
 Content-Type: application/json
 
-{"error": "pii detected", "violations": ["email", "phone_fr"]}
+{"error": "guardrails violation: email, aws_access_key"}
 ```
-
-The `violations` array lists every category detected in the request.
 
 ## Metrics
 
 ```
-GatewAI_guardrails_pii_blocked_total{service_type, model}
+gatewai_guardrails_total{service_type, model, stage, action, result}   # stage = input | output; result = blocked | redacted | flagged
+gatewai_guardrails_pii_blocked_total{service_type, model}        # retained for continuity (block only)
 ```
-
-Incremented once per blocked request. Labels match the service entry.
 
 ## False positives
 
 :::caution
-The `siren` pattern (`\b\d{9}\b`) matches any 9-digit number. The `siret` pattern (`\b\d{14}\b`) similarly matches any 14-digit sequence. Both have materially higher false-positive rates than the other patterns.
-
-Enable `guardrails.pii: true` only after reviewing a representative sample of your payload content.
+Purely numeric national-ID patterns — `siren` (9 digits), `siret` (14 digits), `fr_nir`, `us_ssn`, `es_dni` — have materially higher false-positive rates than the others. Enable the relevant country group per service only after reviewing a representative sample of your payloads, and consider `flag` before `block` or `redact`.
 :::
