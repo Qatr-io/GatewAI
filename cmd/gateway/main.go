@@ -110,7 +110,7 @@ func buildRouter(
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(handler.OtelMiddleware(tracer))
+	r.Use(handler.OtelMiddleware(tracer, "/health", "/metrics"))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
 
