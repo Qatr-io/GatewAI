@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy"
@@ -341,6 +344,8 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				lastErr = "failed to build upstream request: " + err.Error()
 				continue
 			}
+			// Propagate W3C trace context so the inference service receives traceparent.
+			otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 			upstreamReq.Header.Set("Content-Type", contentType)
 			if auth != "" {
 				upstreamReq.Header.Set("Authorization", auth)
