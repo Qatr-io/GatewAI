@@ -182,17 +182,13 @@ func groupEnabled(group string, enabled []string) bool {
 	return false
 }
 
-// Scan returns the matched category names within the enabled check groups.
-// enabled is a set of group names (e.g. []string{CheckPII, CheckSecrets});
-// an empty/nil slice means ALL groups. Unknown group names are ignored.
-// Returns nil when nothing matches or the body is not an OpenAI-compatible
-// message payload.
-func (c *Checker) Scan(body []byte, enabled []string) []string {
-	texts := extractMessageTexts(body)
+// scanTexts is the shared matching core: given a slice of plain-text strings
+// and an enabled-group filter, it returns the sorted, de-duplicated category
+// names that match at least one pattern in an active group.
+func scanTexts(texts []string, enabled []string) []string {
 	if len(texts) == 0 {
 		return nil
 	}
-
 	found := make(map[string]struct{})
 	var violations []string
 	for _, text := range texts {
@@ -210,6 +206,31 @@ func (c *Checker) Scan(body []byte, enabled []string) []string {
 		}
 	}
 	return violations
+}
+
+// Scan returns the matched category names within the enabled check groups.
+// enabled is a set of group names (e.g. []string{CheckPII, CheckSecrets});
+// an empty/nil slice means ALL groups. Unknown group names are ignored.
+// Returns nil when nothing matches or the body is not an OpenAI-compatible
+// message payload.
+func (c *Checker) Scan(body []byte, enabled []string) []string {
+	return scanTexts(extractMessageTexts(body), enabled)
+}
+
+// ScanResponse returns matched category names found in an OpenAI-compatible
+// LLM response body, restricted to the enabled groups (empty/nil = all).
+// It inspects choices[*].message.content (string, or array-of-parts objects
+// with a "text" field). Returns nil when nothing matches or the body is not
+// a recognisable response.
+func (c *Checker) ScanResponse(body []byte, enabled []string) []string {
+	return scanTexts(extractResponseTexts(body), enabled)
+}
+
+// ScanStrings scans arbitrary text fragments (e.g. accumulated streaming
+// delta content) restricted to enabled groups. Returns sorted,
+// de-duplicated category names.
+func (c *Checker) ScanStrings(texts []string, enabled []string) []string {
+	return scanTexts(texts, enabled)
 }
 
 // Redact rewrites matched substrings inside message content with placeholders
@@ -300,6 +321,103 @@ func (c *Checker) Redact(body []byte, enabled []string) ([]byte, []string) {
 	return out, categories
 }
 
+// RedactResponse rewrites matches inside choices[*].message.content with
+// placeholders (the same placeholders used by Redact), restricted to the
+// enabled groups. Returns the rewritten body (valid JSON) and the sorted,
+// de-duplicated categories redacted. On a non-response/unparseable body
+// returns (body, nil) unchanged. The operation is idempotent.
+func (c *Checker) RedactResponse(body []byte, enabled []string) ([]byte, []string) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return body, nil
+	}
+
+	choicesRaw, ok := payload["choices"]
+	if !ok {
+		return body, nil
+	}
+	choices, ok := choicesRaw.([]any)
+	if !ok || len(choices) == 0 {
+		return body, nil
+	}
+
+	redacted := make(map[string]struct{})
+
+	for i, choiceRaw := range choices {
+		choice, ok := choiceRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		msgRaw, ok := choice["message"]
+		if !ok {
+			continue
+		}
+		msg, ok := msgRaw.(map[string]any)
+		if !ok {
+			continue
+		}
+		contentRaw, exists := msg["content"]
+		if !exists {
+			continue
+		}
+
+		switch cv := contentRaw.(type) {
+		case string:
+			newText, cats := applyRedactions(cv, enabled)
+			for _, cat := range cats {
+				redacted[cat] = struct{}{}
+			}
+			msg["content"] = newText
+			choice["message"] = msg
+			choices[i] = choice
+
+		case []any:
+			for j, partRaw := range cv {
+				part, ok := partRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				textRaw, hasText := part["text"]
+				if !hasText {
+					continue
+				}
+				textStr, ok := textRaw.(string)
+				if !ok {
+					continue
+				}
+				newText, cats := applyRedactions(textStr, enabled)
+				for _, cat := range cats {
+					redacted[cat] = struct{}{}
+				}
+				part["text"] = newText
+				cv[j] = part
+			}
+			msg["content"] = cv
+			choice["message"] = msg
+			choices[i] = choice
+		}
+	}
+
+	payload["choices"] = choices
+
+	if len(redacted) == 0 {
+		return body, nil
+	}
+
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return body, nil
+	}
+
+	categories := make([]string, 0, len(redacted))
+	for cat := range redacted {
+		categories = append(categories, cat)
+	}
+	sort.Strings(categories)
+
+	return out, categories
+}
+
 // applyRedactions applies all active-group patterns to text and returns the
 // rewritten string plus the list of category names that actually matched.
 func applyRedactions(text string, enabled []string) (string, []string) {
@@ -314,6 +432,46 @@ func applyRedactions(text string, enabled []string) (string, []string) {
 		}
 	}
 	return text, matched
+}
+
+// extractResponseTexts pulls plaintext from the "choices[*].message.content"
+// field of an OpenAI-compatible LLM response. Content may be a string or an
+// array of content parts (each with a "text" field).
+func extractResponseTexts(body []byte) []string {
+	var payload struct {
+		Choices []struct {
+			Message struct {
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Choices) == 0 {
+		return nil
+	}
+
+	var texts []string
+	for _, choice := range payload.Choices {
+		raw := choice.Message.Content
+		if len(raw) == 0 {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(raw, &s); err == nil {
+			texts = append(texts, s)
+			continue
+		}
+		var parts []struct {
+			Text string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &parts); err == nil {
+			for _, p := range parts {
+				if p.Text != "" {
+					texts = append(texts, p.Text)
+				}
+			}
+		}
+	}
+	return texts
 }
 
 // extractMessageTexts pulls plaintext from the "messages[*].content" field

@@ -160,6 +160,15 @@ data:
           {{- if .guardrails.checks }}
           checks: [{{ range $i, $c := .guardrails.checks }}{{ if $i }}, {{ end }}{{ $c | quote }}{{ end }}]
           {{- end }}
+          {{- if .guardrails.output }}
+          output:
+            {{- if .guardrails.output.action }}
+            action: {{ .guardrails.output.action | quote }}
+            {{- end }}
+            {{- if .guardrails.output.checks }}
+            checks: [{{ range $i, $c := .guardrails.output.checks }}{{ if $i }}, {{ end }}{{ $c | quote }}{{ end }}]
+            {{- end }}
+          {{- end }}
         {{- end }}
         {{- if .inferenceHeaders }}
         inference_headers:

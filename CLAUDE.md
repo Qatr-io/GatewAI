@@ -179,8 +179,9 @@ rate_limits:
 
 - **Action** (`guardrails.action`): `block` (reject `422`, default), `redact` (mask matches in-place with placeholders like `[REDACTED_EMAIL]` and forward the cleaned body), or `flag` (log + metric only, forward unchanged).
 - **Check groups** (`guardrails.checks`): `pii` (universal: email, credit card, IBAN, IPv4, E.164 phone), `pii_fr` (phone FR, NIR, SIREN/SIRET), `pii_us` (SSN), `pii_uk` (NINO), `pii_es` (DNI), `pii_it` (Codice Fiscale), `secrets` (AWS key, private-key block, JWT, GitHub/Slack/Google tokens). Country groups are strictly opt-in.
+- **Stages**: top-level `checks`/`action` = **input** (request). An optional nested `guardrails.output` block (`checks`/`action`) is the **output** stage — scans/redacts the model response (`choices[*].message.content`) in the LLM proxy (`internal/llmproxy/handler.go`). Streaming responses always degrade to `flag` (cannot redact/block mid-stream).
 
-Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, action, result}` and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
+Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, stage, action, result}` (`stage` = `input`|`output`) and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
 
 ### Service headers
 
