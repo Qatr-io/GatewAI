@@ -82,7 +82,7 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r)
 
-			logger.InfoContext(r.Context(), "request",
+			args := []any{
 				"method",      r.Method,
 				"path",        r.URL.Path,
 				"status",      ww.Status(),
@@ -90,7 +90,11 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"duration_ms", time.Since(start).Milliseconds(),
 				"request_id",  middleware.GetReqID(r.Context()),
 				"remote",      r.RemoteAddr,
-			)
+			}
+			if sc := trace.SpanFromContext(r.Context()).SpanContext(); sc.IsValid() {
+				args = append(args, "trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+			}
+			logger.InfoContext(r.Context(), "request", args...)
 		})
 	}
 }
