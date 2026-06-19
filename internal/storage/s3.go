@@ -160,7 +160,7 @@ func (c *S3Client) Upload(ctx context.Context, objectKey string, reader io.Reade
 		Body:        body,
 		ContentType: aws.String(contentType),
 	})
-	metrics.S3OperationDuration.WithLabelValues("upload").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.S3OperationDuration.WithLabelValues("upload"), time.Since(start).Seconds())
 	if err != nil {
 		metrics.S3ErrorsTotal.WithLabelValues("upload").Inc()
 		return fmt.Errorf("uploading %q to S3 bucket %q: %w", objectKey, c.bucket, err)
@@ -179,7 +179,7 @@ func (c *S3Client) GetObject(ctx context.Context, objectKey string) (_ []byte, e
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(objectKey),
 	})
-	metrics.S3OperationDuration.WithLabelValues("get").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.S3OperationDuration.WithLabelValues("get"), time.Since(start).Seconds())
 	if err != nil {
 		metrics.S3ErrorsTotal.WithLabelValues("get").Inc()
 		return nil, fmt.Errorf("getting S3 object %q: %w", objectKey, err)
@@ -206,7 +206,7 @@ func (c *S3Client) DeleteObject(ctx context.Context, objectKey string) (err erro
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(objectKey),
 	})
-	metrics.S3OperationDuration.WithLabelValues("delete").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.S3OperationDuration.WithLabelValues("delete"), time.Since(start).Seconds())
 	if err != nil {
 		metrics.S3ErrorsTotal.WithLabelValues("delete").Inc()
 		return fmt.Errorf("deleting S3 object %q: %w", objectKey, err)
@@ -227,7 +227,7 @@ func (c *S3Client) ListJobObjects(ctx context.Context) (map[string]S3JobEntry, e
 	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
-			metrics.S3OperationDuration.WithLabelValues("list").Observe(time.Since(start).Seconds())
+			metrics.ObserveWithExemplar(ctx, metrics.S3OperationDuration.WithLabelValues("list"), time.Since(start).Seconds())
 			metrics.S3ErrorsTotal.WithLabelValues("list").Inc()
 			return nil, fmt.Errorf("listing S3 objects: %w", err)
 		}

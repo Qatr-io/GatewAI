@@ -278,7 +278,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w}
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
-		metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model), time.Since(start).Seconds())
 		return
 	}
 
@@ -291,7 +291,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, contentType string) {
 	start := time.Now()
 	defer func() {
-		metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model), time.Since(start).Seconds())
 	}()
 
 	captureForPT := h.processingLimiter != nil
