@@ -174,7 +174,11 @@ func main() {
 	}
 
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
-	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/gateway", version)
+	otelSvcName := cfg.Otel.ServiceName
+	if otelSvcName == "" {
+		otelSvcName = "gatewai/gateway"
+	}
+	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, otelSvcName, version)
 	if err != nil {
 		slog.Error("failed to initialise OpenTelemetry", "error", err)
 		os.Exit(1)

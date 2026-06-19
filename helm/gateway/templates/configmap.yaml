@@ -90,6 +90,9 @@ data:
     {{- if .Values.opentelemetry.enabled }}
     opentelemetry:
       enabled: true
+      {{- if .Values.opentelemetry.serviceName }}
+      service_name: {{ .Values.opentelemetry.serviceName | quote }}
+      {{- end }}
       exporter:
         endpoint: {{ tpl (.Values.opentelemetry.exporter.endpoint | default "") . | quote }}
         insecure: {{ .Values.opentelemetry.exporter.insecure | default false }}
