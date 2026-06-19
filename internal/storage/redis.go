@@ -8,6 +8,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/metrics"
@@ -115,7 +119,22 @@ func queueKey(model string) string   { return "queue:" + model }
 // SaveJob persists the full job struct as a JSON blob with the configured TTL.
 // If the job has a ConsumerName, the job ID is also added to the consumer's
 // sorted set (score = Unix timestamp) so it can be listed via ListJobsByConsumer.
-func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) error {
+func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) (err error) {
+	ctx, span := otel.Tracer("gatewai/gateway").Start(ctx, "gateway.redis.enqueue",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("service_type", job.ServiceType),
+			attribute.String("model", job.Model),
+			attribute.String("queue", "relay:"+job.Model+":pending"),
+		))
+	defer func() {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}()
+
 	start := time.Now()
 	data, err := json.Marshal(job)
 	if err != nil {
@@ -148,7 +167,8 @@ func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) error {
 	metrics.RedisOperationDuration.WithLabelValues("save_job").Observe(time.Since(start).Seconds())
 	if pipeErr != nil {
 		metrics.RedisErrorsTotal.WithLabelValues("save_job").Inc()
-		return fmt.Errorf("saving job %q: %w", job.ID, pipeErr)
+		err = fmt.Errorf("saving job %q: %w", job.ID, pipeErr)
+		return err
 	}
 	return nil
 }

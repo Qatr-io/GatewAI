@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	s3types "github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"go.opentelemetry.io/otel"
 
 	"gatewai/relay/internal/adapter"
 	"gatewai/relay/internal/model"
@@ -121,6 +122,7 @@ func newTestProcessor(s3 objectStore, adp adapter.Adapter, pub eventPublisher) *
 		adapter:   adp,
 		s3:        s3,
 		publisher: pub,
+		tracer:    otel.Tracer("test"),
 	}
 }
 

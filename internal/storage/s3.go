@@ -15,6 +15,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/feature/s3/manager"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/crypto"
@@ -122,15 +126,35 @@ func NewS3Client(cfg config.S3Config, encCfg config.EncryptionConfig) (*S3Client
 	}, nil
 }
 
+// s3Span starts a span for an S3 operation and returns a closer that records
+// any error on the span before ending it.
+func s3Span(ctx context.Context, operation, key string) (context.Context, func(error)) {
+	ctx, span := otel.Tracer("gatewai/gateway").Start(ctx, "gateway.s3."+operation,
+		trace.WithAttributes(
+			attribute.String("s3.operation", operation),
+			attribute.String("s3.key", key),
+		))
+	return ctx, func(err error) {
+		if err != nil {
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+		}
+		span.End()
+	}
+}
+
 // Upload stores a file stream as objectKey in the configured bucket.
 // If encryption is enabled the stream is encrypted before upload.
 // Uses multipart upload to support non-seekable streams (io.Pipe).
-func (c *S3Client) Upload(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error {
+func (c *S3Client) Upload(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) (err error) {
+	ctx, endSpan := s3Span(ctx, "upload", objectKey)
+	defer func() { endSpan(err) }()
+
 	start := time.Now()
 	body := crypto.Encrypt(c.encKey, reader)
 	defer body.Close()
 
-	_, err := c.uploader.Upload(ctx, &s3.PutObjectInput{
+	_, err = c.uploader.Upload(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(c.bucket),
 		Key:         aws.String(objectKey),
 		Body:        body,
@@ -146,7 +170,10 @@ func (c *S3Client) Upload(ctx context.Context, objectKey string, reader io.Reade
 
 // GetObject downloads an object and returns its content as bytes.
 // If encryption is enabled the data is decrypted before being returned.
-func (c *S3Client) GetObject(ctx context.Context, objectKey string) ([]byte, error) {
+func (c *S3Client) GetObject(ctx context.Context, objectKey string) (_ []byte, err error) {
+	ctx, endSpan := s3Span(ctx, "get", objectKey)
+	defer func() { endSpan(err) }()
+
 	start := time.Now()
 	out, err := c.s3.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(c.bucket),
@@ -161,17 +188,21 @@ func (c *S3Client) GetObject(ctx context.Context, objectKey string) ([]byte, err
 	body := crypto.Decrypt(c.encKey, out.Body)
 	defer body.Close()
 
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return nil, fmt.Errorf("reading S3 object %q: %w", objectKey, err)
+	data, readErr := io.ReadAll(body)
+	if readErr != nil {
+		err = readErr
+		return nil, fmt.Errorf("reading S3 object %q: %w", objectKey, readErr)
 	}
 	return data, nil
 }
 
 // DeleteObject removes an object from the configured bucket.
-func (c *S3Client) DeleteObject(ctx context.Context, objectKey string) error {
+func (c *S3Client) DeleteObject(ctx context.Context, objectKey string) (err error) {
+	ctx, endSpan := s3Span(ctx, "delete", objectKey)
+	defer func() { endSpan(err) }()
+
 	start := time.Now()
-	_, err := c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
+	_, err = c.s3.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String(c.bucket),
 		Key:    aws.String(objectKey),
 	})

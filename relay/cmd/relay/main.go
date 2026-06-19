@@ -22,7 +22,11 @@ import (
 	relayproc "gatewai/relay/internal/relay"
 	"gatewai/relay/internal/store"
 	"gatewai/relay/internal/storage"
+	"gatewai/relay/internal/telemetry"
 )
+
+// version is set at build time via -ldflags "-X main.version=v0.x.y".
+var version = "dev"
 
 // redisPublisher implements relay.eventPublisher via the Redis store and queue.
 // For every completed or failed job it:
@@ -63,6 +67,22 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	// ── OpenTelemetry ─────────────────────────────────────────────────────────
+	// The relay is a one-shot process: ForceFlush via shutdown is critical so
+	// spans are not dropped when the pod exits after processing a single job.
+	_, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/relay", version)
+	if err != nil {
+		slog.Error("failed to initialise OpenTelemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutCancel()
+		if err := otelShutdown(shutCtx); err != nil {
+			slog.Error("OTel shutdown error", "error", err)
+		}
+	}()
 
 	s3Client, err := storage.NewS3Client(cfg.S3, cfg.Encryption)
 	if err != nil {

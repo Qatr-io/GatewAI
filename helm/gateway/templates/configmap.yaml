@@ -87,6 +87,22 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- if .Values.opentelemetry.enabled }}
+    opentelemetry:
+      enabled: true
+      exporter:
+        endpoint: {{ tpl (.Values.opentelemetry.exporter.endpoint | default "") . | quote }}
+        insecure: {{ .Values.opentelemetry.exporter.insecure | default false }}
+      traces:
+        enabled: {{ .Values.opentelemetry.traces.enabled | default true }}
+        sample_ratio: {{ .Values.opentelemetry.traces.sampleRatio | default 1.0 }}
+      metrics:
+        enabled: {{ .Values.opentelemetry.metrics.enabled | default false }}
+        interval: {{ .Values.opentelemetry.metrics.interval | default "60s" | quote }}
+      logs:
+        enabled: {{ .Values.opentelemetry.logs.enabled | default false }}
+    {{- end }}
+
     services:
     {{- range .Values.services }}
       - type:              {{ .type }}

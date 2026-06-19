@@ -15,6 +15,9 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/concurrency"
@@ -26,6 +29,7 @@ import (
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
+	"gatewai/gateway/internal/telemetry"
 )
 
 // version is set at build time via -ldflags "-X main.version=v0.4.1".
@@ -95,6 +99,7 @@ func buildRouter(
 	rl ratelimit.Checker,
 	limiter *ratelimit.Limiter,
 	llmHandler *llmproxy.Handler,
+	tracer trace.Tracer,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
@@ -105,6 +110,7 @@ func buildRouter(
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
+	r.Use(handler.OtelMiddleware(tracer))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
 
@@ -166,6 +172,21 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	// ── OpenTelemetry ─────────────────────────────────────────────────────────
+	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/gateway", version)
+	if err != nil {
+		slog.Error("failed to initialise OpenTelemetry", "error", err)
+		os.Exit(1)
+	}
+	_ = tel // tel.Tracer / tel.Meter available for direct use if needed
+	defer func() {
+		shutCtx, shutCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer shutCancel()
+		if err := otelShutdown(shutCtx); err != nil {
+			slog.Error("OTel shutdown error", "error", err)
+		}
+	}()
 
 	// ── Service registry ──────────────────────────────────────────────────────
 	initialRegistry := service.NewRegistry(cfg.Services)
@@ -270,14 +291,14 @@ func main() {
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			tokenChecker(limiter))
 
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler)
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────

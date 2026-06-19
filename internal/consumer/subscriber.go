@@ -5,6 +5,9 @@ import (
 	"log/slog"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // Subscriber listens on a Redis pub/sub channel for job completion signals.
@@ -35,7 +38,13 @@ func (s *Subscriber) Subscribe(ctx context.Context, model string) {
 					return
 				}
 				slog.Info("job completion received", "job_id", msg.Payload, "model", model)
+				_, span := otel.Tracer("gatewai/gateway").Start(ctx, "gateway.consumer.job_completed",
+					trace.WithAttributes(
+						attribute.String("job_id", msg.Payload),
+						attribute.String("model", model),
+					))
 				s.onComplete(ctx, msg.Payload)
+				span.End()
 			case <-ctx.Done():
 				return
 			}

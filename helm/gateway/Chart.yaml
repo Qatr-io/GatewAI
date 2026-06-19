@@ -9,3 +9,8 @@ dependencies:
   - name: redis-ha
     version: "4.35.10"
     repository: "https://dandydeveloper.github.io/charts"
+  - name: opentelemetry-collector
+    version: "0.126.0"
+    repository: "https://open-telemetry.github.io/opentelemetry-helm-charts"
+    alias: otlp
+    condition: otlp.enabled

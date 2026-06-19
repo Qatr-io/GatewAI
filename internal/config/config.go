@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"gopkg.in/yaml.v3"
+
+	"gatewai/gateway/internal/telemetry"
 )
 
 type Config struct {
@@ -23,6 +25,7 @@ type Config struct {
 	// or the specific type has no entry.
 	// Leave empty to disable rate limiting.
 	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
+	Otel       telemetry.OtelConfig                  `yaml:"opentelemetry"`
 }
 
 // AuditLogConfig controls structured per-request audit logging for LLM requests.

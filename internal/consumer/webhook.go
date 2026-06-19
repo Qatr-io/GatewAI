@@ -9,6 +9,12 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/storage"
 )
@@ -74,6 +80,21 @@ type webhookPayload struct {
 // It fetches the result from S3 (when present and job completed), POSTs it to
 // job.CallbackURL with retry/backoff, and optionally cleans up the S3 object.
 func (ws *WebhookSender) Send(job *model.Job) {
+	// Restore trace context from the job so this span is a child of the original
+	// submit request even though delivery happens asynchronously.
+	ctx := context.Background()
+	if job.TraceContext != "" {
+		carrier := propagation.MapCarrier{"traceparent": job.TraceContext}
+		ctx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+	}
+	ctx, span := otel.Tracer("gatewai/gateway").Start(ctx, "gateway.webhook.send",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("service_type", job.ServiceType),
+			attribute.String("job_status", string(job.Status)),
+		))
+	defer span.End()
+
 	p := webhookPayload{
 		JobID:       job.ID,
 		ServiceType: job.ServiceType,
@@ -83,7 +104,7 @@ func (ws *WebhookSender) Send(job *model.Job) {
 	}
 
 	if job.Status == model.JobStatusCompleted && job.ResultRef != "" {
-		data, err := ws.s3.GetObject(context.Background(), job.ResultRef)
+		data, err := ws.s3.GetObject(ctx, job.ResultRef)
 		if err != nil {
 			slog.Error("webhook: failed to fetch result", "job_id", job.ID, "error", err)
 		} else {
@@ -95,10 +116,12 @@ func (ws *WebhookSender) Send(job *model.Job) {
 	backoff := webhookInitialBackoff
 
 	for attempt := 1; attempt <= webhookMaxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.CallbackURL, bytes.NewReader(payload))
+		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, job.CallbackURL, bytes.NewReader(payload))
 		if err != nil {
 			cancel()
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			slog.Error("webhook: building request", "job_id", job.ID, "error", err)
 			return
 		}
@@ -130,5 +153,6 @@ func (ws *WebhookSender) Send(job *model.Job) {
 		}
 	}
 
+	span.SetStatus(codes.Error, "webhook failed after all retries")
 	slog.Error("webhook failed after all retries", "job_id", job.ID, "url", job.CallbackURL)
 }

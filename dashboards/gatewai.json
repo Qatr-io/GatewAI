@@ -15,11 +15,19 @@
       }
     ]
   },
-  "description": "GatewAI AI inference gateway & relay sidecar \u2014 Prometheus metrics",
+  "description": "GatewAI AI inference gateway & relay sidecar — Prometheus metrics",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "links": [],
+  "links": [
+    {
+      "title": "Traces",
+      "type": "link",
+      "url": "/d/gatewai-traces-v1",
+      "icon": "external link",
+      "targetBlank": true
+    }
+  ],
   "refresh": "30s",
   "schemaVersion": 38,
   "tags": [
@@ -33,9 +41,9 @@
   },
   "timepicker": {},
   "timezone": "browser",
-  "title": "GatewAI \u2014 Gateway & Relay",
+  "title": "GatewAI — Gateway & Relay",
   "uid": "gatewai-gw-relay-v1",
-  "version": 4,
+  "version": 5,
   "templating": {
     "list": [
       {
@@ -76,6 +84,18 @@
         "regex": "",
         "sort": 1,
         "type": "query"
+      },
+      {
+        "current": {},
+        "hide": 0,
+        "includeAll": false,
+        "label": "Datasource Traces (Tempo)",
+        "multi": false,
+        "name": "datasource_tempo",
+        "options": [],
+        "query": "tempo",
+        "refresh": 1,
+        "type": "datasource"
       }
     ]
   },
@@ -89,7 +109,7 @@
         "y": 0
       },
       "id": 1,
-      "title": "Gateway \u2014 Requ\u00eates",
+      "title": "Gateway — Requêtes",
       "type": "row"
     },
     {
@@ -144,7 +164,7 @@
           "sort": "desc"
         }
       },
-      "title": "Taux de requ\u00eates",
+      "title": "Taux de requêtes",
       "type": "timeseries",
       "targets": [
         {
@@ -153,7 +173,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum by (mode, service_type, status) (rate(gatewai_requests_total[5m]))",
-          "legendFormat": "{{mode}} / {{service_type}} \u2014 {{status}}",
+          "legendFormat": "{{mode}} / {{service_type}} — {{status}}",
           "refId": "A"
         }
       ]
@@ -210,7 +230,7 @@
           "sort": "desc"
         }
       },
-      "title": "Latence requ\u00eates (p50 / p95 / p99)",
+      "title": "Latence requêtes (p50 / p95 / p99)",
       "type": "timeseries",
       "targets": [
         {
@@ -220,7 +240,8 @@
           },
           "expr": "histogram_quantile(0.50, sum by (le, mode, service_type) (rate(gatewai_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p50 {{mode}} / {{service_type}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -229,7 +250,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, mode, service_type) (rate(gatewai_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p95 {{mode}} / {{service_type}}",
-          "refId": "B"
+          "refId": "B",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -238,7 +260,8 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le, mode, service_type) (rate(gatewai_request_duration_seconds_bucket[5m])))",
           "legendFormat": "p99 {{mode}} / {{service_type}}",
-          "refId": "C"
+          "refId": "C",
+          "exemplar": true
         }
       ]
     },
@@ -251,7 +274,7 @@
         "y": 9
       },
       "id": 7,
-      "title": "Gateway \u2014 S3",
+      "title": "Gateway — S3",
       "type": "row"
     },
     {
@@ -306,7 +329,7 @@
           "sort": "desc"
         }
       },
-      "title": "S3 \u2014 Latence p95 par op\u00e9ration",
+      "title": "S3 — Latence p95 par opération",
       "type": "timeseries",
       "targets": [
         {
@@ -316,7 +339,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(gatewai_s3_operation_duration_seconds_bucket[5m])))",
           "legendFormat": "p95 {{operation}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         }
       ]
     },
@@ -372,7 +396,7 @@
           "sort": "desc"
         }
       },
-      "title": "S3 \u2014 Erreurs/s par op\u00e9ration",
+      "title": "S3 — Erreurs/s par opération",
       "type": "timeseries",
       "targets": [
         {
@@ -395,7 +419,7 @@
         "y": 18
       },
       "id": 50,
-      "title": "Jobs async \u2014 Vue d'ensemble",
+      "title": "Jobs async — Vue d'ensemble",
       "type": "row"
     },
     {
@@ -579,7 +603,7 @@
           "sort": "desc"
         }
       },
-      "title": "Jobs annul\u00e9s/s",
+      "title": "Jobs annulés/s",
       "type": "timeseries",
       "targets": [
         {
@@ -654,7 +678,7 @@
           "sort": "desc"
         }
       },
-      "title": "Jobs stale purg\u00e9s/s",
+      "title": "Jobs stale purgés/s",
       "type": "timeseries",
       "targets": [
         {
@@ -677,7 +701,7 @@
         "y": 35
       },
       "id": 210,
-      "title": "Relay \u2014 K8s",
+      "title": "Relay — K8s",
       "type": "row"
     },
     {
@@ -795,8 +819,8 @@
           "sort": "desc"
         }
       },
-      "description": "Proxy du throughput \u2014 1 restart = 1 job trait\u00e9",
-      "title": "Relay \u2014 D\u00e9bit jobs (pod restarts/s)",
+      "description": "Proxy du throughput — 1 restart = 1 job traité",
+      "title": "Relay — Débit jobs (pod restarts/s)",
       "type": "timeseries",
       "targets": [
         {
@@ -863,7 +887,7 @@
         }
       },
       "description": "0=ok, !=0=erreur",
-      "title": "Relay \u2014 Exit codes derni\u00e8re terminaison",
+      "title": "Relay — Exit codes dernière terminaison",
       "type": "timeseries",
       "targets": [
         {
@@ -929,7 +953,7 @@
           "sort": "desc"
         }
       },
-      "title": "Queue relay \u2014 Profondeur par mod\u00e8le",
+      "title": "Queue relay — Profondeur par modèle",
       "type": "timeseries",
       "targets": [
         {
@@ -952,7 +976,7 @@
         "y": 52
       },
       "id": 18,
-      "title": "Relay \u2014 S3",
+      "title": "Relay — S3",
       "type": "row"
     },
     {
@@ -1007,7 +1031,7 @@
           "sort": "desc"
         }
       },
-      "title": "Relay \u2014 S3 latence p95 par op\u00e9ration",
+      "title": "Relay — S3 latence p95 par opération",
       "type": "timeseries",
       "targets": [
         {
@@ -1017,7 +1041,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(gatewai_relay_s3_operation_duration_seconds_bucket[5m])))",
           "legendFormat": "p95 {{operation}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         }
       ]
     },
@@ -1073,7 +1098,7 @@
           "sort": "desc"
         }
       },
-      "title": "Relay \u2014 Erreurs S3/s",
+      "title": "Relay — Erreurs S3/s",
       "type": "timeseries",
       "targets": [
         {
@@ -1096,7 +1121,7 @@
         "y": 61
       },
       "id": 28,
-      "title": "Gateway \u2014 Redis",
+      "title": "Gateway — Redis",
       "type": "row"
     },
     {
@@ -1177,7 +1202,8 @@
           "expr": "histogram_quantile(0.95, sum by (le, operation) (rate(gatewai_redis_operation_duration_seconds_bucket[5m])))",
           "interval": "",
           "legendFormat": "p95 {{operation}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -1187,10 +1213,11 @@
           "expr": "histogram_quantile(0.50, sum by (le, operation) (rate(gatewai_redis_operation_duration_seconds_bucket[5m])))",
           "interval": "",
           "legendFormat": "p50 {{operation}}",
-          "refId": "B"
+          "refId": "B",
+          "exemplar": true
         }
       ],
-      "title": "Redis \u2014 Latence p95 par op\u00e9ration",
+      "title": "Redis — Latence p95 par opération",
       "type": "timeseries"
     },
     {
@@ -1274,7 +1301,7 @@
           "refId": "A"
         }
       ],
-      "title": "Redis \u2014 Erreurs/s par op\u00e9ration",
+      "title": "Redis — Erreurs/s par opération",
       "type": "timeseries"
     },
     {
@@ -1286,7 +1313,7 @@
         "y": 70
       },
       "id": 31,
-      "title": "Gateway \u2014 Consumers",
+      "title": "Gateway — Consumers",
       "type": "row"
     },
     {
@@ -1454,7 +1481,7 @@
           "refId": "A"
         }
       ],
-      "title": "Soumissions par consumer/s \u2014 d\u00e9tail mod\u00e8le",
+      "title": "Soumissions par consumer/s — détail modèle",
       "type": "timeseries"
     },
     {
@@ -1531,7 +1558,7 @@
           "refId": "A"
         }
       ],
-      "title": "Top consumers \u2014 volume total",
+      "title": "Top consumers — volume total",
       "type": "bargauge"
     },
     {
@@ -1608,7 +1635,7 @@
           "refId": "A"
         }
       ],
-      "title": "Top consumers \u2014 volume total par mode",
+      "title": "Top consumers — volume total par mode",
       "type": "bargauge"
     },
     {
@@ -1620,7 +1647,7 @@
         "y": 87
       },
       "id": 36,
-      "title": "Gateway \u2014 Rate Limiting",
+      "title": "Gateway — Rate Limiting",
       "type": "row"
     },
     {
@@ -1628,7 +1655,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Taux de requ\u00eates rejet\u00e9es (429) par le rate limiter, par service_type. Augmente quand un consumer d\u00e9passe son quota.",
+      "description": "Taux de requêtes rejetées (429) par le rate limiter, par service_type. Augmente quand un consumer dépasse son quota.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1711,7 +1738,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Taux de requ\u00eates rejet\u00e9es (429) par user_type (header OPA). Permet de voir quel profil d'utilisateur est le plus throttl\u00e9.",
+      "description": "Taux de requêtes rejetées (429) par user_type (header OPA). Permet de voir quel profil d'utilisateur est le plus throttlé.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1794,7 +1821,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Part des requ\u00eates rejet\u00e9es par le rate limiter sur le total \u00e9valu\u00e9. Un pic indique une pression forte sur un service.",
+      "description": "Part des requêtes rejetées par le rate limiter sur le total évalué. Un pic indique une pression forte sur un service.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1877,7 +1904,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Erreurs Redis lors de l'\u00e9valuation du rate limit. Les requ\u00eates sont laiss\u00e9es passer (fail-open). Une valeur non nulle indique un probl\u00e8me Redis.",
+      "description": "Erreurs Redis lors de l'évaluation du rate limit. Les requêtes sont laissées passer (fail-open). Une valeur non nulle indique un problème Redis.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -1976,7 +2003,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Nombre de consumers distincts actifs par user_type, calcul\u00e9 via PromQL group(). N\u00e9cessite consumer_header et rate_limits configur\u00e9s. Refl\u00e8te la fen\u00eatre de r\u00e9tention Prometheus (typiquement 15j).",
+      "description": "Nombre de consumers distincts actifs par user_type, calculé via PromQL group(). Nécessite consumer_header et rate_limits configurés. Reflète la fenêtre de rétention Prometheus (typiquement 15j).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2064,7 +2091,7 @@
         "y": 112
       },
       "id": 42,
-      "title": "Gateway \u2014 LLM Proxy",
+      "title": "Gateway — LLM Proxy",
       "type": "row"
     },
     {
@@ -2072,7 +2099,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "D\u00e9bit des requ\u00eates LLM proxy, par mod\u00e8le et statut HTTP. Inclut cache hits (provider=cache) et erreurs backend.",
+      "description": "Débit des requêtes LLM proxy, par modèle et statut HTTP. Inclut cache hits (provider=cache) et erreurs backend.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2136,7 +2163,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Taux de requ\u00eates/s par mod\u00e8le",
+      "title": "LLM — Taux de requêtes/s par modèle",
       "type": "timeseries",
       "targets": [
         {
@@ -2145,7 +2172,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum by (model, status) (rate(gatewai_llm_requests_total[5m]))",
-          "legendFormat": "{{model}} \u2014 {{status}}",
+          "legendFormat": "{{model}} — {{status}}",
           "refId": "A"
         }
       ]
@@ -2155,7 +2182,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Latence totale des requ\u00eates LLM proxy (cache miss + appel backend). Cache hits exclus (provider=cache).",
+      "description": "Latence totale des requêtes LLM proxy (cache miss + appel backend). Cache hits exclus (provider=cache).",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2219,7 +2246,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Latence end-to-end p50 / p95 / p99",
+      "title": "LLM — Latence end-to-end p50 / p95 / p99",
       "type": "timeseries",
       "targets": [
         {
@@ -2229,7 +2256,8 @@
           },
           "expr": "histogram_quantile(0.50, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p50 {{model}}",
-          "refId": "A"
+          "refId": "A",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -2238,7 +2266,8 @@
           },
           "expr": "histogram_quantile(0.95, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p95 {{model}}",
-          "refId": "B"
+          "refId": "B",
+          "exemplar": true
         },
         {
           "datasource": {
@@ -2247,7 +2276,8 @@
           },
           "expr": "histogram_quantile(0.99, sum by (le, model) (rate(gatewai_llm_request_duration_seconds_bucket{provider!=\"cache\"}[5m])))",
           "legendFormat": "p99 {{model}}",
-          "refId": "C"
+          "refId": "C",
+          "exemplar": true
         }
       ]
     },
@@ -2256,7 +2286,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "D\u00e9bit de tokens par type (prompt/completion) et par mod\u00e8le. Multiplier par 60 pour avoir tokens/min.",
+      "description": "Débit de tokens par type (prompt/completion) et par modèle. Multiplier par 60 pour avoir tokens/min.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2320,7 +2350,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Tokens consomm\u00e9s/s (prompt & completion)",
+      "title": "LLM — Tokens consommés/s (prompt & completion)",
       "type": "timeseries",
       "targets": [
         {
@@ -2329,7 +2359,7 @@
             "uid": "${datasource}"
           },
           "expr": "sum by (model, type) (rate(gatewai_llm_tokens_total[5m]))",
-          "legendFormat": "{{model}} \u2014 {{type}}",
+          "legendFormat": "{{model}} — {{type}}",
           "refId": "A"
         }
       ]
@@ -2339,7 +2369,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Pourcentage de requ\u00eates servies depuis le cache Redis. 0% = cache d\u00e9sactiv\u00e9 (TTL=0) ou tous les prompts sont uniques.",
+      "description": "Pourcentage de requêtes servies depuis le cache Redis. 0% = cache désactivé (TTL=0) ou tous les prompts sont uniques.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2403,7 +2433,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Cache hit rate (%)",
+      "title": "LLM — Cache hit rate (%)",
       "type": "timeseries",
       "targets": [
         {
@@ -2422,7 +2452,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Volume de hits et misses cache par mod\u00e8le. Un hit \u00e9conomise un appel backend complet.",
+      "description": "Volume de hits et misses cache par modèle. Un hit économise un appel backend complet.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2486,7 +2516,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Cache hits & misses/s",
+      "title": "LLM — Cache hits & misses/s",
       "type": "timeseries",
       "targets": [
         {
@@ -2523,7 +2553,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Consommation de tokens ventil\u00e9e par profil utilisateur (header user_type_header). Utile pour facturation interne.",
+      "description": "Consommation de tokens ventilée par profil utilisateur (header user_type_header). Utile pour facturation interne.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -2587,7 +2617,7 @@
           "sort": "desc"
         }
       },
-      "title": "LLM \u2014 Tokens par user_type",
+      "title": "LLM — Tokens par user_type",
       "type": "timeseries",
       "targets": [
         {
@@ -2596,10 +2626,121 @@
             "uid": "${datasource}"
           },
           "expr": "sum by (user_type, type) (rate(gatewai_llm_tokens_total[5m]))",
-          "legendFormat": "{{user_type}} \u2014 {{type}}",
+          "legendFormat": "{{user_type}} — {{type}}",
           "refId": "A"
         }
       ]
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 138
+      },
+      "id": 215,
+      "title": "Traces distribuées",
+      "type": "row"
+    },
+    {
+      "id": 216,
+      "title": "Traces — gateway.job.submit",
+      "type": "traces",
+      "gridPos": {
+        "x": 0,
+        "y": 139,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "limit": 20,
+          "query": "{span.name=\"gateway.job.submit\"}",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "spans"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 217,
+      "title": "Traces — relay.process_job",
+      "type": "traces",
+      "gridPos": {
+        "x": 12,
+        "y": 139,
+        "w": 12,
+        "h": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "limit": 20,
+          "query": "{span.name=\"relay.process_job\"}",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "spans"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
+    },
+    {
+      "id": 218,
+      "title": "Traces en erreur (toutes opérations)",
+      "type": "traces",
+      "gridPos": {
+        "x": 0,
+        "y": 149,
+        "w": 24,
+        "h": 10
+      },
+      "datasource": {
+        "type": "tempo",
+        "uid": "${datasource_tempo}"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "${datasource_tempo}"
+          },
+          "limit": 20,
+          "query": "{status=error, service.name=~\"gatewai.*\"}",
+          "queryType": "traceql",
+          "refId": "A",
+          "tableType": "spans"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "options": {}
     }
   ]
 }
