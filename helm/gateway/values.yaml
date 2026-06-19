@@ -368,13 +368,21 @@ opentelemetry:
   logs:
     enabled: false
 
-# ── OpenTelemetry Collector — Option A: sub-chart ────────────────────────────
-# Deploys a standalone OTel Collector alongside the gateway via the
-# open-telemetry/opentelemetry-collector Helm chart.
-# No cluster-level operator required.
+# ── OpenTelemetry Collector ───────────────────────────────────────────────────
+# Two mutually exclusive modes — enable exactly one:
 #
-# Helm repo: helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+#   enabled: true          → Option A: deploy the sub-chart (no operator needed)
+#   operator.enabled: true → Option B: create an OpenTelemetryCollector CR
+#                            (requires the OTel Operator installed on the cluster)
+#
+# Helm repo (Option A): helm repo add open-telemetry https://open-telemetry.github.io/opentelemetry-helm-charts
+# Operator install (Option B): https://opentelemetry.io/docs/kubernetes/operator/
+#
+# Note: opentelemetry.exporter.endpoint must point to the collector Service:
+#   Option A: "http://{{ .Release.Name }}-opentelemetry-collector:4318"
+#   Option B: "http://{{ include \"gatewai-gateway.fullname\" . }}-collector:4318"
 opentelemetry-collector:
+  # ── Option A: sub-chart ───────────────────────────────────────────────────
   enabled: false
   mode: deployment
   config:
@@ -402,20 +410,10 @@ opentelemetry-collector:
           receivers: [otlp]
           exporters: [debug]
 
-# ── OpenTelemetry Collector — Option B: Operator CRD ─────────────────────────
-# Creates an OpenTelemetryCollector custom resource managed by the
-# OpenTelemetry Operator (must be installed separately in the cluster).
-# The operator creates the Deployment, Service and ConfigMap automatically.
-#
-# Operator install: https://opentelemetry.io/docs/kubernetes/operator/
-#   kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml
-#
-# The collector Service is named <release>-<fullname>-collector and listens on
-# port 4318 (OTLP/HTTP). Set opentelemetry.exporter.endpoint accordingly:
-#   endpoint: "http://{{ .Release.Name }}-gatewai-gateway-collector:4318"
-#
-# Mutually exclusive with opentelemetry-collector.enabled (Option A).
-opentelemetryCollector:
+  # ── Option B: OpenTelemetry Operator CRD ─────────────────────────────────
+  # Creates an OpenTelemetryCollector CR managed by the operator.
+  # The operator creates the Deployment, Service and ConfigMap automatically.
+  # Unknown keys (operator.*) are silently ignored by the sub-chart.
   operator:
     enabled: false
     mode: deployment    # deployment | daemonset | statefulset | sidecar

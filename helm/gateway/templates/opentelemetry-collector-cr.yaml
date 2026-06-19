@@ -1,4 +1,5 @@
-{{- if .Values.opentelemetryCollector.operator.enabled }}
+{{- $otelCollector := index .Values "opentelemetry-collector" }}
+{{- if $otelCollector.operator.enabled }}
 {{- /*
   Validate that the OpenTelemetry Operator CRDs are available on the target cluster.
   This check runs during `helm install / upgrade` and `helm upgrade --dry-run`.
@@ -9,7 +10,7 @@
     (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")
     (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1")
   ) }}
-  {{- fail "opentelemetryCollector.operator.enabled=true but the OpenTelemetry Operator CRDs are not installed on this cluster (opentelemetry.io/v1beta1 not found). Install the operator first: kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml" }}
+  {{- fail "opentelemetry-collector.operator.enabled=true but the OpenTelemetry Operator CRDs are not installed on this cluster (opentelemetry.io/v1beta1 not found). Install the operator first: kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml" }}
 {{- end }}
 {{- $apiVersion := "opentelemetry.io/v1beta1" }}
 {{- if and (not (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")) (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1") }}
@@ -21,22 +22,22 @@ metadata:
   name: {{ include "gatewai-gateway.fullname" . }}
   labels:
     {{- include "gatewai-gateway.labels" . | nindent 4 }}
-  {{- with .Values.opentelemetryCollector.operator.annotations }}
+  {{- with $otelCollector.operator.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  mode: {{ .Values.opentelemetryCollector.operator.mode | default "deployment" }}
-  {{- with .Values.opentelemetryCollector.operator.replicas }}
+  mode: {{ $otelCollector.operator.mode | default "deployment" }}
+  {{- with $otelCollector.operator.replicas }}
   replicas: {{ . }}
   {{- end }}
-  {{- with .Values.opentelemetryCollector.operator.resources }}
+  {{- with $otelCollector.operator.resources }}
   resources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with .Values.opentelemetryCollector.operator.serviceAccount }}
+  {{- with $otelCollector.operator.serviceAccount }}
   serviceAccount: {{ . }}
   {{- end }}
   config:
-    {{- toYaml .Values.opentelemetryCollector.operator.config | nindent 4 }}
+    {{- toYaml $otelCollector.operator.config | nindent 4 }}
 {{- end }}
