@@ -1,5 +1,4 @@
-{{- $otelCollector := index .Values "opentelemetry-collector" }}
-{{- if $otelCollector.operator.enabled }}
+{{- if .Values.otlpOperator.enabled }}
 {{- /*
   Validate that the OpenTelemetry Operator CRDs are available on the target cluster.
   This check runs during `helm install / upgrade` and `helm upgrade --dry-run`.
@@ -10,7 +9,7 @@
     (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")
     (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1")
   ) }}
-  {{- fail "opentelemetry-collector.operator.enabled=true but the OpenTelemetry Operator CRDs are not installed on this cluster (opentelemetry.io/v1beta1 not found). Install the operator first: kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml" }}
+  {{- fail "otlpOperator.enabled=true but the OpenTelemetry Operator CRDs are not installed on this cluster (opentelemetry.io/v1beta1 not found). Install the operator first: kubectl apply -f https://github.com/open-telemetry/opentelemetry-operator/releases/latest/download/opentelemetry-operator.yaml" }}
 {{- end }}
 {{- $apiVersion := "opentelemetry.io/v1beta1" }}
 {{- if and (not (.Capabilities.APIVersions.Has "opentelemetry.io/v1beta1")) (.Capabilities.APIVersions.Has "opentelemetry.io/v1alpha1") }}
@@ -22,22 +21,22 @@ metadata:
   name: {{ include "gatewai-gateway.fullname" . }}
   labels:
     {{- include "gatewai-gateway.labels" . | nindent 4 }}
-  {{- with $otelCollector.operator.annotations }}
+  {{- with .Values.otlpOperator.annotations }}
   annotations:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  mode: {{ $otelCollector.operator.mode | default "deployment" }}
-  {{- with $otelCollector.operator.replicas }}
+  mode: {{ .Values.otlpOperator.mode | default "deployment" }}
+  {{- with .Values.otlpOperator.replicas }}
   replicas: {{ . }}
   {{- end }}
-  {{- with $otelCollector.operator.resources }}
+  {{- with .Values.otlpOperator.resources }}
   resources:
     {{- toYaml . | nindent 4 }}
   {{- end }}
-  {{- with $otelCollector.operator.serviceAccount }}
+  {{- with .Values.otlpOperator.serviceAccount }}
   serviceAccount: {{ . }}
   {{- end }}
   config:
-    {{- toYaml $otelCollector.operator.config | nindent 4 }}
+    {{- toYaml .Values.otlpOperator.config | nindent 4 }}
 {{- end }}
