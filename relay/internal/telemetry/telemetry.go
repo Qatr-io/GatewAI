@@ -20,6 +20,14 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+// slogErrorHandler routes OTel SDK internal errors (e.g. OTLP export failures)
+// through slog so they appear in structured JSON logs instead of raw stderr.
+type slogErrorHandler struct{}
+
+func (slogErrorHandler) Handle(err error) {
+	slog.Error("otel sdk error", "error", err)
+}
+
 // Telemetry holds pre-created Tracer and Meter for the service.
 // All global OTel providers are registered when Setup returns — components can
 // call otel.Tracer(name) directly without holding this struct.
@@ -36,11 +44,27 @@ func Setup(ctx context.Context, cfg OtelConfig, svcName, svcVersion string) (*Te
 	noop := func(context.Context) error { return nil }
 
 	if !cfg.Enabled {
+		slog.Info("opentelemetry disabled")
 		return &Telemetry{
 			Tracer: otel.GetTracerProvider().Tracer(svcName),
 			Meter:  otel.GetMeterProvider().Meter(svcName),
 		}, noop, nil
 	}
+
+	// Route OTel SDK internal errors (export failures, etc.) through slog.
+	otel.SetErrorHandler(slogErrorHandler{})
+
+	tracesEndpoint, _ := resolveSignal(cfg.Exporter, cfg.Traces.Endpoint, cfg.Traces.Headers)
+	slog.Info("opentelemetry initialising",
+		"service", svcName,
+		"version", svcVersion,
+		"traces_enabled", cfg.Traces.Enabled,
+		"traces_endpoint", tracesEndpoint,
+		"metrics_enabled", cfg.Metrics.Enabled,
+		"logs_enabled", cfg.Logs.Enabled,
+		"insecure", cfg.Exporter.Insecure,
+		"sample_ratio", cfg.Traces.SampleRatio,
+	)
 
 	// W3C TraceContext + Baggage propagation — must be set before any span is created.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
