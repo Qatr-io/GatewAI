@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/cache"
@@ -218,6 +219,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+reqErr.Error())
 			return
 		}
+		otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 		for k, v := range backend.Headers {
 			upstreamReq.Header.Set(k, v)
 		}
@@ -483,6 +485,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+reqErr.Error())
 			return
 		}
+		otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 		for k, v := range backend.Headers {
 			upstreamReq.Header.Set(k, v)
 		}
