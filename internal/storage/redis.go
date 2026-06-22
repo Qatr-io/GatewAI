@@ -164,7 +164,7 @@ func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) (err error) {
 		return nil
 	})
 
-	metrics.RedisOperationDuration.WithLabelValues("save_job").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("save_job"), time.Since(start).Seconds())
 	if pipeErr != nil {
 		metrics.RedisErrorsTotal.WithLabelValues("save_job").Inc()
 		err = fmt.Errorf("saving job %q: %w", job.ID, pipeErr)
@@ -177,7 +177,7 @@ func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) (err error) {
 func (r *RedisClient) GetJob(ctx context.Context, id string) (*model.Job, error) {
 	start := time.Now()
 	data, err := r.client.Get(ctx, jobKey(id)).Bytes()
-	metrics.RedisOperationDuration.WithLabelValues("get_job").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("get_job"), time.Since(start).Seconds())
 	if err == redis.Nil {
 		return nil, fmt.Errorf("job %q not found", id)
 	}
@@ -216,7 +216,7 @@ return redis.call('DEL', KEYS[1])
 func (r *RedisClient) DeleteJob(ctx context.Context, id string) error {
 	start := time.Now()
 	err := deleteJobScript.Run(ctx, r.client, []string{jobKey(id)}, id).Err()
-	metrics.RedisOperationDuration.WithLabelValues("delete_job").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("delete_job"), time.Since(start).Seconds())
 	if err != nil {
 		metrics.RedisErrorsTotal.WithLabelValues("delete_job").Inc()
 		return fmt.Errorf("deleting job %q: %w", id, err)
@@ -354,7 +354,7 @@ func (r *RedisClient) UpdateJobResult(ctx context.Context, jobID string, status 
 		[]string{jobKey(jobID)},
 		string(status), resultRef, errMsg, updatedAt, ttlSecs,
 	).Err()
-	metrics.RedisOperationDuration.WithLabelValues("update_job").Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("update_job"), time.Since(start).Seconds())
 	if err != nil {
 		metrics.RedisErrorsTotal.WithLabelValues("update_job").Inc()
 		return fmt.Errorf("updating job %q in redis: %w", jobID, err)

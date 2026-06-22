@@ -110,7 +110,7 @@ func buildRouter(
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(handler.OtelMiddleware(tracer))
+	r.Use(handler.OtelMiddleware(tracer, "/health", "/metrics"))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
 
@@ -174,7 +174,11 @@ func main() {
 	}
 
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
-	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/gateway", version)
+	otelSvcName := cfg.Otel.ServiceName
+	if otelSvcName == "" {
+		otelSvcName = "gatewai/gateway"
+	}
+	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, otelSvcName, version)
 	if err != nil {
 		slog.Error("failed to initialise OpenTelemetry", "error", err)
 		os.Exit(1)

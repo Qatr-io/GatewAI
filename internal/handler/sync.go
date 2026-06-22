@@ -14,6 +14,9 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy"
@@ -278,7 +281,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w}
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
-		metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model), time.Since(start).Seconds())
 		return
 	}
 
@@ -291,7 +294,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, contentType string) {
 	start := time.Now()
 	defer func() {
-		metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model), time.Since(start).Seconds())
 	}()
 
 	captureForPT := h.processingLimiter != nil
@@ -341,6 +344,8 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				lastErr = "failed to build upstream request: " + err.Error()
 				continue
 			}
+			// Propagate W3C trace context so the inference service receives traceparent.
+			otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 			upstreamReq.Header.Set("Content-Type", contentType)
 			if auth != "" {
 				upstreamReq.Header.Set("Authorization", auth)

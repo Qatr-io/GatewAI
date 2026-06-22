@@ -1,9 +1,30 @@
 package metrics
 
 import (
+	"context"
+
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
+	"go.opentelemetry.io/otel/trace"
 )
+
+// ObserveWithExemplar records value on h. When ctx holds an active sampled span,
+// the trace_id is attached as a Prometheus exemplar so Grafana can link the data
+// point directly to the corresponding trace in Tempo.
+func ObserveWithExemplar(ctx context.Context, h prometheus.Observer, value float64) {
+	type exemplarObserver interface {
+		ObserveWithExemplar(value float64, labels prometheus.Labels)
+	}
+	if span := trace.SpanFromContext(ctx); span.SpanContext().IsValid() {
+		if eo, ok := h.(exemplarObserver); ok {
+			eo.ObserveWithExemplar(value, prometheus.Labels{
+				"trace_id": span.SpanContext().TraceID().String(),
+			})
+			return
+		}
+	}
+	h.Observe(value)
+}
 
 var (
 	// RequestsTotal counts all completed requests labelled by mode (async/sync),

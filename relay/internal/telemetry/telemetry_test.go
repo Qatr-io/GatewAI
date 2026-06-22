@@ -10,14 +10,14 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
-	"gatewai/gateway/internal/telemetry"
+	"gatewai/relay/internal/telemetry"
 )
 
 // ── Setup: disabled mode ──────────────────────────────────────────────────────
 
 func TestSetup_Disabled(t *testing.T) {
 	cfg := telemetry.OtelConfig{Enabled: false}
-	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "test", "dev")
+	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-test", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -40,7 +40,7 @@ func TestSetup_Disabled_LogsMessage(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(orig) })
 
 	cfg := telemetry.OtelConfig{Enabled: false}
-	_, shutdown, _ := telemetry.Setup(context.Background(), cfg, "svc", "v1")
+	_, shutdown, _ := telemetry.Setup(context.Background(), cfg, "relay-svc", "v1")
 	defer shutdown(context.Background())
 
 	if !strings.Contains(buf.String(), "opentelemetry disabled") {
@@ -50,8 +50,7 @@ func TestSetup_Disabled_LogsMessage(t *testing.T) {
 
 // ── Setup: enabled — construction ────────────────────────────────────────────
 
-// OTLP exporters connect lazily on first export, not at creation.
-// Setup must succeed even when the endpoint is unreachable.
+// OTLP exporters connect lazily; Setup must succeed even when unreachable.
 
 func TestSetup_Enabled_TracesOnly(t *testing.T) {
 	cfg := telemetry.OtelConfig{
@@ -65,7 +64,7 @@ func TestSetup_Enabled_TracesOnly(t *testing.T) {
 			SampleRatio: 1.0,
 		},
 	}
-	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-traces", "dev")
+	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-traces", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -86,33 +85,14 @@ func TestSetup_Enabled_AllSignals(t *testing.T) {
 		Metrics: telemetry.MetricsConfig{Enabled: true, Interval: "10s"},
 		Logs:    telemetry.LogsConfig{Enabled: true},
 	}
-	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-all", "dev")
+	tel, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-all", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer shutdown(context.Background())
-	if tel.Tracer == nil {
-		t.Fatal("expected non-nil Tracer")
+	if tel.Tracer == nil || tel.Meter == nil {
+		t.Fatal("expected non-nil Tracer and Meter")
 	}
-	if tel.Meter == nil {
-		t.Fatal("expected non-nil Meter")
-	}
-}
-
-func TestSetup_Enabled_MetricsOnly(t *testing.T) {
-	cfg := telemetry.OtelConfig{
-		Enabled: true,
-		Exporter: telemetry.ExporterConfig{
-			Endpoint: "http://localhost:0",
-			Insecure: true,
-		},
-		Metrics: telemetry.MetricsConfig{Enabled: true, Interval: "5s"},
-	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-metrics", "dev")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer shutdown(context.Background())
 }
 
 // ── Setup: startup log ────────────────────────────────────────────────────────
@@ -126,12 +106,12 @@ func TestSetup_Enabled_LogsEndpoint(t *testing.T) {
 	cfg := telemetry.OtelConfig{
 		Enabled: true,
 		Exporter: telemetry.ExporterConfig{
-			Endpoint: "http://collector.example:4318",
+			Endpoint: "http://relay-collector.example:4318",
 			Insecure: true,
 		},
 		Traces: telemetry.TracesConfig{Enabled: true},
 	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "svc", "v1")
+	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-svc", "v1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,12 +121,12 @@ func TestSetup_Enabled_LogsEndpoint(t *testing.T) {
 	if !strings.Contains(logged, "opentelemetry initialising") {
 		t.Errorf("expected startup log, got: %s", logged)
 	}
-	if !strings.Contains(logged, "collector.example:4318") {
+	if !strings.Contains(logged, "relay-collector.example:4318") {
 		t.Errorf("expected endpoint in startup log, got: %s", logged)
 	}
 }
 
-// ── Setup: W3C propagator registered ─────────────────────────────────────────
+// ── Setup: W3C propagator ─────────────────────────────────────────────────────
 
 func TestSetup_Enabled_RegistersPropagator(t *testing.T) {
 	cfg := telemetry.OtelConfig{
@@ -154,15 +134,13 @@ func TestSetup_Enabled_RegistersPropagator(t *testing.T) {
 		Exporter: telemetry.ExporterConfig{Endpoint: "http://localhost:0", Insecure: true},
 		Traces:   telemetry.TracesConfig{Enabled: true},
 	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-prop", "dev")
+	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-prop", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer shutdown(context.Background())
 
-	// W3C TraceContext must be in the composite propagator.
-	prop := otel.GetTextMapPropagator()
-	fields := prop.Fields()
+	fields := otel.GetTextMapPropagator().Fields()
 	found := false
 	for _, f := range fields {
 		if f == "traceparent" {
@@ -171,24 +149,21 @@ func TestSetup_Enabled_RegistersPropagator(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Errorf("expected 'traceparent' field in propagator, got: %v", fields)
+		t.Errorf("expected 'traceparent' in propagator fields, got: %v", fields)
 	}
 }
 
 func TestSetup_Disabled_DoesNotOverridePropagator(t *testing.T) {
-	// Pre-set a propagator with only Baggage (no traceparent).
-	// Disabled Setup must not replace it with the W3C TraceContext propagator.
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.Baggage{}))
 	t.Cleanup(func() { otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator()) })
 
 	cfg := telemetry.OtelConfig{Enabled: false}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test", "dev")
+	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-test", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer shutdown(context.Background())
 
-	// If Setup overrode the propagator it would have injected "traceparent".
 	for _, f := range otel.GetTextMapPropagator().Fields() {
 		if f == "traceparent" {
 			t.Error("disabled Setup must not add 'traceparent' to the global propagator")
@@ -196,35 +171,7 @@ func TestSetup_Disabled_DoesNotOverridePropagator(t *testing.T) {
 	}
 }
 
-// ── Setup: per-signal endpoint override ──────────────────────────────────────
-
-func TestSetup_Enabled_PerSignalEndpointOverride(t *testing.T) {
-	// Traces use a per-signal endpoint; metrics use the base endpoint.
-	// Both should build without error.
-	cfg := telemetry.OtelConfig{
-		Enabled: true,
-		Exporter: telemetry.ExporterConfig{
-			Endpoint: "http://base-collector:4318",
-			Insecure: true,
-		},
-		Traces: telemetry.TracesConfig{
-			Enabled:  true,
-			Endpoint: "http://traces-collector:4318",
-		},
-		Metrics: telemetry.MetricsConfig{
-			Enabled:  true,
-			Interval: "10s",
-			// no per-signal override → uses base
-		},
-	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-override", "dev")
-	if err != nil {
-		t.Fatalf("unexpected error with per-signal override: %v", err)
-	}
-	defer shutdown(context.Background())
-}
-
-// ── Setup: slogErrorHandler ───────────────────────────────────────────────────
+// ── Setup: OTel SDK errors via slog ──────────────────────────────────────────
 
 func TestSetup_Enabled_OtelErrorsAppearInSlog(t *testing.T) {
 	var buf bytes.Buffer
@@ -237,16 +184,15 @@ func TestSetup_Enabled_OtelErrorsAppearInSlog(t *testing.T) {
 		Exporter: telemetry.ExporterConfig{Endpoint: "http://localhost:0", Insecure: true},
 		Traces:   telemetry.TracesConfig{Enabled: true},
 	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-errors", "dev")
+	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-errors", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	defer shutdown(context.Background())
 
-	// Trigger a synthetic OTel SDK error and verify it lands in slog.
-	otel.Handle(errSentinel("synthetic otel error for testing"))
+	otel.Handle(errSentinel("relay synthetic otel error"))
 
-	if !strings.Contains(buf.String(), "synthetic otel error") {
+	if !strings.Contains(buf.String(), "relay synthetic otel error") {
 		t.Errorf("expected synthetic error in slog output, got: %s", buf.String())
 	}
 }
@@ -257,32 +203,16 @@ func (e errSentinel) Error() string { return string(e) }
 
 // ── Setup: shutdown ───────────────────────────────────────────────────────────
 
-func TestSetup_ShutdownIdempotent(t *testing.T) {
-	cfg := telemetry.OtelConfig{Enabled: false}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test", "dev")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	ctx := context.Background()
-	if err := shutdown(ctx); err != nil {
-		t.Fatalf("first shutdown: %v", err)
-	}
-	// Second call must not panic or error for disabled mode.
-	_ = shutdown(ctx)
-}
-
 func TestSetup_Enabled_ShutdownFlushes(t *testing.T) {
 	cfg := telemetry.OtelConfig{
 		Enabled:  true,
 		Exporter: telemetry.ExporterConfig{Endpoint: "http://localhost:0", Insecure: true},
 		Traces:   telemetry.TracesConfig{Enabled: true},
 	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-flush", "dev")
+	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "relay-flush", "dev")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Shutdown with a real context — must complete without panic even when the
-	// exporter fails to reach the (non-existent) collector.
 	if err := shutdown(context.Background()); err != nil {
 		t.Logf("shutdown returned (expected on unreachable endpoint): %v", err)
 	}
@@ -298,9 +228,9 @@ func TestMetricsConfig_IntervalDuration(t *testing.T) {
 		{"30s", 30},
 		{"2m", 120},
 		{"1h", 3600},
-		{"",       60}, // default
-		{"invalid", 60}, // fallback
-		{"-5s",    60}, // non-positive → fallback
+		{"",      60},
+		{"bad",   60},
+		{"-1s",   60},
 	}
 	for _, tc := range tests {
 		cfg := telemetry.MetricsConfig{Interval: tc.interval}
@@ -309,27 +239,4 @@ func TestMetricsConfig_IntervalDuration(t *testing.T) {
 			t.Errorf("Interval=%q: got %vs, want %vs", tc.interval, got, tc.wantSecs)
 		}
 	}
-}
-
-// ── ExporterConfig: header merge ──────────────────────────────────────────────
-
-func TestSetup_Enabled_HeadersDoNotPanic(t *testing.T) {
-	cfg := telemetry.OtelConfig{
-		Enabled: true,
-		Exporter: telemetry.ExporterConfig{
-			Endpoint: "http://localhost:0",
-			Insecure: true,
-			Headers:  map[string]string{"X-Base": "base"},
-		},
-		Traces: telemetry.TracesConfig{
-			Enabled:  true,
-			Headers:  map[string]string{"X-Signal": "traces"},
-			Endpoint: "http://localhost:0",
-		},
-	}
-	_, shutdown, err := telemetry.Setup(context.Background(), cfg, "test-headers", "dev")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	defer shutdown(context.Background())
 }

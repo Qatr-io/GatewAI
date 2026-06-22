@@ -29,9 +29,19 @@ func (rw *otelResponseWriter) WriteHeader(code int) {
 // OtelMiddleware starts a server span for every request.
 // It extracts W3C traceparent from incoming headers, creates a child span,
 // and updates the span name with the chi route pattern after routing.
-func OtelMiddleware(tracer trace.Tracer) func(http.Handler) http.Handler {
+// Paths listed in skip are passed through without creating a span (e.g. /health, /metrics).
+func OtelMiddleware(tracer trace.Tracer, skip ...string) func(http.Handler) http.Handler {
+	skipSet := make(map[string]struct{}, len(skip))
+	for _, p := range skip {
+		skipSet[p] = struct{}{}
+	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if _, ok := skipSet[r.URL.Path]; ok {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// Extract parent context from incoming W3C headers (if any).
 			ctx := otel.GetTextMapPropagator().Extract(r.Context(), propagation.HeaderCarrier(r.Header))
 
@@ -72,7 +82,7 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 
 			next.ServeHTTP(ww, r)
 
-			logger.InfoContext(r.Context(), "request",
+			args := []any{
 				"method",      r.Method,
 				"path",        r.URL.Path,
 				"status",      ww.Status(),
@@ -80,7 +90,11 @@ func StructuredLogger(logger *slog.Logger) func(http.Handler) http.Handler {
 				"duration_ms", time.Since(start).Milliseconds(),
 				"request_id",  middleware.GetReqID(r.Context()),
 				"remote",      r.RemoteAddr,
-			)
+			}
+			if sc := trace.SpanFromContext(r.Context()).SpanContext(); sc.IsValid() {
+				args = append(args, "trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+			}
+			logger.InfoContext(r.Context(), "request", args...)
 		})
 	}
 }

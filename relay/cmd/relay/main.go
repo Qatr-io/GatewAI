@@ -71,7 +71,11 @@ func main() {
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
 	// The relay is a one-shot process: ForceFlush via shutdown is critical so
 	// spans are not dropped when the pod exits after processing a single job.
-	_, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/relay", version)
+	otelSvcName := cfg.Otel.ServiceName
+	if otelSvcName == "" {
+		otelSvcName = "gatewai/relay"
+	}
+	_, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, otelSvcName, version)
 	if err != nil {
 		slog.Error("failed to initialise OpenTelemetry", "error", err)
 		os.Exit(1)

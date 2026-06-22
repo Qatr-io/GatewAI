@@ -363,6 +363,9 @@ configReloader:
 # the bundled collector's OTLP/HTTP receiver (aliased as "otlp").
 opentelemetry:
   enabled: false
+  # serviceName overrides the default "gatewai/gateway" resource attribute.
+  # Set this to match your Loki service_name label for log-to-trace correlation.
+  serviceName: ""
   exporter:
     endpoint: "http://{{ .Release.Name }}-otlp:4318"
     insecure: true

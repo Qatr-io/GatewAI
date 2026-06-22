@@ -357,7 +357,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	)
 
 	metrics.RequestsTotal.WithLabelValues(mode, serviceType, def.Model, "202").Inc()
-	metrics.RequestDuration.WithLabelValues(mode, serviceType, def.Model).Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.RequestDuration.WithLabelValues(mode, serviceType, def.Model), time.Since(start).Seconds())
 	metrics.AsyncJobsSubmittedTotal.WithLabelValues(serviceType, def.Model).Inc()
 	if consumerName != "" {
 		metrics.JobsByConsumerTotal.WithLabelValues(mode, serviceType, def.Model, consumerName).Inc()
