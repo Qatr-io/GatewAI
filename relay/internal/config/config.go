@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -21,8 +22,11 @@ type Config struct {
 	// QueuePopTimeout is how long Pop waits for a job before returning ErrNoJob.
 	// Use when a pod may start after its queue item was already cancelled.
 	// Defaults to 30s. Set to "0" to block indefinitely (legacy behaviour).
-	QueuePopTimeout string              `yaml:"queue_pop_timeout"`
+	QueuePopTimeout string               `yaml:"queue_pop_timeout"`
 	Otel            telemetry.OtelConfig `yaml:"opentelemetry"`
+	// LogLevel sets the minimum log level: DEBUG, INFO, WARN, ERROR.
+	// Defaults to INFO when absent or invalid.
+	LogLevel string `yaml:"log_level"`
 }
 
 // QueuePopTimeoutDuration returns the configured queue pop timeout.
@@ -127,6 +131,15 @@ type S3Config struct {
 	// Use only in development or when the endpoint uses a self-signed cert
 	// and ca_bundle is not available.
 	SSLInsecure bool `yaml:"ssl_insecure"`
+}
+
+// SlogLevel returns the configured slog.Level, defaulting to INFO.
+func (c *Config) SlogLevel() slog.Level {
+	var l slog.Level
+	if err := l.UnmarshalText([]byte(strings.ToUpper(c.LogLevel))); err != nil {
+		return slog.LevelInfo
+	}
+	return l
 }
 
 // Load reads, env-expands, and validates the YAML config at path.

@@ -59,8 +59,8 @@ func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	// Bootstrap logger for config-load phase; reconfigured below once log_level is known.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cfgPath := "config.yaml"
 	if v := os.Getenv("CONFIG_PATH"); v != "" {
@@ -72,6 +72,8 @@ func main() {
 		slog.Error("failed to load config", "error", err)
 		os.Exit(1)
 	}
+
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()})))
 
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
 	// The relay is a one-shot process: ForceFlush via shutdown is critical so
@@ -197,6 +199,7 @@ func main() {
 		trace.WithTimestamp(getJobStart),
 		trace.WithAttributes(attribute.String("job_id", jobID)))
 	getJobSpan.End(trace.WithTimestamp(getJobEnd))
+	slog.Debug("redis job retrieved", "job_id", jobID)
 
 	// If the gateway cancelled the job between our pop and this read, stop now.
 	if job.Status == model.JobStatusCancelled {

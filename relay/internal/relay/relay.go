@@ -96,6 +96,8 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	if err != nil {
 		s3Span.RecordError(err)
 		s3Span.SetStatus(codes.Error, err.Error())
+	} else {
+		log.Debug("s3 input downloaded", "s3.key", job.InputRef)
 	}
 	s3Span.End()
 	if err != nil {
@@ -131,6 +133,8 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		if getErr != nil {
 			s3RetrySpan.RecordError(getErr)
 			s3RetrySpan.SetStatus(codes.Error, getErr.Error())
+		} else {
+			log.Debug("s3 input downloaded (retry)", "s3.key", job.InputRef)
 		}
 		s3RetrySpan.End()
 		if getErr != nil {
@@ -162,6 +166,8 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 			delSpan.RecordError(derr)
 			delSpan.SetStatus(codes.Error, derr.Error())
 			log.Error("failed to delete input file after failure", "input_ref", job.InputRef, "error", derr)
+		} else {
+			log.Debug("s3 input deleted (after inference failure)", "s3.key", job.InputRef)
 		}
 		delSpan.End()
 		return nil
@@ -180,6 +186,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 			return fmt.Errorf("s3 put: %w", err)
 		}
 	}
+	log.Debug("s3 result uploaded", "s3.key", resultKey)
 	putSpan.End()
 
 	processingTime := extractProcessingTime(result)
@@ -195,6 +202,8 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 			pubSpan.RecordError(err)
 			log.Error("failed to publish result after retry", "error", err)
 		}
+	} else {
+		log.Debug("redis result published", "status", string(model.JobStatusCompleted))
 	}
 	pubSpan.End()
 
@@ -208,6 +217,8 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		delSpan.RecordError(err)
 		delSpan.SetStatus(codes.Error, err.Error())
 		log.Error("failed to delete input file", "input_ref", job.InputRef, "error", err)
+	} else {
+		log.Debug("s3 input deleted", "s3.key", job.InputRef)
 	}
 	delSpan.End()
 
