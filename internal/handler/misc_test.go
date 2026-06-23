@@ -86,7 +86,7 @@ func TestNewHealthHandler_NoParams_LightweightResponse(t *testing.T) {
 	}
 }
 
-func TestNewHealthHandler_NoSnapshot_ReturnsUp(t *testing.T) {
+func TestNewHealthHandler_NoSnapshot_ReturnsUnknown(t *testing.T) {
 	h := handler.NewHealthHandler(snapshotFn(nil, nil))
 
 	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
@@ -100,8 +100,20 @@ func TestNewHealthHandler_NoSnapshot_ReturnsUp(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if body["status"] != "up" {
-		t.Errorf(`expected "status": "up" when no snapshot yet, got %v`, body["status"])
+	if body["status"] != "unknown" {
+		t.Errorf(`expected "status": "unknown" when no snapshot yet, got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_NoSnapshot_Strict_Returns500(t *testing.T) {
+	h := handler.NewHealthHandler(snapshotFn(nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true&mode=strict", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when no snapshot in strict mode, got %d", w.Code)
 	}
 }
 
@@ -173,6 +185,30 @@ func TestNewHealthHandler_Strict_OneDown_Returns500(t *testing.T) {
 
 	if w.Code != http.StatusInternalServerError {
 		t.Errorf("expected 500 (strict + down backend), got %d", w.Code)
+	}
+}
+
+func TestNewHealthHandler_EmptySnapshot_ReturnsUnknown(t *testing.T) {
+	// Snapshot exists but no backends were probed (all disabled or no InferenceURL).
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "unknown" {
+		t.Errorf(`expected "status": "unknown" for empty backends, got %v`, body["status"])
 	}
 }
 

@@ -59,8 +59,11 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 		// No snapshot yet (first startup, before the first probe cycle).
 		if snap == nil {
 			w.Header().Set("Content-Type", "application/json")
+			if strict {
+				w.WriteHeader(http.StatusInternalServerError)
+			}
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"status": "up",
+				"status": "unknown",
 			})
 			return
 		}
@@ -75,21 +78,12 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 			}
 		}
 
-		anyDown := false
-		for _, s := range backends {
-			if s == "down" {
-				anyDown = true
-				break
-			}
-		}
-
-		aggStatus := "up"
-		if anyDown {
-			aggStatus = "down"
-		}
+		// Derive aggregate: only "up" when at least one backend was probed and
+		// none returned "down". No probed backends → "unknown".
+		aggStatus := aggregateStatus(backends)
 
 		w.Header().Set("Content-Type", "application/json")
-		if strict && anyDown {
+		if strict && aggStatus != "up" {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
@@ -102,4 +96,20 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 		}
 		_ = json.NewEncoder(w).Encode(body)
 	}
+}
+
+// aggregateStatus derives the overall health from a backends map.
+// Returns "up" only when at least one backend was probed and none are "down".
+// Returns "unknown" when the map is empty (nothing was probed).
+// Returns "down" when any backend is "down".
+func aggregateStatus(backends map[string]string) string {
+	if len(backends) == 0 {
+		return "unknown"
+	}
+	for _, s := range backends {
+		if s == "down" {
+			return "down"
+		}
+	}
+	return "up"
 }

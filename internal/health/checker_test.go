@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/service"
@@ -97,11 +98,13 @@ func TestProbe_CustomPath(t *testing.T) {
 }
 
 func TestProbe_ServiceTimeout_Overrides_Default(t *testing.T) {
-	// Backend takes 150ms; service timeout is 50ms → should time out → "down".
+	// Backend responds after 300ms; service timeout is 50ms → should time out → "down".
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Simulate slow response by not responding promptly.
-		// The test client will time out before we write.
-		select {}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(300 * time.Millisecond):
+			w.WriteHeader(http.StatusOK)
+		}
 	}))
 	defer slow.Close()
 
