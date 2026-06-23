@@ -149,7 +149,7 @@ func TestNewHealthHandler_Verbose_AllUp(t *testing.T) {
 	}
 }
 
-func TestNewHealthHandler_Verbose_OneDown_Returns200(t *testing.T) {
+func TestNewHealthHandler_Verbose_OneDown_ReturnsPartial(t *testing.T) {
 	snap := &health.Snapshot{
 		CheckedAt: time.Now(),
 		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
@@ -161,18 +161,38 @@ func TestNewHealthHandler_Verbose_OneDown_Returns200(t *testing.T) {
 	h(w, req)
 
 	if w.Code != http.StatusOK {
-		t.Errorf("expected 200 (non-strict), got %d", w.Code)
+		t.Errorf("expected 200 (non-strict partial), got %d", w.Code)
 	}
 	var body map[string]any
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if body["status"] != "down" {
-		t.Errorf(`expected aggregate "status": "down", got %v`, body["status"])
+	if body["status"] != "partial" {
+		t.Errorf(`expected "status": "partial", got %v`, body["status"])
 	}
 }
 
-func TestNewHealthHandler_Strict_OneDown_Returns500(t *testing.T) {
+func TestNewHealthHandler_Verbose_AllDown_ReturnsDown(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "down", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "down" {
+		t.Errorf(`expected "status": "down", got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_Strict_Partial_Returns500AndDown(t *testing.T) {
 	snap := &health.Snapshot{
 		CheckedAt: time.Now(),
 		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
@@ -184,7 +204,14 @@ func TestNewHealthHandler_Strict_OneDown_Returns500(t *testing.T) {
 	h(w, req)
 
 	if w.Code != http.StatusInternalServerError {
-		t.Errorf("expected 500 (strict + down backend), got %d", w.Code)
+		t.Errorf("expected 500 (strict + partial), got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "down" {
+		t.Errorf(`expected "status": "down" in strict mode for partial, got %v`, body["status"])
 	}
 }
 

@@ -82,13 +82,19 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 		// none returned "down". No probed backends → "unknown".
 		aggStatus := aggregateStatus(backends)
 
+		// In strict mode, "partial" is reported as "down" and triggers 500.
+		reportedStatus := aggStatus
+		if strict && aggStatus == "partial" {
+			reportedStatus = "down"
+		}
+
 		w.Header().Set("Content-Type", "application/json")
-		if strict && aggStatus != "up" {
+		if strict && reportedStatus != "up" {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
 		body := map[string]any{
-			"status":     aggStatus,
+			"status":     reportedStatus,
 			"checked_at": snap.CheckedAt,
 		}
 		if verbose {
@@ -99,17 +105,29 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 }
 
 // aggregateStatus derives the overall health from a backends map.
-// Returns "up" only when at least one backend was probed and none are "down".
-// Returns "unknown" when the map is empty (nothing was probed).
-// Returns "down" when any backend is "down".
+//   - "up"      — at least one backend probed, all are up
+//   - "partial" — some backends up, some down (≥2 backends)
+//   - "down"    — all probed backends are down
+//   - "unknown" — nothing was probed (empty map)
 func aggregateStatus(backends map[string]string) string {
 	if len(backends) == 0 {
 		return "unknown"
 	}
+	var up, down int
 	for _, s := range backends {
-		if s == "down" {
-			return "down"
+		switch s {
+		case "up":
+			up++
+		case "down":
+			down++
 		}
 	}
-	return "up"
+	switch {
+	case down > 0 && up > 0:
+		return "partial"
+	case down > 0:
+		return "down"
+	default:
+		return "up"
+	}
 }
