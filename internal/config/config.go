@@ -126,9 +126,13 @@ type HealthConfig struct {
 	// Timeout is the default HTTP timeout for backend health probes. Default: 5s.
 	// For models that scale to 0 (Knative), set this higher at the service level.
 	Timeout string `yaml:"timeout"`
+	// Interval controls how often the background health batch runs. Default: 30s.
+	// The /health endpoint always reads the latest cached result — no live probing.
+	Interval string `yaml:"interval"`
 }
 
-func (h HealthConfig) TimeoutDuration() time.Duration { return parseDuration(h.Timeout) }
+func (h HealthConfig) TimeoutDuration() time.Duration  { return parseDuration(h.Timeout) }
+func (h HealthConfig) IntervalDuration() time.Duration { return parseDuration(h.Interval) }
 
 // ServiceHealthConfig controls how the gateway probes one service's backend.
 type ServiceHealthConfig struct {
@@ -448,6 +452,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Health.Timeout == "" {
 		c.Health.Timeout = "5s"
+	}
+	if c.Health.Interval == "" {
+		c.Health.Interval = "30s"
 	}
 	if c.Redis.PendingMaxAge == "" {
 		c.Redis.PendingMaxAge = "2h"

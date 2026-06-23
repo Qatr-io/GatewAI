@@ -84,8 +84,13 @@ server:
 # Pass ?model=<name> to probe a single model.
 # ─────────────────────────────────────────────────────────────────────────────
 health:
-  # Default HTTP timeout for backend health probes.
-  # Override per-service via services[].health.timeout for models that scale to 0.
+  # How often the background health batch runs. GET /health reads the cached result —
+  # no live probing happens on the request path.
+  # In multi-instance deployments only one replica probes per cycle (Redis lock).
+  interval: "${HEALTH_INTERVAL:-30s}"
+  # Default HTTP timeout for each backend probe within a batch.
+  # Override per-service via services[].health.timeout for models that scale to 0
+  # (Knative cold start can take 30–60 s).
   timeout: "${HEALTH_TIMEOUT:-5s}"
 
 s3:

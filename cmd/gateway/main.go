@@ -25,6 +25,7 @@ import (
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/health"
 	"gatewai/gateway/internal/llmproxy"
 	"gatewai/gateway/internal/llmproxy/provider"
 	gmetrics "gatewai/gateway/internal/metrics"
@@ -107,6 +108,7 @@ func buildRouter(
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
 	authzEngine *authz.Engine,
+	healthChecker *health.Checker,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
@@ -130,7 +132,7 @@ func buildRouter(
 	spec := handler.GenerateSpec(reg, version)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
-	r.Get("/health", handler.NewHealthHandler(reg, cfg.Health))
+	r.Get("/health", handler.NewHealthHandler(healthChecker.Snapshot))
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/docs", handler.DocsUI(swaggerSpecs))
 	r.Get("/openapi.yaml", handler.NewDocsSpec(spec))
@@ -271,6 +273,12 @@ func main() {
 	if cfg.Auth.Mode != "" {
 		slog.Info("authentication enabled", "mode", cfg.Auth.Mode)
 	}
+	// ── Health checker ────────────────────────────────────────────────────────
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	healthChecker := health.New(initialRegistry, redisClient.Raw(), cfg.Health, hostname)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
@@ -298,6 +306,7 @@ func main() {
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
 		manager.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
 		manager.Reconcile(newReg)
+		healthChecker.UpdateRegistry(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
@@ -331,7 +340,7 @@ func main() {
 		if newCfg.Policies != nil {
 			newAuthzEngine = authz.New(*newCfg.Policies)
 		}
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine)
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
@@ -342,7 +351,7 @@ func main() {
 	if cfg.Policies != nil {
 		authzEngine = authz.New(*cfg.Policies)
 	}
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
@@ -354,6 +363,7 @@ func main() {
 	}
 
 	manager.Start(ctx, initialRegistry)
+	go healthChecker.Start(ctx)
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.
