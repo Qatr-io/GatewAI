@@ -82,19 +82,13 @@ func NewHealthHandler(snapshotFn func(context.Context) (*health.Snapshot, error)
 		// none returned "down". No probed backends → "unknown".
 		aggStatus := aggregateStatus(backends)
 
-		// In strict mode, "partial" is reported as "down" and triggers 500.
-		reportedStatus := aggStatus
-		if strict && aggStatus == "partial" {
-			reportedStatus = "down"
-		}
-
 		w.Header().Set("Content-Type", "application/json")
-		if strict && reportedStatus != "up" {
+		if strict && aggStatus != "up" {
 			w.WriteHeader(http.StatusInternalServerError)
 		}
 
 		body := map[string]any{
-			"status":     reportedStatus,
+			"status":     aggStatus,
 			"checked_at": snap.CheckedAt,
 		}
 		if verbose {

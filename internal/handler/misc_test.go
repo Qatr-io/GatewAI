@@ -192,7 +192,7 @@ func TestNewHealthHandler_Verbose_AllDown_ReturnsDown(t *testing.T) {
 	}
 }
 
-func TestNewHealthHandler_Strict_Partial_Returns500AndDown(t *testing.T) {
+func TestNewHealthHandler_Strict_Partial_Returns500AndPartial(t *testing.T) {
 	snap := &health.Snapshot{
 		CheckedAt: time.Now(),
 		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
@@ -210,8 +210,8 @@ func TestNewHealthHandler_Strict_Partial_Returns500AndDown(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("invalid JSON: %v", err)
 	}
-	if body["status"] != "down" {
-		t.Errorf(`expected "status": "down" in strict mode for partial, got %v`, body["status"])
+	if body["status"] != "partial" {
+		t.Errorf(`expected "status": "partial" in strict mode, got %v`, body["status"])
 	}
 }
 
