@@ -456,6 +456,21 @@ func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authentic
 	switch cfg.Auth.Mode {
 	case "oauth2":
 		c := cfg.Auth.OAuth2
+		var introspectionCfg *auth.IntrospectionConfig
+		if c.Introspection != nil {
+			cacheTTL := 60 * time.Second
+			if c.Introspection.CacheTTL != "" {
+				if d, err := time.ParseDuration(c.Introspection.CacheTTL); err == nil {
+					cacheTTL = d
+				}
+			}
+			introspectionCfg = &auth.IntrospectionConfig{
+				Endpoint:     c.Introspection.Endpoint,
+				ClientID:     c.Introspection.ClientID,
+				ClientSecret: c.Introspection.ClientSecret,
+				CacheTTL:     cacheTTL,
+			}
+		}
 		a, err := auth.NewOAuth2Authenticator(ctx, auth.OAuth2Config{
 			Issuer:    c.Issuer,
 			JWKSURL:   c.JWKSURL,
@@ -467,6 +482,8 @@ func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authentic
 				Groups:   c.Claims.Groups,
 				Roles:    c.Claims.Roles,
 			},
+			Validation:    c.Validation,
+			Introspection: introspectionCfg,
 		})
 		if err != nil {
 			return nil, err

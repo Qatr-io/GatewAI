@@ -86,10 +86,20 @@ type AuthConfig struct {
 
 // OAuth2AuthConfig holds configuration for OAuth2 JWT validation.
 type OAuth2AuthConfig struct {
-	Issuer    string         `yaml:"issuer"`
-	JWKSURL   string         `yaml:"jwks_url"`
-	Audiences []string       `yaml:"audiences"`
-	Claims    ClaimMapConfig `yaml:"claims"`
+	Issuer        string                   `yaml:"issuer"`
+	JWKSURL       string                   `yaml:"jwks_url"`
+	Audiences     []string                 `yaml:"audiences"`
+	Claims        ClaimMapConfig           `yaml:"claims"`
+	Validation    string                   `yaml:"validation"` // "" | "auto" | "jwt" | "introspection"
+	Introspection *IntrospectionAuthConfig `yaml:"introspection"`
+}
+
+// IntrospectionAuthConfig holds configuration for RFC 7662 token introspection.
+type IntrospectionAuthConfig struct {
+	Endpoint     string `yaml:"endpoint"` // optional; else discovered via introspection_endpoint
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	CacheTTL     string `yaml:"cache_ttl"` // e.g. "60s"; caps how long an introspection result is cached
 }
 
 // ClaimMapConfig maps Principal fields to JWT claim names.
@@ -460,6 +470,23 @@ func (c *Config) validate() error {
 		}
 		if len(c.Auth.OAuth2.Audiences) == 0 {
 			return fmt.Errorf("auth.oauth2.audiences must have at least one entry when auth.mode is \"oauth2\"")
+		}
+		validValidations := map[string]bool{"": true, "auto": true, "jwt": true, "introspection": true}
+		if !validValidations[c.Auth.OAuth2.Validation] {
+			return fmt.Errorf("auth.oauth2.validation %q is invalid (valid: \"\", \"auto\", \"jwt\", \"introspection\")", c.Auth.OAuth2.Validation)
+		}
+		needsIntrospection := c.Auth.OAuth2.Validation == "introspection" ||
+			(c.Auth.OAuth2.Validation == "auto" && c.Auth.OAuth2.Introspection != nil)
+		if needsIntrospection {
+			if c.Auth.OAuth2.Introspection == nil {
+				return fmt.Errorf("auth.oauth2.introspection block is required when validation is \"introspection\"")
+			}
+			if c.Auth.OAuth2.Introspection.ClientID == "" {
+				return fmt.Errorf("auth.oauth2.introspection.client_id is required")
+			}
+			if c.Auth.OAuth2.Introspection.Endpoint == "" && c.Auth.OAuth2.Issuer == "" {
+				return fmt.Errorf("auth.oauth2.introspection.endpoint or auth.oauth2.issuer is required for introspection endpoint discovery")
+			}
 		}
 	}
 	if c.S3.Endpoint == "" {

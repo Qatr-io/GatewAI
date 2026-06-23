@@ -33,8 +33,14 @@ server:
 # auth:
 #   mode: oauth2                  # oauth2 | proxy
 #   oauth2:                       # validate OAuth2 access tokens (resource-server model)
-#     issuer: "${OAUTH_ISSUER}"   # discovery → jwks_uri (+ introspection_endpoint, used later)
+#     issuer: "${OAUTH_ISSUER}"   # discovery → jwks_uri + introspection_endpoint
 #     jwks_url: ""                # optional explicit override (else discovered from issuer)
+#     validation: auto            # auto | jwt | introspection
+#                                 #   auto: JWT tokens → local JWKS; opaque tokens → introspection
+#     introspection:              # RFC 7662 — validates opaque tokens AND gives live revocation
+#       client_id: "${OAUTH_CLIENT_ID}"
+#       client_secret: "${OAUTH_CLIENT_SECRET}"
+#       cache_ttl: 60s            # cache introspection results (capped by token exp)
 #     audiences: ["gatewai"]      # at least one must match the token's aud
 #     claims:                     # dotted paths — configure per identity provider
 #       consumer: "preferred_username"

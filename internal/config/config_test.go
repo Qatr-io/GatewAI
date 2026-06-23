@@ -1128,3 +1128,135 @@ policies:
 		t.Errorf("expected Limits=nil for rule without limits block")
 	}
 }
+
+// ── Introspection / validation config tests ───────────────────────────────────
+
+// oauth2Base is a minimal valid oauth2 config snippet for reuse in introspection tests.
+const oauth2Base = `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    inference_url: "http://llm.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+    audiences:
+      - myapp
+`
+
+func TestLoad_OAuth2_InvalidValidation_Error(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: magic
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid auth.oauth2.validation value")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_MissingClientID_Error(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: introspection
+    introspection:
+      endpoint: https://idp.example.com/introspect
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when introspection.client_id is missing")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_MissingEndpointAndIssuer_Error(t *testing.T) {
+	// No issuer override here — but the base has issuer, so we need a config without issuer.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    inference_url: "http://llm.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: ""
+    audiences:
+      - myapp
+    validation: introspection
+    introspection:
+      client_id: myclient
+`)
+	// issuer is "" and endpoint is "" → error.
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when both introspection.endpoint and issuer are empty")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_ValidWithEndpoint_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: introspection
+    introspection:
+      endpoint: https://idp.example.com/introspect
+      client_id: myclient
+      client_secret: mysecret
+      cache_ttl: 120s
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "introspection" {
+		t.Errorf("Validation = %q, want introspection", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection == nil {
+		t.Fatal("expected Introspection to be non-nil")
+	}
+	if cfg.Auth.OAuth2.Introspection.Endpoint != "https://idp.example.com/introspect" {
+		t.Errorf("Endpoint = %q, want https://idp.example.com/introspect", cfg.Auth.OAuth2.Introspection.Endpoint)
+	}
+	if cfg.Auth.OAuth2.Introspection.ClientID != "myclient" {
+		t.Errorf("ClientID = %q, want myclient", cfg.Auth.OAuth2.Introspection.ClientID)
+	}
+	if cfg.Auth.OAuth2.Introspection.CacheTTL != "120s" {
+		t.Errorf("CacheTTL = %q, want 120s", cfg.Auth.OAuth2.Introspection.CacheTTL)
+	}
+}
+
+func TestLoad_OAuth2_Auto_WithIntrospection_Valid_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: auto
+    introspection:
+      endpoint: https://idp.example.com/introspect
+      client_id: myclient
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "auto" {
+		t.Errorf("Validation = %q, want auto", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection == nil {
+		t.Fatal("expected Introspection to be non-nil")
+	}
+}
+
+func TestLoad_OAuth2_JWT_NoIntrospectionNeeded_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: jwt
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error for jwt validation without introspection: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "jwt" {
+		t.Errorf("Validation = %q, want jwt", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection != nil {
+		t.Error("expected Introspection to be nil when validation=jwt and no introspection block")
+	}
+}

@@ -1,7 +1,8 @@
 // Package auth resolves a request's identity into a Principal.
 //
 // Two authenticators are provided:
-//   - OAuth2Authenticator: validates JWT access tokens via JWKS (RS256/ES256 family).
+//   - OAuth2Authenticator: validates JWT access tokens via JWKS (RS256/ES256 family)
+//     or opaque tokens via RFC 7662 token introspection, or both (auto mode).
 //   - HeaderAuthenticator: trusts identity headers injected by an upstream proxy (APISIX/OPA).
 //
 // Usage pattern — call Authenticate, then store the result with WithPrincipal:
@@ -14,11 +15,16 @@ package auth
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
@@ -79,10 +85,20 @@ type ClaimMap struct {
 
 // OAuth2Config holds the configuration for the OAuth2 resource-server validator.
 type OAuth2Config struct {
-	Issuer    string   // required; expected "iss"
-	JWKSURL   string   // optional; if empty, discovered via {Issuer}/.well-known/openid-configuration
-	Audiences []string // accepted "aud" values (at least one must match); empty → skip aud check
-	Claims    ClaimMap
+	Issuer        string   // required; expected "iss"
+	JWKSURL       string   // optional; if empty, discovered via {Issuer}/.well-known/openid-configuration
+	Audiences     []string // accepted "aud" values (at least one must match); empty → skip aud check
+	Claims        ClaimMap
+	Validation    string // "" | "auto" | "jwt" | "introspection"
+	Introspection *IntrospectionConfig
+}
+
+// IntrospectionConfig holds configuration for RFC 7662 token introspection.
+type IntrospectionConfig struct {
+	Endpoint     string
+	ClientID     string
+	ClientSecret string
+	CacheTTL     time.Duration // default 60s if zero
 }
 
 // claimDefaults fills in ClaimMap zero values with sensible defaults.
@@ -100,40 +116,139 @@ func claimDefaults(cm ClaimMap) ClaimMap {
 // OAuth2Authenticator
 // ---------------------------------------------------------------------------
 
-// OAuth2Authenticator validates Bearer access tokens using a JWKS key source.
+// OAuth2Authenticator validates Bearer access tokens using JWKS and/or
+// RFC 7662 token introspection, depending on the configured strategy.
 type OAuth2Authenticator struct {
-	cfg OAuth2Config
-	kf  jwt.Keyfunc
+	cfg          OAuth2Config
+	kf           jwt.Keyfunc // nil when strategy == introspection-only
+	strategy     string      // "jwt" | "introspection" | "auto"
+	introspector *tokenIntrospector
 }
 
-// NewOAuth2Authenticator creates an OAuth2Authenticator with auto-refreshing JWKS.
+// NewOAuth2Authenticator creates an OAuth2Authenticator with auto-refreshing JWKS
+// and/or a token introspector, depending on the Validation field of cfg.
 // If cfg.JWKSURL is empty the JWKS URI is discovered from the issuer's
 // OpenID Connect metadata endpoint.
 func NewOAuth2Authenticator(ctx context.Context, cfg OAuth2Config) (*OAuth2Authenticator, error) {
-	jwksURL := cfg.JWKSURL
-	if jwksURL == "" {
-		discovered, err := discoverJWKSURL(cfg.Issuer)
-		if err != nil {
-			return nil, fmt.Errorf("auth: JWKS discovery for issuer %q: %w", cfg.Issuer, err)
+	// Determine strategy.
+	strategy := cfg.Validation
+	if strategy == "" {
+		strategy = "auto"
+	}
+
+	a := &OAuth2Authenticator{
+		cfg:      cfg,
+		strategy: strategy,
+	}
+
+	// Build introspector when needed.
+	needsIntrospection := strategy == "introspection" ||
+		(strategy == "auto" && cfg.Introspection != nil)
+
+	if needsIntrospection {
+		icfg := *cfg.Introspection // copy
+
+		// Resolve introspection endpoint.
+		if icfg.Endpoint == "" {
+			// Discover from OIDC metadata.
+			_, introspectionEndpoint, err := discoverOIDCEndpoints(cfg.Issuer)
+			if err != nil {
+				if strategy == "introspection" {
+					return nil, fmt.Errorf("auth: introspection endpoint discovery for issuer %q: %w", cfg.Issuer, err)
+				}
+				// auto + discovery failure: fall back to JWT-only.
+			} else {
+				icfg.Endpoint = introspectionEndpoint
+			}
 		}
-		jwksURL = discovered
+
+		if icfg.Endpoint != "" {
+			if icfg.CacheTTL == 0 {
+				icfg.CacheTTL = 60 * time.Second
+			}
+			a.introspector = &tokenIntrospector{
+				cfg:    icfg,
+				client: &http.Client{Timeout: 5 * time.Second},
+				cache:  make(map[[32]byte]introspectionCacheEntry),
+				cm:     claimDefaults(cfg.Claims),
+			}
+		} else if strategy == "introspection" {
+			return nil, fmt.Errorf("auth: introspection endpoint is required (set introspection.endpoint or issuer for discovery)")
+		}
 	}
 
-	kfSet, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
-	if err != nil {
-		return nil, fmt.Errorf("auth: keyfunc init: %w", err)
+	// Build JWKS keyfunc when needed.
+	needsJWT := strategy == "jwt" || strategy == "auto"
+	if needsJWT {
+		jwksURL := cfg.JWKSURL
+		if jwksURL == "" {
+			discovered, _, err := discoverOIDCEndpoints(cfg.Issuer)
+			if err != nil {
+				return nil, fmt.Errorf("auth: JWKS discovery for issuer %q: %w", cfg.Issuer, err)
+			}
+			jwksURL = discovered
+		}
+
+		kfSet, err := keyfunc.NewDefaultCtx(ctx, []string{jwksURL})
+		if err != nil {
+			return nil, fmt.Errorf("auth: keyfunc init: %w", err)
+		}
+		a.kf = kfSet.Keyfunc
 	}
 
-	return &OAuth2Authenticator{
-		cfg: cfg,
-		kf:  kfSet.Keyfunc,
-	}, nil
+	return a, nil
 }
 
 // NewOAuth2AuthenticatorWithKeyfunc creates an OAuth2Authenticator with an
 // injected jwt.Keyfunc. Intended for unit tests that provide keys without HTTP.
+// Creates a JWT-strategy authenticator.
 func NewOAuth2AuthenticatorWithKeyfunc(cfg OAuth2Config, kf jwt.Keyfunc) *OAuth2Authenticator {
-	return &OAuth2Authenticator{cfg: cfg, kf: kf}
+	strategy := cfg.Validation
+	if strategy == "" {
+		strategy = "auto"
+	}
+	return &OAuth2Authenticator{cfg: cfg, kf: kf, strategy: strategy}
+}
+
+// NewIntrospectionAuthenticator creates an OAuth2Authenticator that validates
+// tokens exclusively via RFC 7662 token introspection. Intended for tests and
+// deployments that only use opaque tokens.
+func NewIntrospectionAuthenticator(cfg OAuth2Config, icfg IntrospectionConfig) *OAuth2Authenticator {
+	if icfg.CacheTTL == 0 {
+		icfg.CacheTTL = 60 * time.Second
+	}
+	intr := &tokenIntrospector{
+		cfg:    icfg,
+		client: &http.Client{Timeout: 5 * time.Second},
+		cache:  make(map[[32]byte]introspectionCacheEntry),
+		cm:     claimDefaults(cfg.Claims),
+	}
+	return &OAuth2Authenticator{
+		cfg:          cfg,
+		strategy:     "introspection",
+		introspector: intr,
+	}
+}
+
+// NewAutoAuthenticatorWithKeyfunc creates an OAuth2Authenticator with auto strategy,
+// accepting both a jwt.Keyfunc (for JWTs) and an IntrospectionConfig (for opaque tokens).
+// Intended for unit tests.
+func NewAutoAuthenticatorWithKeyfunc(cfg OAuth2Config, kf jwt.Keyfunc, icfg IntrospectionConfig) *OAuth2Authenticator {
+	if icfg.CacheTTL == 0 {
+		icfg.CacheTTL = 60 * time.Second
+	}
+	intr := &tokenIntrospector{
+		cfg:    icfg,
+		client: &http.Client{Timeout: 5 * time.Second},
+		cache:  make(map[[32]byte]introspectionCacheEntry),
+		cm:     claimDefaults(cfg.Claims),
+	}
+	return &OAuth2Authenticator{
+		cfg:          cfg,
+		kf:           kf,
+		strategy:     "auto",
+		introspector: intr,
+	}
 }
 
 // Authenticate extracts and validates a Bearer token from r.
@@ -146,6 +261,28 @@ func (a *OAuth2Authenticator) Authenticate(r *http.Request) (*Principal, error) 
 		return nil, err // ErrNoCredentials
 	}
 
+	switch a.strategy {
+	case "jwt":
+		return a.authenticateJWT(raw)
+	case "introspection":
+		if a.introspector == nil {
+			return nil, fmt.Errorf("auth: introspection strategy configured but no introspector available")
+		}
+		return a.introspector.introspect(r.Context(), raw)
+	default: // "auto"
+		if looksLikeJWT(raw) {
+			return a.authenticateJWT(raw)
+		}
+		if a.introspector != nil {
+			return a.introspector.introspect(r.Context(), raw)
+		}
+		// auto with no introspector → treat as JWT.
+		return a.authenticateJWT(raw)
+	}
+}
+
+// authenticateJWT validates raw as a signed JWT against the configured JWKS.
+func (a *OAuth2Authenticator) authenticateJWT(raw string) (*Principal, error) {
 	cfg := a.cfg
 	cm := claimDefaults(cfg.Claims)
 
@@ -177,6 +314,120 @@ func (a *OAuth2Authenticator) Authenticate(r *http.Request) (*Principal, error) 
 
 	p := buildPrincipal(rawClaims, cm)
 	p.Authenticated = true
+	return p, nil
+}
+
+// looksLikeJWT returns true if s has three dot-separated segments and the first
+// segment base64url-decodes to a JSON object containing an "alg" key.
+func looksLikeJWT(s string) bool {
+	parts := strings.Split(s, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	var header map[string]any
+	if err := json.Unmarshal(headerBytes, &header); err != nil {
+		return false
+	}
+	_, hasAlg := header["alg"]
+	return hasAlg
+}
+
+// ---------------------------------------------------------------------------
+// tokenIntrospector — RFC 7662
+// ---------------------------------------------------------------------------
+
+type tokenIntrospector struct {
+	cfg    IntrospectionConfig
+	client *http.Client
+	cm     ClaimMap
+	mu     sync.Mutex
+	cache  map[[32]byte]introspectionCacheEntry
+}
+
+type introspectionCacheEntry struct {
+	principal *Principal
+	expiresAt time.Time
+}
+
+// introspect calls the introspection endpoint for the given raw token.
+// It checks and updates the in-memory cache (keyed by sha256 of token).
+func (ti *tokenIntrospector) introspect(ctx context.Context, token string) (*Principal, error) {
+	key := sha256.Sum256([]byte(token))
+
+	// Check cache.
+	ti.mu.Lock()
+	if entry, ok := ti.cache[key]; ok && time.Now().Before(entry.expiresAt) {
+		p := entry.principal
+		ti.mu.Unlock()
+		return p, nil
+	}
+	ti.mu.Unlock()
+
+	// Call introspection endpoint.
+	form := url.Values{}
+	form.Set("token", token)
+	form.Set("token_type_hint", "access_token")
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, ti.cfg.Endpoint,
+		strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("auth: introspection request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(ti.cfg.ClientID, ti.cfg.ClientSecret)
+
+	resp, err := ti.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("auth: introspection request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, fmt.Errorf("auth: introspection endpoint returned status %d", resp.StatusCode)
+	}
+
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return nil, fmt.Errorf("auth: decoding introspection response: %w", err)
+	}
+
+	// active must be boolean true.
+	active, _ := body["active"].(bool)
+	if !active {
+		return nil, fmt.Errorf("%w: token is not active", ErrInvalidToken)
+	}
+
+	p := buildPrincipal(body, ti.cm)
+	p.Authenticated = true
+
+	// Compute cache expiry.
+	ttl := ti.cfg.CacheTTL
+	if ttl == 0 {
+		ttl = 60 * time.Second
+	}
+	expiry := time.Now().Add(ttl)
+	if expRaw, ok := body["exp"]; ok {
+		switch expV := expRaw.(type) {
+		case float64:
+			tokenExp := time.Unix(int64(expV), 0)
+			remaining := time.Until(tokenExp)
+			if remaining <= 0 {
+				remaining = 0
+			}
+			if remaining < ttl {
+				expiry = time.Now().Add(remaining)
+			}
+		}
+	}
+
+	ti.mu.Lock()
+	ti.cache[key] = introspectionCacheEntry{principal: p, expiresAt: expiry}
+	ti.mu.Unlock()
+
 	return p, nil
 }
 
@@ -374,28 +625,39 @@ func splitTokens(s string) []string {
 	return parts
 }
 
-// discoverJWKSURL fetches the OpenID Connect metadata for issuer and returns
-// the jwks_uri field.
-func discoverJWKSURL(issuer string) (string, error) {
+// oidcMeta holds the fields we care about from an OpenID Connect metadata document.
+type oidcMeta struct {
+	JWKSURI               string `json:"jwks_uri"`
+	IntrospectionEndpoint string `json:"introspection_endpoint"`
+}
+
+// discoverOIDCEndpoints fetches the OpenID Connect metadata for issuer and returns
+// the jwks_uri and introspection_endpoint fields.
+func discoverOIDCEndpoints(issuer string) (jwksURI, introspectionEndpoint string, err error) {
 	wellKnown := strings.TrimRight(issuer, "/") + "/.well-known/openid-configuration"
 	resp, err := http.Get(wellKnown) //nolint:noctx // discovery is called only at startup
 	if err != nil {
-		return "", fmt.Errorf("GET %s: %w", wellKnown, err)
+		return "", "", fmt.Errorf("GET %s: %w", wellKnown, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("GET %s: unexpected status %d", wellKnown, resp.StatusCode)
+		return "", "", fmt.Errorf("GET %s: unexpected status %d", wellKnown, resp.StatusCode)
 	}
 
-	var meta struct {
-		JWKSURI string `json:"jwks_uri"`
-	}
+	var meta oidcMeta
 	if err := json.NewDecoder(resp.Body).Decode(&meta); err != nil {
-		return "", fmt.Errorf("decode OpenID metadata: %w", err)
+		return "", "", fmt.Errorf("decode OpenID metadata: %w", err)
 	}
 	if meta.JWKSURI == "" {
-		return "", fmt.Errorf("openid-configuration at %s has no jwks_uri", wellKnown)
+		return "", "", fmt.Errorf("openid-configuration at %s has no jwks_uri", wellKnown)
 	}
-	return meta.JWKSURI, nil
+	return meta.JWKSURI, meta.IntrospectionEndpoint, nil
+}
+
+// discoverJWKSURL fetches the OpenID Connect metadata for issuer and returns
+// the jwks_uri field. Kept for backward compatibility.
+func discoverJWKSURL(issuer string) (string, error) {
+	jwksURI, _, err := discoverOIDCEndpoints(issuer)
+	return jwksURI, err
 }

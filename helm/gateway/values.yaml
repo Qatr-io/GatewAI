@@ -45,6 +45,11 @@ server:
 #       issuer: "https://idp.example.com/realm"
 #       jwksUrl: ""                # optional explicit override
 #       audiences: ["gatewai"]
+#       validation: auto           # auto | jwt | introspection
+#       introspection:             # for opaque tokens (RFC 7662) + live revocation
+#         clientId: "${OAUTH_CLIENT_ID}"
+#         clientSecret: "${OAUTH_CLIENT_SECRET}"
+#         cacheTtl: 60s
 #       claims:
 #         consumer: "preferred_username"
 #         scopes: "scope"

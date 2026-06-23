@@ -9,6 +9,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -521,5 +522,302 @@ func TestHeaderAuth_GroupsSplitVariants(t *testing.T) {
 				t.Errorf("header=%q: Groups[%d]=%q, want %q", tc.header, i, p.Groups[i], g)
 			}
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Token introspection tests
+// ---------------------------------------------------------------------------
+
+// introspectionCfg builds an IntrospectionConfig pointed at endpoint.
+func introspectionCfg(endpoint string) auth.IntrospectionConfig {
+	return auth.IntrospectionConfig{
+		Endpoint:     endpoint,
+		ClientID:     "clientid",
+		ClientSecret: "secret",
+		CacheTTL:     60 * time.Second,
+	}
+}
+
+// defaultIntrospectionCfg returns an auth.OAuth2Config suitable for introspection tests.
+func defaultOAuth2Cfg() auth.OAuth2Config {
+	return auth.OAuth2Config{
+		Issuer:    testIssuer,
+		Audiences: []string{"my-gateway"},
+		Claims: auth.ClaimMap{
+			Consumer: "preferred_username",
+			Groups:   "groups",
+		},
+	}
+}
+
+// TestIntrospection_ActiveToken verifies that an active token is accepted and
+// the Principal fields are populated from the introspection response.
+// It also checks that HTTP Basic auth is sent correctly.
+func TestIntrospection_ActiveToken(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"active":             true,
+			"sub":                "u-1",
+			"scope":              "read write",
+			"groups":             []string{"g1"},
+			"preferred_username": "alice",
+			"exp":                float64(time.Now().Add(time.Hour).Unix()),
+		})
+	}))
+	defer srv.Close()
+
+	cfg := defaultOAuth2Cfg()
+	a := auth.NewIntrospectionAuthenticator(cfg, introspectionCfg(srv.URL))
+
+	p, err := a.Authenticate(requestWithBearer("opaque-token-123"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p == nil {
+		t.Fatal("expected non-nil Principal")
+	}
+	if !p.Authenticated {
+		t.Error("Authenticated should be true")
+	}
+	if p.Subject != "u-1" {
+		t.Errorf("Subject = %q, want %q", p.Subject, "u-1")
+	}
+	if p.Consumer != "alice" {
+		t.Errorf("Consumer = %q, want %q", p.Consumer, "alice")
+	}
+	if len(p.Scopes) != 2 {
+		t.Errorf("Scopes = %v, want [read write]", p.Scopes)
+	}
+	if len(p.Groups) != 1 || p.Groups[0] != "g1" {
+		t.Errorf("Groups = %v, want [g1]", p.Groups)
+	}
+
+	// Verify Basic auth header: "Basic base64(clientid:secret)".
+	if gotAuth == "" {
+		t.Fatal("no Authorization header sent to introspection endpoint")
+	}
+	const basicPrefix = "Basic "
+	if len(gotAuth) <= len(basicPrefix) {
+		t.Fatalf("Authorization header too short: %q", gotAuth)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(gotAuth[len(basicPrefix):])
+	if err != nil {
+		t.Fatalf("decoding Basic auth: %v", err)
+	}
+	if string(decoded) != "clientid:secret" {
+		t.Errorf("Basic auth = %q, want %q", string(decoded), "clientid:secret")
+	}
+}
+
+// TestIntrospection_InactiveToken verifies that an inactive token returns ErrInvalidToken.
+func TestIntrospection_InactiveToken(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"active": false})
+	}))
+	defer srv.Close()
+
+	a := auth.NewIntrospectionAuthenticator(defaultOAuth2Cfg(), introspectionCfg(srv.URL))
+	_, err := a.Authenticate(requestWithBearer("inactive-token"))
+	if !errors.Is(err, auth.ErrInvalidToken) {
+		t.Errorf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// TestIntrospection_NonTwoXX verifies that a non-2xx response causes a non-nil
+// error that is NOT ErrInvalidToken (fail-closed behaviour).
+func TestIntrospection_NonTwoXX(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	a := auth.NewIntrospectionAuthenticator(defaultOAuth2Cfg(), introspectionCfg(srv.URL))
+	_, err := a.Authenticate(requestWithBearer("some-token"))
+	if err == nil {
+		t.Fatal("expected non-nil error for HTTP 500")
+	}
+	if errors.Is(err, auth.ErrInvalidToken) {
+		t.Error("error should NOT be ErrInvalidToken for server errors (fail-closed)")
+	}
+}
+
+// TestIntrospection_Unreachable verifies that a transport error causes a non-nil
+// error that is NOT ErrInvalidToken.
+func TestIntrospection_Unreachable(t *testing.T) {
+	// Start a server and immediately close it so the endpoint is unreachable.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	endpoint := srv.URL
+	srv.Close()
+
+	a := auth.NewIntrospectionAuthenticator(defaultOAuth2Cfg(), introspectionCfg(endpoint))
+	_, err := a.Authenticate(requestWithBearer("any-token"))
+	if err == nil {
+		t.Fatal("expected non-nil error for unreachable server")
+	}
+	if errors.Is(err, auth.ErrInvalidToken) {
+		t.Error("error should NOT be ErrInvalidToken for transport errors (fail-closed)")
+	}
+}
+
+// TestIntrospection_Caching verifies that the introspection endpoint is only
+// called once for repeated requests with the same token.
+func TestIntrospection_Caching(t *testing.T) {
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"sub":    "u-cached",
+			"exp":    float64(time.Now().Add(time.Hour).Unix()),
+		})
+	}))
+	defer srv.Close()
+
+	a := auth.NewIntrospectionAuthenticator(defaultOAuth2Cfg(), introspectionCfg(srv.URL))
+	tok := "cached-opaque-token"
+
+	p1, err := a.Authenticate(requestWithBearer(tok))
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	p2, err := a.Authenticate(requestWithBearer(tok))
+	if err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+
+	if callCount.Load() != 1 {
+		t.Errorf("introspection endpoint called %d times, want exactly 1 (caching)", callCount.Load())
+	}
+	if p1.Subject != p2.Subject {
+		t.Errorf("cached Principal differs: %q vs %q", p1.Subject, p2.Subject)
+	}
+}
+
+// TestIntrospection_CacheExpiry verifies that an entry whose exp is in the past
+// is not served from cache — the endpoint is called again.
+func TestIntrospection_CacheExpiry(t *testing.T) {
+	var callCount atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// exp = 1 second ago → cache entry should expire immediately.
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"sub":    "u-expired",
+			"exp":    float64(time.Now().Add(-time.Second).Unix()),
+		})
+	}))
+	defer srv.Close()
+
+	icfg := introspectionCfg(srv.URL)
+	icfg.CacheTTL = 60 * time.Second // large TTL, but token exp overrides it
+
+	a := auth.NewIntrospectionAuthenticator(defaultOAuth2Cfg(), icfg)
+	tok := "expiring-opaque-token"
+
+	_, err := a.Authenticate(requestWithBearer(tok))
+	if err != nil {
+		t.Fatalf("first call: unexpected error: %v", err)
+	}
+	_, err = a.Authenticate(requestWithBearer(tok))
+	if err != nil {
+		t.Fatalf("second call: unexpected error: %v", err)
+	}
+
+	if callCount.Load() != 2 {
+		t.Errorf("introspection endpoint called %d times, want 2 (expired cache re-fetches)", callCount.Load())
+	}
+}
+
+// TestAuto_JWTShapedTakesJWTPath verifies that in auto strategy, a well-formed JWT
+// is validated via the JWT path (not introspection).
+func TestAuto_JWTShapedTakesJWTPath(t *testing.T) {
+	priv := generateRSAKey(t)
+	jwksJSON := makeJWKSJSON(t, testKID, priv)
+	kf := makeKeyfunc(t, jwksJSON)
+
+	var introspectionCalled atomic.Bool
+	intrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		introspectionCalled.Store(true)
+		http.Error(w, "should not be called", http.StatusInternalServerError)
+	}))
+	defer intrSrv.Close()
+
+	cfg := auth.OAuth2Config{
+		Issuer:    testIssuer,
+		Audiences: []string{"my-gateway"},
+		Claims:    auth.ClaimMap{Consumer: "preferred_username"},
+	}
+	icfg := auth.IntrospectionConfig{
+		Endpoint:     intrSrv.URL,
+		ClientID:     "clientid",
+		ClientSecret: "secret",
+		CacheTTL:     60 * time.Second,
+	}
+	a := auth.NewAutoAuthenticatorWithKeyfunc(cfg, kf, icfg)
+
+	claims := defaultClaims(testIssuer, []string{"my-gateway"})
+	raw := mintToken(t, testKID, priv, claims)
+
+	p, err := a.Authenticate(requestWithBearer(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Subject != "u-1" {
+		t.Errorf("Subject = %q, want %q", p.Subject, "u-1")
+	}
+	if introspectionCalled.Load() {
+		t.Error("introspection endpoint should NOT have been called for a JWT-shaped token")
+	}
+}
+
+// TestAuto_OpaqueTokenTakesIntrospectionPath verifies that in auto strategy,
+// a token that is not JWT-shaped is routed to the introspection endpoint.
+func TestAuto_OpaqueTokenTakesIntrospectionPath(t *testing.T) {
+	priv := generateRSAKey(t)
+	jwksJSON := makeJWKSJSON(t, testKID, priv)
+	kf := makeKeyfunc(t, jwksJSON)
+
+	var introspectionCalled atomic.Bool
+	intrSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		introspectionCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{
+			"active": true,
+			"sub":    "u-opaque",
+			"exp":    float64(time.Now().Add(time.Hour).Unix()),
+		})
+	}))
+	defer intrSrv.Close()
+
+	cfg := auth.OAuth2Config{
+		Issuer:    testIssuer,
+		Audiences: []string{"my-gateway"},
+		Claims:    auth.ClaimMap{},
+	}
+	icfg := auth.IntrospectionConfig{
+		Endpoint:     intrSrv.URL,
+		ClientID:     "clientid",
+		ClientSecret: "secret",
+		CacheTTL:     60 * time.Second,
+	}
+	a := auth.NewAutoAuthenticatorWithKeyfunc(cfg, kf, icfg)
+
+	// Opaque token: not 3-dot-separated.
+	p, err := a.Authenticate(requestWithBearer("opaque-random-token-xyz"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if p.Subject != "u-opaque" {
+		t.Errorf("Subject = %q, want %q", p.Subject, "u-opaque")
+	}
+	if !introspectionCalled.Load() {
+		t.Error("introspection endpoint should have been called for opaque token")
 	}
 }

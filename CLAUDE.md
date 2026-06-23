@@ -189,7 +189,7 @@ Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-posi
 - **`oauth2`** — validates OAuth2 **access tokens** (resource-server model, *not* OIDC id-tokens): JWT signature via cached JWKS (issuer discovery), `iss`/`aud`/`exp` checks, configurable claim mapping (`scope`/`groups`/`roles`/`consumer`). **Fails closed** (`401` invalid/missing, `503` if JWKS unreachable). Strips the client bearer before proxying. Resolves a `Principal{Subject,Consumer,Groups,Roles,Scopes,UserType}` into request context and bridges consumer/user_type into the headers downstream rate-limiting/ownership already read (after stripping inbound values — anti-spoof).
 - **`proxy`** — trusts identity headers set by an upstream reverse proxy, now incl. groups/roles.
 
-`/health` `/metrics` `/docs` `/openapi.yaml` are exempt. Auth config changes require a restart (not hot-reloaded). Deps: `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` (no OIDC lib — access-token validation only). Planned follow-ups: opaque-token introspection (RFC 7662), default-deny model/role access control, and group/role-scoped quotas.
+`/health` `/metrics` `/docs` `/openapi.yaml` are exempt. Auth config changes require a restart (not hot-reloaded). Deps: `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` (no OIDC lib — access-token validation only). Token format via `auth.oauth2.validation` (`auto` default | `jwt` | `introspection`): JWTs are verified locally via JWKS; opaque tokens via RFC 7662 **introspection** (`auth.oauth2.introspection` — client creds, result cache capped by token exp, gives live revocation); `auto` picks per token shape. See **Access control** below for model/role authz and per-group quotas.
 
 ### Access control
 
