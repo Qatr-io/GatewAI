@@ -90,7 +90,14 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	}
 	log.Info("processing job", "input_ref", job.InputRef)
 
-	body, size, contentType, err := p.s3.GetObject(ctx, job.InputRef)
+	s3Ctx, s3Span := p.tracer.Start(ctx, "relay.s3.get_input",
+		trace.WithAttributes(attribute.String("s3.key", job.InputRef)))
+	body, size, contentType, err := p.s3.GetObject(s3Ctx, job.InputRef)
+	if err != nil {
+		s3Span.RecordError(err)
+		s3Span.SetStatus(codes.Error, err.Error())
+	}
+	s3Span.End()
 	if err != nil {
 		if storage.IsNotFound(err) {
 			log.Error("input file not found, publishing permanent failure", "input_ref", job.InputRef)
@@ -115,7 +122,17 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		}
 		// Retry inference once immediately: re-download for a fresh stream.
 		log.Warn("inference attempt failed, retrying immediately", "error", inferErr)
-		body2, size2, ct2, getErr := p.s3.GetObject(context.WithoutCancel(ctx), job.InputRef)
+		s3RetryCtx, s3RetrySpan := p.tracer.Start(ctx, "relay.s3.get_input",
+			trace.WithAttributes(
+				attribute.String("s3.key", job.InputRef),
+				attribute.Bool("retry", true),
+			))
+		body2, size2, ct2, getErr := p.s3.GetObject(context.WithoutCancel(s3RetryCtx), job.InputRef)
+		if getErr != nil {
+			s3RetrySpan.RecordError(getErr)
+			s3RetrySpan.SetStatus(codes.Error, getErr.Error())
+		}
+		s3RetrySpan.End()
 		if getErr != nil {
 			if storage.IsNotFound(getErr) {
 				log.Error("input file not found on inference retry, publishing permanent failure", "input_ref", job.InputRef)
@@ -152,12 +169,20 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	}
 
 	processingTime := extractProcessingTime(result)
-	if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+	pubCtx, pubSpan := p.tracer.Start(ctx, "relay.redis.publish_result",
+		trace.WithAttributes(
+			attribute.String("job_id", job.ID),
+			attribute.String("status", string(model.JobStatusCompleted)),
+		))
+	if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+		pubSpan.RecordError(err)
 		log.Warn("publish result attempt failed, retrying immediately", "error", err)
-		if err := p.publisher.PublishResult(ctx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+		if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+			pubSpan.RecordError(err)
 			log.Error("failed to publish result after retry", "error", err)
 		}
 	}
+	pubSpan.End()
 
 	metrics.JobsTotal.WithLabelValues(job.ServiceType, "completed").Inc()
 	log.Info("job completed", "result_ref", resultKey)

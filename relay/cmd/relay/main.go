@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/relay/internal/adapter"
 	"gatewai/relay/internal/config"
@@ -166,11 +170,18 @@ func main() {
 		}
 	}()
 
-	job, err := s.GetJob(ctx, jobID)
+	relayTracer := otel.Tracer("gatewai/relay")
+	getJobCtx, getJobSpan := relayTracer.Start(ctx, "relay.redis.get_job",
+		trace.WithAttributes(attribute.String("job_id", jobID)))
+	job, err := s.GetJob(getJobCtx, jobID)
 	if err != nil {
+		getJobSpan.RecordError(err)
+		getJobSpan.SetStatus(codes.Error, err.Error())
+		getJobSpan.End()
 		slog.Error("failed to get job from Redis", "job_id", jobID, "error", err)
 		os.Exit(1)
 	}
+	getJobSpan.End()
 
 	// If the gateway cancelled the job between our pop and this read, stop now.
 	if job.Status == model.JobStatusCancelled {
