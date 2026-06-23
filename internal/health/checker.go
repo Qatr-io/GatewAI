@@ -163,7 +163,7 @@ func (c *Checker) runOnce(ctx context.Context) {
 	}
 }
 
-// probe makes a HEAD request to the backend's health endpoint.
+// probe makes an HTTP request to the backend's health endpoint.
 // Returns "up" for 2xx–4xx, "down" for 5xx or connection errors.
 func (c *Checker) probe(ctx context.Context, d *service.Def) string {
 	timeout := c.defaultTimeout
@@ -176,10 +176,15 @@ func (c *Checker) probe(ctx context.Context, d *service.Def) string {
 	}
 	probeURL := strings.TrimSuffix(d.InferenceURL, "/") + "/" + strings.TrimPrefix(healthPath, "/")
 
+	method := d.HealthCheck.Method
+	if method == "" {
+		method = http.MethodGet
+	}
+
 	probeCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(probeCtx, http.MethodHead, probeURL, nil)
+	req, err := http.NewRequestWithContext(probeCtx, method, probeURL, nil)
 	if err != nil {
 		return "down"
 	}

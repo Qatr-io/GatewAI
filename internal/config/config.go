@@ -144,6 +144,9 @@ type ServiceHealthConfig struct {
 	Timeout string `yaml:"timeout"`
 	// Path is the HTTP path probed on the backend. Default: "/health".
 	Path string `yaml:"path"`
+	// Method is the HTTP method used for health probes. Default: "GET".
+	// Use "HEAD" for backends that return no body but support HEAD on their health endpoint.
+	Method string `yaml:"method"`
 }
 
 func (h ServiceHealthConfig) TimeoutDuration() time.Duration { return parseDuration(h.Timeout) }
