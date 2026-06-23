@@ -120,7 +120,7 @@ func buildRouter(
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(handler.OtelMiddleware(tracer, "/health", "/metrics"))
+	r.Use(handler.OtelMiddleware(tracer, cfg.Otel.Traces.IgnorePaths...))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
 	if authenticator != nil {

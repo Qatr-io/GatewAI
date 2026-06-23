@@ -28,6 +28,10 @@ type TracesConfig struct {
 	Endpoint    string            `yaml:"endpoint"`     // overrides exporter.endpoint
 	Headers     map[string]string `yaml:"headers"`      // merged with exporter.headers
 	SampleRatio float64           `yaml:"sample_ratio"` // 0.0–1.0; default 1.0
+	// IgnorePaths lists path prefixes that are excluded from tracing.
+	// A request is skipped when its path equals an entry or starts with entry + "/".
+	// Defaults to ["/health", "/metrics"] when unset.
+	IgnorePaths []string `yaml:"ignore_paths"`
 }
 
 // MetricsConfig configures OTLP metrics push.
