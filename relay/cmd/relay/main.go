@@ -181,8 +181,6 @@ func main() {
 		return
 	}
 
-	slog.Info("processing job", "job_id", jobID, "service_type", job.ServiceType)
-
 	if err := proc.Process(jobCtx, job); err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("job cancelled by gateway, removing from processing", "job_id", jobID)

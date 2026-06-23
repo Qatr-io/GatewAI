@@ -85,6 +85,9 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	defer span.End()
 
 	log := slog.With("job_id", job.ID, "service_type", job.ServiceType)
+	if sc := span.SpanContext(); sc.IsValid() {
+		log = log.With("trace_id", sc.TraceID().String(), "span_id", sc.SpanID().String())
+	}
 	log.Info("processing job", "input_ref", job.InputRef)
 
 	body, size, contentType, err := p.s3.GetObject(ctx, job.InputRef)
