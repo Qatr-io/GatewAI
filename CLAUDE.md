@@ -195,6 +195,8 @@ Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-posi
 
 `internal/authz/`: optional default-deny model/service access control, enabled by the top-level `policies` block (requires `auth.mode` — it needs a `Principal`). `policies.rules` are allow-rules: a rule grants a request when its `match` intersects the caller (any-of within each non-empty field of `groups`/`roles`/`scopes`/`consumers`/`user_types`; empty match = everyone) AND the requested model matches the rule's `allow_models` globs (and `allow_service_types` if set). No granting rule → `403`. `default: allow` disables enforcement. Enforced on sync (`/v1/*`) and async (`/jobs`) after routing resolves the model, reading the `Principal` from context. Metric: `gatewai_authz_decisions_total{service_type, model, decision}`. Hot-reloadable; absent `policies` = no enforcement.
 
+A rule may also carry an optional **`limits`** block (a `RateLimitConfig`: `rate`/`period`, `token_rate`/`token_period`) — a **per-group quota** applied per-member (keyed by consumer) on the sync LLM path. The matched rule's limits are stashed in the request context (`ratelimit.WithPolicyLimits`) and enforced by the existing limiter (`rlp:`/`trlp:` keys), coexisting with `rate_limits`/`token_limits` (both must pass). Anonymous callers are skipped. (Per-group concurrent/processing-time and async enforcement are follow-ups.)
+
 ### Service headers
 
 `services[].headers`: static headers injected on every outgoing request to the backend. Values support `${VAR}` expansion. Config headers override client headers with the same name.

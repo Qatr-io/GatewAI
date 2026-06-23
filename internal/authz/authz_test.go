@@ -313,3 +313,114 @@ func TestEngine_NoRules(t *testing.T) {
 		t.Error("expected denied for nil principal when no rules configured")
 	}
 }
+
+// ── Evaluate tests ────────────────────────────────────────────────────────────
+
+// TestEngine_Evaluate_ReturnsLimitsFromGrantingRule verifies that Evaluate
+// surfaces the granting rule's Limits block (or nil when absent).
+func TestEngine_Evaluate_ReturnsLimitsFromGrantingRule(t *testing.T) {
+	limits := &config.RateLimitConfig{Rate: 10, Period: "1m", TokenRate: 5000, TokenPeriod: "1h"}
+
+	engine := authz.New(config.PoliciesConfig{
+		Default: "deny",
+		Rules: []config.PolicyRule{
+			// Rule 0: group "limited" → model "chat-*", carries limits.
+			{
+				Match:       config.PolicyMatch{Groups: []string{"limited"}},
+				AllowModels: []string{"chat-*"},
+				Limits:      limits,
+			},
+			// Rule 1: group "open" → model "chat-*", no limits block.
+			{
+				Match:       config.PolicyMatch{Groups: []string{"open"}},
+				AllowModels: []string{"chat-*"},
+				Limits:      nil,
+			},
+		},
+	})
+
+	t.Run("granting rule with limits returns those limits", func(t *testing.T) {
+		p := principal([]string{"limited"}, nil, nil, "alice", "user")
+		d := engine.Evaluate(p, "llm", "chat-fast")
+		if !d.Allowed {
+			t.Fatal("expected allowed")
+		}
+		if d.Limits == nil {
+			t.Fatal("expected non-nil Limits")
+		}
+		if d.Limits.Rate != 10 {
+			t.Errorf("expected Rate=10, got %d", d.Limits.Rate)
+		}
+		if d.Limits.TokenRate != 5000 {
+			t.Errorf("expected TokenRate=5000, got %d", d.Limits.TokenRate)
+		}
+	})
+
+	t.Run("granting rule without limits returns nil Limits", func(t *testing.T) {
+		p := principal([]string{"open"}, nil, nil, "bob", "user")
+		d := engine.Evaluate(p, "llm", "chat-fast")
+		if !d.Allowed {
+			t.Fatal("expected allowed")
+		}
+		if d.Limits != nil {
+			t.Errorf("expected nil Limits for rule without limits block, got %+v", d.Limits)
+		}
+	})
+
+	t.Run("no granting rule returns Allowed=false", func(t *testing.T) {
+		p := principal([]string{"unknown"}, nil, nil, "carol", "user")
+		d := engine.Evaluate(p, "llm", "chat-fast")
+		if d.Allowed {
+			t.Fatal("expected denied")
+		}
+		if d.Limits != nil {
+			t.Errorf("expected nil Limits on denied decision, got %+v", d.Limits)
+		}
+	})
+}
+
+// TestEngine_Evaluate_DefaultAllow_NilLimits verifies that Default="allow"
+// returns Allowed=true with nil Limits.
+func TestEngine_Evaluate_DefaultAllow_NilLimits(t *testing.T) {
+	engine := authz.New(config.PoliciesConfig{Default: "allow"})
+	p := principal(nil, nil, nil, "anyone", "user")
+	d := engine.Evaluate(p, "llm", "any-model")
+	if !d.Allowed {
+		t.Fatal("default allow: expected Allowed=true")
+	}
+	if d.Limits != nil {
+		t.Errorf("default allow: expected nil Limits, got %+v", d.Limits)
+	}
+}
+
+// TestEngine_Evaluate_FirstMatchingRuleWins verifies that Evaluate returns the
+// FIRST granting rule's limits even when a later rule also matches.
+func TestEngine_Evaluate_FirstMatchingRuleWins(t *testing.T) {
+	firstLimits := &config.RateLimitConfig{Rate: 5, Period: "1m"}
+	secondLimits := &config.RateLimitConfig{Rate: 100, Period: "1h"}
+
+	engine := authz.New(config.PoliciesConfig{
+		Default: "deny",
+		Rules: []config.PolicyRule{
+			{
+				Match:       config.PolicyMatch{Groups: []string{"g"}},
+				AllowModels: []string{"m"},
+				Limits:      firstLimits,
+			},
+			{
+				Match:       config.PolicyMatch{Groups: []string{"g"}},
+				AllowModels: []string{"m"},
+				Limits:      secondLimits,
+			},
+		},
+	})
+
+	p := principal([]string{"g"}, nil, nil, "u", "user")
+	d := engine.Evaluate(p, "svc", "m")
+	if !d.Allowed {
+		t.Fatal("expected allowed")
+	}
+	if d.Limits == nil || d.Limits.Rate != 5 {
+		t.Errorf("expected first rule's Limits (Rate=5), got %+v", d.Limits)
+	}
+}

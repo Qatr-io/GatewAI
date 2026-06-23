@@ -23,6 +23,7 @@ type compiledRule struct {
 	match             config.PolicyMatch
 	allowModels       []string
 	allowServiceTypes []string
+	limits            *config.RateLimitConfig
 }
 
 // Engine evaluates access policies. Build with New; a nil *PoliciesConfig means
@@ -44,9 +45,39 @@ func New(cfg config.PoliciesConfig) *Engine {
 			match:             r.Match,
 			allowModels:       r.AllowModels,
 			allowServiceTypes: r.AllowServiceTypes,
+			limits:            r.Limits,
 		})
 	}
 	return e
+}
+
+// Decision is the result of an Evaluate call. It carries both the access
+// verdict and the optional rate/token limits from the granting rule.
+type Decision struct {
+	Allowed bool
+	// Limits holds the granting rule's limits block, or nil when the rule has
+	// none, or when access is granted by default (Default="allow").
+	Limits *config.RateLimitConfig
+}
+
+// Evaluate reports whether the principal p may use (serviceType, model) and
+// returns the granting rule's Limits. p may be nil (anonymous).
+//
+// Semantics:
+//   - If Default == "allow" → {Allowed:true, Limits:nil}.
+//   - Otherwise (default deny): iterate rules in order; return the FIRST
+//     granting rule's Limits alongside Allowed=true.
+//   - No granting rule found → {Allowed:false}.
+func (e *Engine) Evaluate(p *auth.Principal, serviceType, model string) Decision {
+	if e.defaultAllow {
+		return Decision{Allowed: true}
+	}
+	for _, rule := range e.rules {
+		if ruleGrantsRequest(p, rule, serviceType, model) {
+			return Decision{Allowed: true, Limits: rule.limits}
+		}
+	}
+	return Decision{Allowed: false}
 }
 
 // Allowed reports whether the principal p may use (serviceType, model).
@@ -59,15 +90,7 @@ func New(cfg config.PoliciesConfig) *Engine {
 //     AND (AllowServiceTypes is empty OR serviceType matches one of its globs).
 //   - AllowModels empty → the rule grants nothing (must list "*" to allow all).
 func (e *Engine) Allowed(p *auth.Principal, serviceType, model string) bool {
-	if e.defaultAllow {
-		return true
-	}
-	for _, rule := range e.rules {
-		if ruleGrantsRequest(p, rule, serviceType, model) {
-			return true
-		}
-	}
-	return false
+	return e.Evaluate(p, serviceType, model).Allowed
 }
 
 // ruleGrantsRequest returns true when the principal satisfies the identity

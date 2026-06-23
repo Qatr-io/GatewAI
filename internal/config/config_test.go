@@ -978,3 +978,153 @@ policies:
 		t.Errorf("policies.default=allow without auth.mode should be valid, got: %v", err)
 	}
 }
+
+// ── Policy rule limits tests ──────────────────────────────────────────────────
+
+func TestLoad_PolicyRule_WithLimits_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - premium-users
+      allow_models:
+        - "*"
+      limits:
+        rate: 50
+        period: 1m
+        token_rate: 100000
+        token_period: 1h
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies == nil || len(cfg.Policies.Rules) != 1 {
+		t.Fatal("expected one policy rule")
+	}
+	rule := cfg.Policies.Rules[0]
+	if rule.Limits == nil {
+		t.Fatal("expected Limits to be non-nil")
+	}
+	if rule.Limits.Rate != 50 {
+		t.Errorf("expected Rate=50, got %d", rule.Limits.Rate)
+	}
+	if rule.Limits.Period != "1m" {
+		t.Errorf("expected Period=1m, got %q", rule.Limits.Period)
+	}
+	if rule.Limits.TokenRate != 100000 {
+		t.Errorf("expected TokenRate=100000, got %d", rule.Limits.TokenRate)
+	}
+	if rule.Limits.TokenPeriod != "1h" {
+		t.Errorf("expected TokenPeriod=1h, got %q", rule.Limits.TokenPeriod)
+	}
+}
+
+func TestLoad_PolicyRule_LimitsTokenRateWithoutPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - users
+      allow_models:
+        - "*"
+      limits:
+        token_rate: 5000
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policy rule limits.token_rate is set without token_period")
+	}
+}
+
+func TestLoad_PolicyRule_LimitsRateWithoutPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - users
+      allow_models:
+        - "*"
+      limits:
+        rate: 20
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policy rule limits.rate is set without period")
+	}
+}
+
+func TestLoad_PolicyRule_NilLimits_OK(t *testing.T) {
+	// A rule with no limits block is valid.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        roles:
+          - analyst
+      allow_models:
+        - "*"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("rule without limits should be valid, got: %v", err)
+	}
+	if cfg.Policies.Rules[0].Limits != nil {
+		t.Errorf("expected Limits=nil for rule without limits block")
+	}
+}

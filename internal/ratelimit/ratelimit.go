@@ -20,6 +20,16 @@
 // the specific user type has no configured limit.
 //
 // Redis key format: rl:{consumer}:{service_type}:{user_type}
+//
+// Policy-level limits (per-member, from the matched authz rule) are layered on
+// top via WithPolicyLimits / policyLimitsFromContext. Keys use the prefix
+// "rlp:" (request rate) and "trlp:" (token budget) keyed per consumer:
+//
+//	rlp:{consumer}:{service_type}
+//	trlp:{consumer}:{service_type}
+//
+// Anonymous consumers (no consumer header) are always allowed by the policy
+// layer (cannot enforce per-member limits without a stable identity).
 package ratelimit
 
 import (
@@ -34,6 +44,22 @@ import (
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/metrics"
 )
+
+// policyLimitsKey is the unexported context key type for policy limits.
+type policyLimitsKey struct{}
+
+// WithPolicyLimits attaches the matched policy rule's RateLimitConfig to ctx.
+// Pass nil to clear any previously stored value (treated as no policy limits).
+func WithPolicyLimits(ctx context.Context, cfg *config.RateLimitConfig) context.Context {
+	return context.WithValue(ctx, policyLimitsKey{}, cfg)
+}
+
+// policyLimitsFromContext retrieves the RateLimitConfig stored by
+// WithPolicyLimits. Returns nil when no value is present.
+func policyLimitsFromContext(ctx context.Context) *config.RateLimitConfig {
+	v, _ := ctx.Value(policyLimitsKey{}).(*config.RateLimitConfig)
+	return v
+}
 
 // CheckResult holds the outcome of a rate-limit check together with the
 // metadata needed to set X-RateLimit-* response headers.
@@ -229,32 +255,91 @@ func (l *Limiter) resolveIdentity(r *http.Request, serviceType string) (consumer
 }
 
 // Check evaluates the rate limit for the given request and service type.
+// Both the service-level rate_limits AND any policy limits from ctx must pass.
 func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
 	consumer, userType, rlCfg := l.resolveIdentity(r, serviceType)
 
-	// No config for this service type → always allowed.
+	// svcResult holds the outcome of the service-level check (may be allowed/no-op
+	// when no rate_limits are configured for this service type).
+	var svcResult CheckResult
+
 	if _, ok := l.limits[serviceType]; !ok {
-		return CheckResult{Allowed: true}, nil
-	}
-
-	// rate: 0 is the sentinel for "no limit" — allow without touching Redis.
-	if rlCfg.Rate == 0 {
+		// No config for this service type → service check always allowed.
+		svcResult = CheckResult{Allowed: true}
+	} else if rlCfg.Rate == 0 {
+		// rate: 0 is the sentinel for "no limit" — allow without touching Redis.
 		metrics.RateLimitRequestsTotal.WithLabelValues(serviceType, userType, "allowed").Inc()
-		return CheckResult{Allowed: true, Limit: 0}, nil
+		svcResult = CheckResult{Allowed: true, Limit: 0}
+	} else {
+		period, err := time.ParseDuration(rlCfg.Period)
+		if err != nil {
+			return CheckResult{}, fmt.Errorf("invalid rate_limit period %q for service %q: %w", rlCfg.Period, serviceType, err)
+		}
+
+		windowSec := int64(math.Ceil(period.Seconds()))
+		key := fmt.Sprintf("rl:%s:%s:%s", consumer, serviceType, userType)
+
+		vals, err := script.Run(ctx, l.rdb, []string{key}, rlCfg.Rate, windowSec).Int64Slice()
+		if err != nil {
+			metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
+			return CheckResult{}, fmt.Errorf("rate limit script: %w", err)
+		}
+
+		count := vals[0]
+		ttlSecs := vals[1]
+		if ttlSecs < 0 {
+			ttlSecs = windowSec
+		}
+
+		remaining := int(int64(rlCfg.Rate) - count)
+		if remaining < 0 {
+			remaining = 0
+		}
+
+		allowed := count <= int64(rlCfg.Rate)
+		result := "allowed"
+		if !allowed {
+			result = "rejected"
+		}
+		metrics.RateLimitRequestsTotal.WithLabelValues(serviceType, userType, result).Inc()
+		if consumer != "anonymous" {
+			metrics.RateLimitConsumerHitsTotal.WithLabelValues(serviceType, userType, consumer).Inc()
+		}
+
+		svcResult = CheckResult{
+			Allowed:    allowed,
+			Limit:      rlCfg.Rate,
+			Remaining:  remaining,
+			ResetAfter: time.Duration(ttlSecs) * time.Second,
+		}
 	}
 
-	period, err := time.ParseDuration(rlCfg.Period)
+	// If the service-level check already rejected, return immediately.
+	if !svcResult.Allowed {
+		return svcResult, nil
+	}
+
+	// Policy-level check: per-consumer per-service-type fixed window.
+	// Skipped for anonymous consumers (no stable identity to key by).
+	policyCfg := policyLimitsFromContext(ctx)
+	if policyCfg == nil || policyCfg.Rate == 0 || consumer == "anonymous" {
+		return svcResult, nil
+	}
+
+	policyPeriod, err := time.ParseDuration(policyCfg.Period)
 	if err != nil {
-		return CheckResult{}, fmt.Errorf("invalid rate_limit period %q for service %q: %w", rlCfg.Period, serviceType, err)
+		// Fail open: bad period string → skip policy check.
+		return svcResult, nil
 	}
 
-	windowSec := int64(math.Ceil(period.Seconds()))
-	key := fmt.Sprintf("rl:%s:%s:%s", consumer, serviceType, userType)
+	windowSec := int64(math.Ceil(policyPeriod.Seconds()))
+	policyKey := fmt.Sprintf("rlp:%s:%s", consumer, serviceType)
 
-	vals, err := script.Run(ctx, l.rdb, []string{key}, rlCfg.Rate, windowSec).Int64Slice()
+	vals, err := script.Run(ctx, l.rdb, []string{policyKey}, policyCfg.Rate, windowSec).Int64Slice()
 	if err != nil {
 		metrics.RateLimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return CheckResult{}, fmt.Errorf("rate limit script: %w", err)
+		// Fail open on Redis error.
+		return svcResult, nil
 	}
 
 	count := vals[0]
@@ -263,82 +348,126 @@ func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string
 		ttlSecs = windowSec
 	}
 
-	remaining := int(int64(rlCfg.Rate) - count)
+	remaining := int(int64(policyCfg.Rate) - count)
 	if remaining < 0 {
 		remaining = 0
 	}
 
-	allowed := count <= int64(rlCfg.Rate)
-	result := "allowed"
-	if !allowed {
-		result = "rejected"
-	}
-	metrics.RateLimitRequestsTotal.WithLabelValues(serviceType, userType, result).Inc()
-	if consumer != "anonymous" {
-		metrics.RateLimitConsumerHitsTotal.WithLabelValues(serviceType, userType, consumer).Inc()
+	policyAllowed := count <= int64(policyCfg.Rate)
+	if !policyAllowed {
+		return CheckResult{
+			Allowed:    false,
+			Limit:      policyCfg.Rate,
+			Remaining:  0,
+			ResetAfter: time.Duration(ttlSecs) * time.Second,
+		}, nil
 	}
 
-	return CheckResult{
-		Allowed:    allowed,
-		Limit:      rlCfg.Rate,
-		Remaining:  remaining,
-		ResetAfter: time.Duration(ttlSecs) * time.Second,
-	}, nil
+	return svcResult, nil
 }
 
 // CheckTokens returns whether the caller still has token budget in the current
 // window. Allowed is always true when TokenRate is 0 (disabled). Fail-open on
-// Redis errors.
+// Redis errors. Additionally enforces any policy-level token budget from ctx.
 func (l *Limiter) CheckTokens(ctx context.Context, r *http.Request, serviceType string) (CheckResult, error) {
 	consumer, userType, cfg := l.resolveIdentity(r, serviceType)
+
+	var svcResult CheckResult
 	if cfg.TokenRate == 0 {
-		return CheckResult{Allowed: true}, nil
+		svcResult = CheckResult{Allowed: true}
+	} else {
+		period, err := time.ParseDuration(cfg.TokenPeriod)
+		if err != nil {
+			metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+			return CheckResult{Allowed: true}, fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+		}
+
+		key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+
+		raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{key}, cfg.TokenRate).Slice()
+		if err != nil {
+			metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+			svcResult = CheckResult{Allowed: true} // fail-open
+		} else {
+			count := raw[0].(int64)
+			ttl := raw[1].(int64)
+
+			allowed := count < int64(cfg.TokenRate)
+			remaining := cfg.TokenRate - int(count)
+			if remaining < 0 {
+				remaining = 0
+			}
+
+			result := "allowed"
+			if !allowed {
+				result = "rejected"
+			}
+			metrics.TokenRatelimitCheckedTotal.WithLabelValues(serviceType, userType, result).Inc()
+
+			var resetAfter time.Duration
+			if !allowed {
+				if ttl > 0 {
+					resetAfter = time.Duration(ttl) * time.Second
+				} else {
+					resetAfter = period
+				}
+			}
+
+			svcResult = CheckResult{
+				Allowed:    allowed,
+				Limit:      cfg.TokenRate,
+				Remaining:  remaining,
+				ResetAfter: resetAfter,
+			}
+		}
 	}
 
-	period, err := time.ParseDuration(cfg.TokenPeriod)
-	if err != nil {
-		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return CheckResult{Allowed: true}, fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	// Return immediately if service-level check rejected.
+	if !svcResult.Allowed {
+		return svcResult, nil
 	}
 
-	key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+	// Policy-level token check: per-consumer per-service-type.
+	// Skipped for anonymous consumers.
+	policyCfg := policyLimitsFromContext(ctx)
+	if policyCfg == nil || policyCfg.TokenRate == 0 || consumer == "anonymous" {
+		return svcResult, nil
+	}
 
-	raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{key}, cfg.TokenRate).Slice()
+	policyPeriod, err := time.ParseDuration(policyCfg.TokenPeriod)
+	if err != nil {
+		// Fail open: bad period string → skip policy token check.
+		return svcResult, nil
+	}
+
+	policyKey := fmt.Sprintf("trlp:%s:%s", consumer, serviceType)
+	raw, err := tokenCheckScript.Run(ctx, l.rdb, []string{policyKey}, policyCfg.TokenRate).Slice()
 	if err != nil {
 		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
-		return CheckResult{Allowed: true}, nil // fail-open
+		return svcResult, nil // fail-open
 	}
 
 	count := raw[0].(int64)
 	ttl := raw[1].(int64)
 
-	allowed := count < int64(cfg.TokenRate)
-	remaining := cfg.TokenRate - int(count)
-	if remaining < 0 {
-		remaining = 0
-	}
-
-	result := "allowed"
-	if !allowed {
-		result = "rejected"
-	}
-	metrics.TokenRatelimitCheckedTotal.WithLabelValues(serviceType, userType, result).Inc()
-
-	var resetAfter time.Duration
-	if !allowed {
+	policyAllowed := count < int64(policyCfg.TokenRate)
+	if !policyAllowed {
+		remaining := 0
+		var resetAfter time.Duration
 		if ttl > 0 {
 			resetAfter = time.Duration(ttl) * time.Second
 		} else {
-			resetAfter = period
+			resetAfter = policyPeriod
 		}
+		return CheckResult{
+			Allowed:    false,
+			Limit:      policyCfg.TokenRate,
+			Remaining:  remaining,
+			ResetAfter: resetAfter,
+		}, nil
 	}
 
-	return CheckResult{
-		Allowed:    allowed,
-		Limit:      cfg.TokenRate,
-		Remaining:  remaining,
-		ResetAfter: resetAfter,
-	}, nil
+	return svcResult, nil
 }
 
 // CheckModelTokens returns whether the caller still has token budget for the
@@ -398,29 +527,46 @@ func (l *Limiter) CheckModelTokens(ctx context.Context, r *http.Request, model s
 
 // AddTokens records total tokens consumed by the current request into the
 // window counter. No-op when TokenRate is 0 or total is 0. Fail-open on
-// Redis errors.
+// Redis errors. Additionally updates the policy-level token counter when
+// policy limits are present in ctx.
 func (l *Limiter) AddTokens(ctx context.Context, r *http.Request, serviceType string, total int) error {
 	if total == 0 {
 		return nil
 	}
 	consumer, userType, cfg := l.resolveIdentity(r, serviceType)
-	if cfg.TokenRate == 0 {
-		return nil
+	if cfg.TokenRate > 0 {
+		period, err := time.ParseDuration(cfg.TokenPeriod)
+		if err != nil {
+			return fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+		}
+
+		key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+
+		if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
+			int(period.Seconds()),
+			total,
+		).Err(); err != nil {
+			metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+		}
 	}
 
-	period, err := time.ParseDuration(cfg.TokenPeriod)
-	if err != nil {
-		return fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	// Policy-level token accumulation: per-consumer per-service-type.
+	// Skipped for anonymous consumers.
+	policyCfg := policyLimitsFromContext(ctx)
+	if policyCfg != nil && policyCfg.TokenRate > 0 && consumer != "anonymous" {
+		policyPeriod, err := time.ParseDuration(policyCfg.TokenPeriod)
+		if err == nil {
+			policyKey := fmt.Sprintf("trlp:%s:%s", consumer, serviceType)
+			if err := tokenAddScript.Run(ctx, l.rdb, []string{policyKey},
+				int(policyPeriod.Seconds()),
+				total,
+			).Err(); err != nil {
+				metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
+			}
+		}
+		// Fail open: bad TokenPeriod → skip policy token accumulation.
 	}
 
-	key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
-
-	if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
-		int(period.Seconds()),
-		total,
-	).Err(); err != nil {
-		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
-	}
 	return nil
 }
 

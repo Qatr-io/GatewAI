@@ -230,10 +230,12 @@ func main() {
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
 	modelLimits := buildModelLimits(cfg.Services)
-	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 {
+	// The limiter is also needed when policies carry per-group limits, since those
+	// are enforced through the same limiter (via request-context policy limits).
+	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 || cfg.Policies != nil {
 		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, modelLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
 		rl = limiter
-		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits))
+		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
@@ -307,7 +309,7 @@ func main() {
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
-		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 {
+		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 || newCfg.Policies != nil {
 			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newModelLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
 			rl = limiter
 		} else {

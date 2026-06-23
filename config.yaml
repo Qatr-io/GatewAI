@@ -63,6 +63,11 @@ server:
 #         # roles / scopes / consumers / user_types are also supported
 #       allow_models: ["gpt-oss-120b", "chat-*"]   # globs against the model alias
 #       allow_service_types: ["llm"]               # optional; globs against service type
+#       limits:                     # optional per-group quota (per-member; coexists with rate_limits)
+#         rate: 1000                #   request rate
+#         period: 1m
+#         token_rate: 5000000       #   token budget (LLM)
+#         token_period: 1h
 #     - match: { roles: ["admin"] }
 #       allow_models: ["*"]
 

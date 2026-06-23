@@ -93,14 +93,22 @@ func (h *SyncHandler) WithAuthz(e *authz.Engine) *SyncHandler {
 // checkAccess enforces the authz policy for (serviceType, model).
 // Returns true when the request is allowed to proceed, false when it was rejected
 // (the 403 response has already been written to w).
-func (h *SyncHandler) checkAccess(w http.ResponseWriter, r *http.Request, def *service.Def) bool {
+// checkAccess returns the (possibly context-augmented) request and whether the
+// caller may proceed. When the granting policy rule carries per-group limits,
+// they are stashed in the request context so the rate/token limiters enforce
+// them per-consumer downstream.
+func (h *SyncHandler) checkAccess(w http.ResponseWriter, r *http.Request, def *service.Def) (*http.Request, bool) {
 	if h.authz == nil {
-		return true
+		return r, true
 	}
 	p, _ := auth.FromContext(r.Context())
-	if h.authz.Allowed(p, def.Type, def.Model) {
+	decision := h.authz.Evaluate(p, def.Type, def.Model)
+	if decision.Allowed {
 		metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "allow").Inc()
-		return true
+		if decision.Limits != nil {
+			r = r.WithContext(ratelimit.WithPolicyLimits(r.Context(), decision.Limits))
+		}
+		return r, true
 	}
 	consumer := ""
 	if p != nil {
@@ -109,7 +117,7 @@ func (h *SyncHandler) checkAccess(w http.ResponseWriter, r *http.Request, def *s
 	slog.WarnContext(r.Context(), "access denied by policy", "service_type", def.Type, "model", def.Model, "consumer", consumer)
 	metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "deny").Inc()
 	writeError(w, http.StatusForbidden, fmt.Sprintf("access to model %q denied", def.Model))
-	return false
+	return r, false
 }
 
 func (h *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -149,7 +157,8 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.checkAccess(w, r, def) {
+	r, accessOK := h.checkAccess(w, r, def)
+	if !accessOK {
 		return
 	}
 
@@ -233,7 +242,8 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !h.checkAccess(w, r, def) {
+	r, accessOK := h.checkAccess(w, r, def)
+	if !accessOK {
 		return
 	}
 

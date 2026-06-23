@@ -51,6 +51,11 @@ type PolicyRule struct {
 	// AllowServiceTypes is a list of glob patterns matched against the service type.
 	// Empty means no service-type constraint (the model match alone is sufficient).
 	AllowServiceTypes []string `yaml:"allow_service_types"`
+	// Limits is an optional rate/token budget applied per-consumer when this rule
+	// grants access. Nil means no additional policy-level limiting.
+	// Use Rate+Period for request-count limiting and TokenRate+TokenPeriod for
+	// token budget limiting; both can be set simultaneously.
+	Limits *RateLimitConfig `yaml:"limits"`
 }
 
 // PolicyMatch defines the principal attributes required for a rule to fire.
@@ -435,6 +440,17 @@ func (c *Config) validate() error {
 		if len(c.Policies.Rules) > 0 || c.Policies.Default == "deny" || c.Policies.Default == "" {
 			if c.Auth.Mode == "" {
 				return fmt.Errorf("policies require auth.mode to be set (oauth2 or proxy): cannot enforce identity-based access without authentication")
+			}
+		}
+		for i, rule := range c.Policies.Rules {
+			if rule.Limits == nil {
+				continue
+			}
+			if rule.Limits.Rate > 0 && rule.Limits.Period == "" {
+				return fmt.Errorf("policies.rules[%d].limits: rate requires period", i)
+			}
+			if rule.Limits.TokenRate > 0 && rule.Limits.TokenPeriod == "" {
+				return fmt.Errorf("policies.rules[%d].limits: token_rate requires token_period", i)
 			}
 		}
 	}

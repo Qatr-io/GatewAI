@@ -38,6 +38,25 @@ Set `default: allow` to disable enforcement entirely (e.g. while staging policie
 
 Enforced on both the sync OpenAI-compatible path (`POST /v1/*`) and the async job path (`POST /jobs/{type}`), immediately after routing resolves the model — before any backend work.
 
+## Per-group quotas
+
+A rule can carry an optional `limits` block to give matched callers a request-rate and/or token budget — a quota **tiered by group/role**:
+
+```yaml
+policies:
+  rules:
+    - match: { groups: ["research-lab"] }
+      allow_models: ["*"]
+      limits: { rate: 1000, period: 1m, token_rate: 5000000, token_period: 1h }
+    - match: { roles: ["intern"] }
+      allow_models: ["chat-small"]
+      limits: { rate: 60, period: 1m, token_rate: 100000, token_period: 24h }
+```
+
+The budget is **per-member** (keyed by the caller's consumer): each user in the group gets their own budget of that size — the group/role selects the limit *values*. These limits apply on the sync LLM path and **coexist** with the global `rate_limits`/`token_limits` (a request must pass both). Anonymous callers (no resolved consumer) are skipped. Exceeding a limit returns `429`.
+
+> Per-group concurrent-job and processing-time limits, and enforcement on the async job path, are planned follow-ups.
+
 ## Observability
 
 - Denials are logged as security events (with the caller's consumer and the model).
