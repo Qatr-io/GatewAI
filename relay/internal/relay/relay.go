@@ -154,19 +154,33 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", fmt.Sprintf("inference: %v", inferErr), 0); perr != nil {
 			return fmt.Errorf("publishing failure: %w", perr)
 		}
-		if derr := p.s3.DeleteObject(context.Background(), job.InputRef); derr != nil {
+		delCtx := context.WithoutCancel(ctx)
+		_, delSpan := p.tracer.Start(delCtx, "relay.s3.delete_input",
+			trace.WithAttributes(attribute.String("s3.key", job.InputRef)))
+		derr := p.s3.DeleteObject(delCtx, job.InputRef)
+		if derr != nil {
+			delSpan.RecordError(derr)
+			delSpan.SetStatus(codes.Error, derr.Error())
 			log.Error("failed to delete input file after failure", "input_ref", job.InputRef, "error", derr)
 		}
+		delSpan.End()
 		return nil
 	}
 
 	resultKey := job.ID + "/result.json"
-	if err := p.s3.PutObject(ctx, resultKey, bytes.NewReader(result), int64(len(result)), "application/json"); err != nil {
+	putCtx, putSpan := p.tracer.Start(ctx, "relay.s3.put_result",
+		trace.WithAttributes(attribute.String("s3.key", resultKey)))
+	if err := p.s3.PutObject(putCtx, resultKey, bytes.NewReader(result), int64(len(result)), "application/json"); err != nil {
+		putSpan.RecordError(err)
 		log.Warn("s3 put attempt failed, retrying immediately", "error", err)
-		if err := p.s3.PutObject(ctx, resultKey, bytes.NewReader(result), int64(len(result)), "application/json"); err != nil {
+		if err := p.s3.PutObject(putCtx, resultKey, bytes.NewReader(result), int64(len(result)), "application/json"); err != nil {
+			putSpan.RecordError(err)
+			putSpan.SetStatus(codes.Error, err.Error())
+			putSpan.End()
 			return fmt.Errorf("s3 put: %w", err)
 		}
 	}
+	putSpan.End()
 
 	processingTime := extractProcessingTime(result)
 	pubCtx, pubSpan := p.tracer.Start(ctx, "relay.redis.publish_result",
@@ -187,9 +201,15 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	metrics.JobsTotal.WithLabelValues(job.ServiceType, "completed").Inc()
 	log.Info("job completed", "result_ref", resultKey)
 
-	if err := p.s3.DeleteObject(context.Background(), job.InputRef); err != nil {
+	delCtx := context.WithoutCancel(ctx)
+	_, delSpan := p.tracer.Start(delCtx, "relay.s3.delete_input",
+		trace.WithAttributes(attribute.String("s3.key", job.InputRef)))
+	if err := p.s3.DeleteObject(delCtx, job.InputRef); err != nil {
+		delSpan.RecordError(err)
+		delSpan.SetStatus(codes.Error, err.Error())
 		log.Error("failed to delete input file", "input_ref", job.InputRef, "error", err)
 	}
+	delSpan.End()
 
 	return nil
 }
