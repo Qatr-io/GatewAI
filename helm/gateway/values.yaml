@@ -36,6 +36,27 @@ server:
   # When present, jobs are pushed to the head of the Redis queue.
   priorityHeader: ""
 
+# ── Authentication (optional) ─────────────────────────────────────────────────
+# Empty ⇒ no gateway-side auth: identity is trusted from the upstream headers
+# above (gateway behind an upstream reverse proxy). Pick ONE mode per deployment.
+#   auth:
+#     mode: oauth2                 # oauth2 | proxy
+#     oauth2:
+#       issuer: "https://idp.example.com/realm"
+#       jwksUrl: ""                # optional explicit override
+#       audiences: ["gatewai"]
+#       claims:
+#         consumer: "preferred_username"
+#         scopes: "scope"
+#         groups: "groups"
+#         roles: "roles"
+#     proxy:
+#       consumerHeader: "X-Consumer-Username"
+#       userTypeHeader: "X-Consumer-Type"
+#       groupsHeader: "X-Consumer-Groups"
+#       rolesHeader: "X-Consumer-Roles"
+auth: {}
+
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 # Request-count rate limits per service type and user type.
 # "*" acts as fallback when the user_type_header is absent or unmatched.

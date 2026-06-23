@@ -25,6 +25,31 @@ server:
   # Leave empty to apply only the "*" fallback (no per-type differentiation).
   user_type_header: "${USER_TYPE_HEADER:-}"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Authentication (optional). Absent ⇒ no gateway-side auth: identity is trusted
+# from the upstream headers above (the default when the gateway sits behind an
+# upstream reverse proxy that authenticates). Pick ONE mode per deployment.
+# ─────────────────────────────────────────────────────────────────────────────
+# auth:
+#   mode: oauth2                  # oauth2 | proxy
+#   oauth2:                       # validate OAuth2 access tokens (resource-server model)
+#     issuer: "${OAUTH_ISSUER}"   # discovery → jwks_uri (+ introspection_endpoint, used later)
+#     jwks_url: ""                # optional explicit override (else discovered from issuer)
+#     audiences: ["gatewai"]      # at least one must match the token's aud
+#     claims:                     # dotted paths — configure per identity provider
+#       consumer: "preferred_username"
+#       scopes:   "scope"
+#       groups:   "groups"
+#       roles:    "roles"
+#   proxy:                        # trust identity headers set by an upstream reverse proxy
+#     consumer_header: "X-Consumer-Username"
+#     user_type_header: "X-Consumer-Type"
+#     groups_header:   "X-Consumer-Groups"
+#     roles_header:    "X-Consumer-Roles"
+# oauth2 fails closed (401 invalid/missing, 503 if the IdP/JWKS is unreachable) and
+# strips the client bearer before proxying to backends. /health /metrics /docs
+# /openapi.yaml are always exempt. Auth config changes require a gateway restart.
+
 s3:
   # Standard S3-compatible object storage — configured here for Scaleway.
   # Endpoint format (Scaleway): https://s3.<region>.scw.cloud

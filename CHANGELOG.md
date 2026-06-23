@@ -16,6 +16,12 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+#### Added
+
+- **Authentication (OAuth2)**: optional gateway-side auth via a new top-level `auth` block. `auth.mode: oauth2` validates OAuth2 access tokens (JWT via JWKS discovery; `iss`/`aud`/`exp` + configurable claim mapping for scope/groups/roles/consumer), **fails closed** (`401`/`503`), and strips the client bearer before proxying. `auth.mode: proxy` trusts identity headers set by an upstream reverse proxy (incl. groups/roles). An absent `auth` block preserves the previous header-trust behavior. `/health`, `/metrics`, `/docs`, `/openapi.yaml` are exempt; auth config changes require a restart. Foundation for upcoming token introspection, model/role access control, and group-scoped quotas.
+
 ### [v0.17.0] — 2026-06-19
 
 #### Added
