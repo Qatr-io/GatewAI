@@ -17,6 +17,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy"
@@ -41,6 +43,7 @@ type SyncHandler struct {
 	retryBackoff      time.Duration                   // initial backoff between retry cycles; default 500ms
 	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
 	userTypeHeader    string
+	authz             *authz.Engine // nil = no enforcement
 }
 
 func NewSyncHandler(
@@ -81,6 +84,34 @@ func (h *SyncHandler) WithRetryBackoff(d time.Duration) *SyncHandler {
 	return h
 }
 
+// WithAuthz sets the authorization engine. nil disables enforcement (default).
+func (h *SyncHandler) WithAuthz(e *authz.Engine) *SyncHandler {
+	h.authz = e
+	return h
+}
+
+// checkAccess enforces the authz policy for (serviceType, model).
+// Returns true when the request is allowed to proceed, false when it was rejected
+// (the 403 response has already been written to w).
+func (h *SyncHandler) checkAccess(w http.ResponseWriter, r *http.Request, def *service.Def) bool {
+	if h.authz == nil {
+		return true
+	}
+	p, _ := auth.FromContext(r.Context())
+	if h.authz.Allowed(p, def.Type, def.Model) {
+		metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "allow").Inc()
+		return true
+	}
+	consumer := ""
+	if p != nil {
+		consumer = p.Consumer
+	}
+	slog.WarnContext(r.Context(), "access denied by policy", "service_type", def.Type, "model", def.Model, "consumer", consumer)
+	metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "deny").Inc()
+	writeError(w, http.StatusForbidden, fmt.Sprintf("access to model %q denied", def.Model))
+	return false
+}
+
 func (h *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -115,6 +146,10 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteSync(r.URL.Path, modelName)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if !h.checkAccess(w, r, def) {
 		return
 	}
 
@@ -195,6 +230,10 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteSync(r.URL.Path, payload.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if !h.checkAccess(w, r, def) {
 		return
 	}
 

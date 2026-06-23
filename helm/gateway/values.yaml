@@ -57,6 +57,17 @@ server:
 #       rolesHeader: "X-Consumer-Roles"
 auth: {}
 
+# ── Access control (optional) ─────────────────────────────────────────────────
+# Default-deny model/service allowlist. Requires auth (above). Mirrors the
+# config.yaml `policies` structure verbatim (rendered as-is into the ConfigMap).
+#   policies:
+#     default: deny
+#     rules:
+#       - match: { groups: ["research-lab"] }
+#         allow_models: ["gpt-oss-120b", "chat-*"]
+#         allow_service_types: ["llm"]
+policies: {}
+
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 # Request-count rate limits per service type and user type.
 # "*" acts as fallback when the user_type_header is absent or unmatched.

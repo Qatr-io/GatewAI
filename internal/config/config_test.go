@@ -766,3 +766,215 @@ auth:
 		t.Errorf("proxy mode with no headers should be valid, got: %v", err)
 	}
 }
+
+// ── Policies config tests ─────────────────────────────────────────────────────
+
+func TestLoad_Policies_Absent_IsNil(t *testing.T) {
+	// No policies block → Policies field is nil.
+	path := writeConfig(t, minimalValid)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies != nil {
+		t.Errorf("expected Policies to be nil when absent, got %+v", cfg.Policies)
+	}
+}
+
+func TestLoad_Policies_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+  proxy:
+    consumer_header: X-Consumer-Username
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - research-lab
+        roles:
+          - analyst
+        scopes:
+          - llm:use
+        consumers:
+          - svc-account-1
+        user_types:
+          - premium
+      allow_models:
+        - "gpt-4o"
+        - "chat-*"
+      allow_service_types:
+        - "llm"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies == nil {
+		t.Fatal("expected Policies to be non-nil")
+	}
+	if cfg.Policies.Default != "deny" {
+		t.Errorf("expected default=deny, got %q", cfg.Policies.Default)
+	}
+	if len(cfg.Policies.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(cfg.Policies.Rules))
+	}
+	r := cfg.Policies.Rules[0]
+	if len(r.Match.Groups) != 1 || r.Match.Groups[0] != "research-lab" {
+		t.Errorf("unexpected groups: %v", r.Match.Groups)
+	}
+	if len(r.Match.Roles) != 1 || r.Match.Roles[0] != "analyst" {
+		t.Errorf("unexpected roles: %v", r.Match.Roles)
+	}
+	if len(r.Match.Scopes) != 1 || r.Match.Scopes[0] != "llm:use" {
+		t.Errorf("unexpected scopes: %v", r.Match.Scopes)
+	}
+	if len(r.Match.Consumers) != 1 || r.Match.Consumers[0] != "svc-account-1" {
+		t.Errorf("unexpected consumers: %v", r.Match.Consumers)
+	}
+	if len(r.Match.UserTypes) != 1 || r.Match.UserTypes[0] != "premium" {
+		t.Errorf("unexpected user_types: %v", r.Match.UserTypes)
+	}
+	if len(r.AllowModels) != 2 {
+		t.Errorf("expected 2 allow_models, got %d", len(r.AllowModels))
+	}
+	if len(r.AllowServiceTypes) != 1 || r.AllowServiceTypes[0] != "llm" {
+		t.Errorf("unexpected allow_service_types: %v", r.AllowServiceTypes)
+	}
+}
+
+func TestLoad_Policies_InvalidDefault_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: permit
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid policies.default")
+	}
+}
+
+func TestLoad_Policies_WithRules_RequiresAuthMode_Error(t *testing.T) {
+	// policies with rules but no auth.mode → error.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - admins
+      allow_models:
+        - "*"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policies have rules but auth.mode is empty")
+	}
+}
+
+func TestLoad_Policies_DefaultDenyNoRules_RequiresAuthMode_Error(t *testing.T) {
+	// policies with default=deny (even no rules) but no auth.mode → error.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: deny
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policies.default=deny but auth.mode is empty")
+	}
+}
+
+func TestLoad_Policies_WithAuthMode_OK(t *testing.T) {
+	// policies + auth.mode set → valid.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        roles:
+          - admin
+      allow_models:
+        - "*"
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("policies + auth.mode should be valid, got: %v", err)
+	}
+}
+
+func TestLoad_Policies_DefaultAllow_NoAuthRequired(t *testing.T) {
+	// Default "allow" disables enforcement; no auth.mode needed.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: allow
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("policies.default=allow without auth.mode should be valid, got: %v", err)
+	}
+}

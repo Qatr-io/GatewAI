@@ -21,6 +21,7 @@ Versioning: each component is versioned independently — see tag conventions be
 #### Added
 
 - **Authentication (OAuth2)**: optional gateway-side auth via a new top-level `auth` block. `auth.mode: oauth2` validates OAuth2 access tokens (JWT via JWKS discovery; `iss`/`aud`/`exp` + configurable claim mapping for scope/groups/roles/consumer), **fails closed** (`401`/`503`), and strips the client bearer before proxying. `auth.mode: proxy` trusts identity headers set by an upstream reverse proxy (incl. groups/roles). An absent `auth` block preserves the previous header-trust behavior. `/health`, `/metrics`, `/docs`, `/openapi.yaml` are exempt; auth config changes require a restart. Foundation for upcoming token introspection, model/role access control, and group-scoped quotas.
+- **Access control (policies)**: optional default-deny model/service allowlist via a top-level `policies` block (requires `auth.mode`). Rules match caller identity (`groups`/`roles`/`scopes`/`consumers`/`user_types`) and grant `allow_models`/`allow_service_types` (globs); a request with no granting rule gets `403`. Enforced on both sync (`POST /v1/*`) and async (`POST /jobs`) after routing resolves the model; hot-reloadable; absent `policies` = no enforcement. Metric: `gatewai_authz_decisions_total{service_type, model, decision}`.
 
 ### [v0.17.0] — 2026-06-19
 

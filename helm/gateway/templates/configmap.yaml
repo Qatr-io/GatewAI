@@ -65,6 +65,11 @@ data:
       {{- end }}
     {{- end }}
 
+    {{- with .Values.policies }}
+    policies:
+{{ toYaml . | indent 6 }}
+    {{- end }}
+
     s3:
       endpoint:   "{{ .Values.s3.endpoint }}"
       region:     "{{ .Values.s3.region }}"

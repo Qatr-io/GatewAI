@@ -27,6 +27,46 @@ type Config struct {
 	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
 	Otel       telemetry.OtelConfig                  `yaml:"opentelemetry"`
 	Auth       AuthConfig                            `yaml:"auth"`
+	// Policies configures identity-based access control. Nil means no enforcement.
+	Policies *PoliciesConfig `yaml:"policies"`
+}
+
+// PoliciesConfig controls which principals may access which services and models.
+// Default posture is deny-all; rules grant access explicitly.
+type PoliciesConfig struct {
+	// Default is the baseline decision when no rule matches.
+	// Valid values: "" (treated as "deny"), "deny", "allow".
+	// "allow" disables enforcement entirely (useful for gradual rollout).
+	Default string       `yaml:"default"`
+	Rules   []PolicyRule `yaml:"rules"`
+}
+
+// PolicyRule grants access to a set of models/service types for principals
+// whose identity satisfies Match. ALL specified Match fields must pass (AND).
+type PolicyRule struct {
+	Match PolicyMatch `yaml:"match"`
+	// AllowModels is a list of glob patterns matched against the model alias.
+	// Empty means the rule grants nothing (must list "*" to allow all models).
+	AllowModels []string `yaml:"allow_models"`
+	// AllowServiceTypes is a list of glob patterns matched against the service type.
+	// Empty means no service-type constraint (the model match alone is sufficient).
+	AllowServiceTypes []string `yaml:"allow_service_types"`
+}
+
+// PolicyMatch defines the principal attributes required for a rule to fire.
+// Fields are ANDed: all non-empty fields must match.
+// An empty PolicyMatch{} matches every principal (including nil/anonymous).
+type PolicyMatch struct {
+	// Groups: principal must belong to at least one of these groups.
+	Groups []string `yaml:"groups"`
+	// Roles: principal must hold at least one of these roles.
+	Roles []string `yaml:"roles"`
+	// Scopes: principal must have at least one of these OAuth2 scopes.
+	Scopes []string `yaml:"scopes"`
+	// Consumers: principal.Consumer must be one of these values.
+	Consumers []string `yaml:"consumers"`
+	// UserTypes: principal.UserType must be one of these values.
+	UserTypes []string `yaml:"user_types"`
 }
 
 // AuthConfig selects and configures the authentication mode.
@@ -385,6 +425,18 @@ func (c *Config) validate() error {
 	validModes := map[string]bool{"": true, "oauth2": true, "proxy": true}
 	if !validModes[c.Auth.Mode] {
 		return fmt.Errorf("auth.mode %q is invalid (valid: \"\", \"oauth2\", \"proxy\")", c.Auth.Mode)
+	}
+	if c.Policies != nil {
+		validDefaults := map[string]bool{"": true, "deny": true, "allow": true}
+		if !validDefaults[c.Policies.Default] {
+			return fmt.Errorf("policies.default %q is invalid (valid: \"\", \"deny\", \"allow\")", c.Policies.Default)
+		}
+		// Policies require an authenticated identity; enforce that auth is configured.
+		if len(c.Policies.Rules) > 0 || c.Policies.Default == "deny" || c.Policies.Default == "" {
+			if c.Auth.Mode == "" {
+				return fmt.Errorf("policies require auth.mode to be set (oauth2 or proxy): cannot enforce identity-based access without authentication")
+			}
+		}
 	}
 	if c.Auth.Mode == "oauth2" {
 		if c.Auth.OAuth2.Issuer == "" {

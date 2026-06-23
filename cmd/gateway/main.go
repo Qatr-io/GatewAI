@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
@@ -105,11 +106,15 @@ func buildRouter(
 	llmHandler *llmproxy.Handler,
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
+	authzEngine *authz.Engine,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
+	}
+	if authzEngine != nil {
+		jobHandler.WithAuthz(authzEngine)
 	}
 
 	r := chi.NewRouter()
@@ -142,6 +147,9 @@ func buildRouter(
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
+		}
+		if authzEngine != nil {
+			sh.WithAuthz(authzEngine)
 		}
 		syncHandler := sh
 		r.Get("/v1/models", handler.ListModels(reg))
@@ -317,14 +325,22 @@ func main() {
 			tokenChecker(limiter))
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
+		var newAuthzEngine *authz.Engine
+		if newCfg.Policies != nil {
+			newAuthzEngine = authz.New(*newCfg.Policies)
+		}
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
+	var authzEngine *authz.Engine
+	if cfg.Policies != nil {
+		authzEngine = authz.New(*cfg.Policies)
+	}
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
