@@ -77,6 +77,17 @@ server:
 #     - match: { roles: ["admin"] }
 #       allow_models: ["*"]
 
+# Health check probing (GET /health?verbose=true)
+# By default GET /health returns {"status":"ok"} with no backend probing.
+# Pass ?verbose=true to probe each backend and get per-model status.
+# Pass ?mode=strict to return 500 when any backend is down.
+# Pass ?model=<name> to probe a single model.
+# ─────────────────────────────────────────────────────────────────────────────
+health:
+  # Default HTTP timeout for backend health probes.
+  # Override per-service via services[].health.timeout for models that scale to 0.
+  timeout: "${HEALTH_TIMEOUT:-5s}"
+
 s3:
   # Standard S3-compatible object storage — configured here for Scaleway.
   # Endpoint format (Scaleway): https://s3.<region>.scw.cloud
@@ -189,6 +200,13 @@ services:
     inference_url: "${TRANSCRIPTION_WHISPER_LARGE_V3_URL:-http://gatewai-transcription-predictor.default.svc.cluster.local}"
     accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     max_file_size_mb: 500
+    # health: backend probing config for GET /health?verbose=true.
+    # Uncomment and tune for models that scale to 0 (Knative cold start can
+    # take 30-60 s; the global 5 s default will mark them as "down").
+    # health:
+    #   timeout: "60s"   # wait up to 60 s for cold-start
+    #   path: "/health"  # default; override if the backend uses a different path
+    #   disabled: false  # set true to skip this model in health probes
 
   # ── Example: add a second model variant for the same service type ──────────
   # - type: audio

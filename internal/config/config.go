@@ -20,6 +20,7 @@ type Config struct {
 	Encryption EncryptionConfig `yaml:"encryption"`
 	Metrics    MetricsConfig    `yaml:"metrics"`
 	AuditLog   AuditLogConfig   `yaml:"audit_log"`
+	Health     HealthConfig     `yaml:"health"`
 	// RateLimits maps service type → user type → limit.
 	// User type "*" is the fallback applied when the user_type_header is absent
 	// or the specific type has no entry.
@@ -119,6 +120,29 @@ type ProxyAuthConfig struct {
 	RolesHeader    string `yaml:"roles_header"`
 	ScopesHeader   string `yaml:"scopes_header"`
 }
+
+// HealthConfig holds global defaults for backend health probing (GET /health?verbose=true).
+type HealthConfig struct {
+	// Timeout is the default HTTP timeout for backend health probes. Default: 5s.
+	// For models that scale to 0 (Knative), set this higher at the service level.
+	Timeout string `yaml:"timeout"`
+}
+
+func (h HealthConfig) TimeoutDuration() time.Duration { return parseDuration(h.Timeout) }
+
+// ServiceHealthConfig controls how the gateway probes one service's backend.
+type ServiceHealthConfig struct {
+	// Disabled skips health probing for this service. Default: false.
+	Disabled bool `yaml:"disabled"`
+	// Timeout overrides the global health.timeout for this service.
+	// Especially useful for models that scale to 0 (Knative cold start).
+	// Example: "30s" for a model behind a scale-to-zero deployment.
+	Timeout string `yaml:"timeout"`
+	// Path is the HTTP path probed on the backend. Default: "/health".
+	Path string `yaml:"path"`
+}
+
+func (h ServiceHealthConfig) TimeoutDuration() time.Duration { return parseDuration(h.Timeout) }
 
 // AuditLogConfig controls structured per-request audit logging for LLM requests.
 // Disabled by default to avoid unexpected log volume.
@@ -345,6 +369,8 @@ type ServiceConfig struct {
 	// "*" acts as fallback when the user_type_header is absent or unmatched.
 	// Applied independently from rate_limits; both can reject the same request.
 	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
+	// Health controls backend probing for this service (GET /health?verbose=true).
+	Health ServiceHealthConfig `yaml:"health"`
 }
 
 // GuardrailsStageConfig controls PII/secrets detection for one stage (input or output).
@@ -419,6 +445,9 @@ func (c *Config) applyDefaults() {
 	// Set explicitly in config if a hard limit is desired.
 	if c.Server.IdleTimeout == 0 {
 		c.Server.IdleTimeout = 120 * time.Second
+	}
+	if c.Health.Timeout == "" {
+		c.Health.Timeout = "5s"
 	}
 	if c.Redis.PendingMaxAge == "" {
 		c.Redis.PendingMaxAge = "2h"

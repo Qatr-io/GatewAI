@@ -53,6 +53,176 @@ func TestHealth_BodyHasStatusOK(t *testing.T) {
 	}
 }
 
+// ── NewHealthHandler ──────────────────────────────────────────────────────────
+
+func TestNewHealthHandler_NoParams_LightweightResponse(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "5s"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf(`expected "status": "ok", got %v`, body["status"])
+	}
+	if _, ok := body["time"]; !ok {
+		t.Error(`expected "time" field`)
+	}
+}
+
+func TestNewHealthHandler_Verbose_AllUp(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{Type: "audio", Model: "whisper-large", InferenceURL: backend.URL, Operations: map[string][]string{"transcription": {"/v1/audio/transcriptions"}}},
+		{Type: "ocr", Model: "llava", InferenceURL: backend.URL, Operations: map[string][]string{"ocr": {"/v1/ocr"}}},
+	})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "5s"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf(`expected "status": "up", got %v`, body["status"])
+	}
+	backends, ok := body["backends"].(map[string]any)
+	if !ok {
+		t.Fatalf(`expected "backends" map, got %T`, body["backends"])
+	}
+	for model, s := range backends {
+		if s != "up" {
+			t.Errorf("model %q: expected up, got %v", model, s)
+		}
+	}
+}
+
+func TestNewHealthHandler_Verbose_OneDown_Returns200(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer up.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{Type: "audio", Model: "whisper-large", InferenceURL: up.URL, Operations: map[string][]string{"transcription": {"/v1/audio/transcriptions"}}},
+		// "unreachable" backend — uses a closed listener address.
+		{Type: "ocr", Model: "llava", InferenceURL: "http://127.0.0.1:1", Operations: map[string][]string{"ocr": {"/v1/ocr"}}},
+	})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "200ms"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (non-strict), got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "down" {
+		t.Errorf(`expected aggregate "status": "down", got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_Strict_OneDown_Returns500(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer up.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{Type: "audio", Model: "whisper-large", InferenceURL: up.URL, Operations: map[string][]string{"transcription": {"/v1/audio/transcriptions"}}},
+		{Type: "ocr", Model: "llava", InferenceURL: "http://127.0.0.1:1", Operations: map[string][]string{"ocr": {"/v1/ocr"}}},
+	})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "200ms"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true&mode=strict", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 (strict + down backend), got %d", w.Code)
+	}
+}
+
+func TestNewHealthHandler_ModelFilter(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer up.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{Type: "audio", Model: "whisper-large", InferenceURL: up.URL, Operations: map[string][]string{"transcription": {"/v1/audio/transcriptions"}}},
+		{Type: "ocr", Model: "llava", InferenceURL: "http://127.0.0.1:1", Operations: map[string][]string{"ocr": {"/v1/ocr"}}},
+	})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "200ms"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health?model=whisper-large", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf(`expected "status": "up" for whisper-large, got %v`, body["status"])
+	}
+	if _, ok := body["backends"]; ok {
+		t.Error(`"backends" should not be present without verbose=true`)
+	}
+}
+
+func TestNewHealthHandler_DisabledService_Skipped(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type: "audio", Model: "whisper-large",
+			InferenceURL: "http://127.0.0.1:1", // unreachable — but health is disabled
+			Operations:   map[string][]string{"transcription": {"/v1/audio/transcriptions"}},
+			Health:       config.ServiceHealthConfig{Disabled: true},
+		},
+	})
+	h := handler.NewHealthHandler(reg, config.HealthConfig{Timeout: "200ms"})
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf(`expected "up" when all services are disabled, got %v`, body["status"])
+	}
+}
+
 // ── Reload ────────────────────────────────────────────────────────────────────
 
 func TestReload_Success(t *testing.T) {

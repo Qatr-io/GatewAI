@@ -130,7 +130,7 @@ func buildRouter(
 	spec := handler.GenerateSpec(reg, version)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
-	r.Get("/health", handler.Health)
+	r.Get("/health", handler.NewHealthHandler(reg, cfg.Health))
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/docs", handler.DocsUI(swaggerSpecs))
 	r.Get("/openapi.yaml", handler.NewDocsSpec(spec))
