@@ -22,7 +22,10 @@ API Gateway pour les services d'inférence KServe sur Kubernetes — file async 
 - Cache des réponses (Redis, clé SHA-256, header `X-Cache`)
 - Routage multi-backend — blue/green, canary, fallback avec sélection pondérée
 - Rate limiting par consommateur — fenêtre fixe, par type de service et type d'utilisateur, limites de requêtes et de tokens
-- Guardrails PII — bloque les requêtes LLM contenant email, téléphone, IBAN, carte bancaire, SIREN/SIRET
+- Guardrails PII + secrets — blocage / redaction / signalement des requêtes LLM contenant des données personnelles (email, téléphone, IBAN, carte bancaire, SIREN/SIRET, NIR…) ou des secrets (clés AWS, JWT, tokens GitHub) ; DLP optionnel sur les réponses du modèle
+- Authentification OAuth2 — validation côté gateway des access tokens (JWT via JWKS + opaques via introspection RFC 7662), fail-closed
+- Contrôle d'accès — liste blanche par politique, default-deny par modèle/service, quotas rate/token par groupe
+- Observabilité OpenTelemetry — tracing distribué, push OTLP (traces/métriques/logs), trace_id dans les logs structurés et les exemplars
 - Audit trail — log slog structuré par requête LLM (opt-in)
 - Chiffrement AES-256-GCM at-rest pour les objets S3
 - Autoscaling KEDA — le relay scale sur la profondeur de la file Redis, scale-to-zero
