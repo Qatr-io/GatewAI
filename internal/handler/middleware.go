@@ -3,6 +3,7 @@ package handler
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -29,17 +30,17 @@ func (rw *otelResponseWriter) WriteHeader(code int) {
 // OtelMiddleware starts a server span for every request.
 // It extracts W3C traceparent from incoming headers, creates a child span,
 // and updates the span name with the chi route pattern after routing.
-// Paths listed in skip are passed through without creating a span (e.g. /health, /metrics).
+// Paths listed in skip are passed through without creating a span.
+// Matching is prefix-based: "/docs" skips "/docs" and "/docs/anything".
 func OtelMiddleware(tracer trace.Tracer, skip ...string) func(http.Handler) http.Handler {
-	skipSet := make(map[string]struct{}, len(skip))
-	for _, p := range skip {
-		skipSet[p] = struct{}{}
-	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if _, ok := skipSet[r.URL.Path]; ok {
-				next.ServeHTTP(w, r)
-				return
+			path := r.URL.Path
+			for _, s := range skip {
+				if path == s || strings.HasPrefix(path, s+"/") {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 
 			// Extract parent context from incoming W3C headers (if any).
