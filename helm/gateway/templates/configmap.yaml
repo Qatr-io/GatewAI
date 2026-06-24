@@ -22,6 +22,72 @@ data:
       user_type_header: {{ .Values.server.userTypeHeader | quote }}
       {{- end }}
 
+    {{- with .Values.auth }}
+    auth:
+      mode: {{ .mode | default "" | quote }}
+      {{- with .oauth2 }}
+      oauth2:
+        issuer: {{ .issuer | quote }}
+        {{- if .jwksUrl }}
+        jwks_url: {{ .jwksUrl | quote }}
+        {{- end }}
+        audiences: [{{ range $i, $a := .audiences }}{{ if $i }}, {{ end }}{{ $a | quote }}{{ end }}]
+        {{- with .claims }}
+        claims:
+          {{- if .consumer }}
+          consumer: {{ .consumer | quote }}
+          {{- end }}
+          {{- if .scopes }}
+          scopes: {{ .scopes | quote }}
+          {{- end }}
+          {{- if .groups }}
+          groups: {{ .groups | quote }}
+          {{- end }}
+          {{- if .roles }}
+          roles: {{ .roles | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if .validation }}
+        validation: {{ .validation | quote }}
+        {{- end }}
+        {{- with .introspection }}
+        introspection:
+          {{- if .clientId }}
+          client_id: {{ .clientId | quote }}
+          {{- end }}
+          {{- if .clientSecret }}
+          client_secret: {{ .clientSecret | quote }}
+          {{- end }}
+          {{- if .endpoint }}
+          endpoint: {{ .endpoint | quote }}
+          {{- end }}
+          {{- if .cacheTtl }}
+          cache_ttl: {{ .cacheTtl | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .proxy }}
+      proxy:
+        {{- if .consumerHeader }}
+        consumer_header: {{ .consumerHeader | quote }}
+        {{- end }}
+        {{- if .userTypeHeader }}
+        user_type_header: {{ .userTypeHeader | quote }}
+        {{- end }}
+        {{- if .groupsHeader }}
+        groups_header: {{ .groupsHeader | quote }}
+        {{- end }}
+        {{- if .rolesHeader }}
+        roles_header: {{ .rolesHeader | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
+    {{- with .Values.policies }}
+    policies:
+{{ toYaml . | indent 6 }}
+    {{- end }}
+
     s3:
       endpoint:   "{{ .Values.s3.endpoint }}"
       region:     "{{ .Values.s3.region }}"
@@ -90,6 +156,9 @@ data:
     {{- if .Values.opentelemetry.enabled }}
     opentelemetry:
       enabled: true
+      {{- if .Values.opentelemetry.serviceName }}
+      service_name: {{ .Values.opentelemetry.serviceName | quote }}
+      {{- end }}
       exporter:
         endpoint: {{ tpl (.Values.opentelemetry.exporter.endpoint | default "") . | quote }}
         insecure: {{ .Values.opentelemetry.exporter.insecure | default false }}

@@ -5,11 +5,12 @@ import "time"
 // OtelConfig is the root OpenTelemetry configuration block.
 // Set enabled: true and configure at least exporter.endpoint to activate.
 type OtelConfig struct {
-	Enabled  bool           `yaml:"enabled"`
-	Exporter ExporterConfig `yaml:"exporter"`
-	Traces   TracesConfig   `yaml:"traces"`
-	Metrics  MetricsConfig  `yaml:"metrics"`
-	Logs     LogsConfig     `yaml:"logs"`
+	Enabled     bool           `yaml:"enabled"`
+	ServiceName string         `yaml:"service_name"` // overrides the default service name in traces/logs
+	Exporter    ExporterConfig `yaml:"exporter"`
+	Traces      TracesConfig   `yaml:"traces"`
+	Metrics     MetricsConfig  `yaml:"metrics"`
+	Logs        LogsConfig     `yaml:"logs"`
 }
 
 // ExporterConfig holds the base OTLP endpoint shared across all signals.

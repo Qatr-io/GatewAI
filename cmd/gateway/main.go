@@ -18,11 +18,14 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
-	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/health"
 	"gatewai/gateway/internal/llmproxy"
 	"gatewai/gateway/internal/llmproxy/provider"
 	gmetrics "gatewai/gateway/internal/metrics"
@@ -89,6 +92,9 @@ func reservedGatewayPath(path string) bool {
 	return false
 }
 
+// authExemptPrefixes lists the path prefixes that bypass authentication checks.
+var authExemptPrefixes = []string{"/health", "/metrics", "/docs", "/openapi.yaml"}
+
 func buildRouter(
 	cfg *config.Config,
 	reg *service.Registry,
@@ -100,24 +106,33 @@ func buildRouter(
 	limiter *ratelimit.Limiter,
 	llmHandler *llmproxy.Handler,
 	tracer trace.Tracer,
+	authenticator auth.Authenticator,
+	authzEngine *authz.Engine,
+	healthChecker *health.Checker,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
 	}
+	if authzEngine != nil {
+		jobHandler.WithAuthz(authzEngine)
+	}
 
 	r := chi.NewRouter()
 	r.Use(chimw.RequestID)
 	r.Use(chimw.RealIP)
-	r.Use(handler.OtelMiddleware(tracer))
+	r.Use(handler.OtelMiddleware(tracer, cfg.Otel.Traces.IgnorePaths...))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
+	if authenticator != nil {
+		r.Use(auth.Middleware(authenticator, cfg.Auth.Mode, authExemptPrefixes, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader))
+	}
 
 	spec := handler.GenerateSpec(reg, version)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
-	r.Get("/health", handler.Health)
+	r.Get("/health", handler.NewHealthHandler(healthChecker.Snapshot))
 	r.Get("/metrics", promhttp.Handler().ServeHTTP)
 	r.Get("/docs", handler.DocsUI(swaggerSpecs))
 	r.Get("/openapi.yaml", handler.NewDocsSpec(spec))
@@ -134,6 +149,9 @@ func buildRouter(
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
+		}
+		if authzEngine != nil {
+			sh.WithAuthz(authzEngine)
 		}
 		syncHandler := sh
 		r.Get("/v1/models", handler.ListModels(reg))
@@ -174,7 +192,11 @@ func main() {
 	}
 
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
-	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/gateway", version)
+	otelSvcName := cfg.Otel.ServiceName
+	if otelSvcName == "" {
+		otelSvcName = "gatewai/gateway"
+	}
+	tel, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, otelSvcName, version)
 	if err != nil {
 		slog.Error("failed to initialise OpenTelemetry", "error", err)
 		os.Exit(1)
@@ -210,10 +232,12 @@ func main() {
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
 	modelLimits := buildModelLimits(cfg.Services)
-	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 {
+	// The limiter is also needed when policies carry per-group limits, since those
+	// are enforced through the same limiter (via request-context policy limits).
+	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 || cfg.Policies != nil {
 		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, modelLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
 		rl = limiter
-		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits))
+		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
@@ -236,6 +260,25 @@ func main() {
 		cfg.Server.UserTypeHeader, consumerTracker,
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
 		tokenChecker(limiter))
+
+	// ── Authenticator ────────────────────────────────────────────────────────
+	// Build once; reused across reloads. The JWKS refresh goroutine is started
+	// with context.Background() so it lives for the full process lifetime.
+	// Auth config changes require a gateway restart.
+	authenticator, err := buildAuthenticator(context.Background(), cfg)
+	if err != nil {
+		slog.Error("failed to initialise authenticator", "error", err)
+		os.Exit(1)
+	}
+	if cfg.Auth.Mode != "" {
+		slog.Info("authentication enabled", "mode", cfg.Auth.Mode)
+	}
+	// ── Health checker ────────────────────────────────────────────────────────
+	hostname, err := os.Hostname()
+	if err != nil {
+		hostname = "unknown"
+	}
+	healthChecker := health.New(initialRegistry, redisClient.Raw(), cfg.Health, hostname)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
@@ -263,6 +306,7 @@ func main() {
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
 		manager.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
 		manager.Reconcile(newReg)
+		healthChecker.UpdateRegistry(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
@@ -274,7 +318,7 @@ func main() {
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
-		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 {
+		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 || newCfg.Policies != nil {
 			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newModelLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
 			rl = limiter
 		} else {
@@ -291,14 +335,23 @@ func main() {
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			tokenChecker(limiter))
 
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
+		// Reuse the existing authenticator. Auth config changes require a restart.
+		var newAuthzEngine *authz.Engine
+		if newCfg.Policies != nil {
+			newAuthzEngine = authz.New(*newCfg.Policies)
+		}
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
+	var authzEngine *authz.Engine
+	if cfg.Policies != nil {
+		authzEngine = authz.New(*cfg.Policies)
+	}
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
@@ -310,6 +363,7 @@ func main() {
 	}
 
 	manager.Start(ctx, initialRegistry)
+	go healthChecker.Start(ctx)
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.
@@ -403,4 +457,70 @@ func main() {
 	}
 
 	slog.Info("server stopped")
+}
+
+// buildAuthenticator creates the Authenticator requested by cfg.Auth.Mode.
+// Returns (nil, nil) when mode is "" (legacy/no-auth).
+// On error the caller must treat startup as fatal.
+func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authenticator, error) {
+	switch cfg.Auth.Mode {
+	case "oauth2":
+		c := cfg.Auth.OAuth2
+		var introspectionCfg *auth.IntrospectionConfig
+		if c.Introspection != nil {
+			cacheTTL := 60 * time.Second
+			if c.Introspection.CacheTTL != "" {
+				if d, err := time.ParseDuration(c.Introspection.CacheTTL); err == nil {
+					cacheTTL = d
+				}
+			}
+			introspectionCfg = &auth.IntrospectionConfig{
+				Endpoint:     c.Introspection.Endpoint,
+				ClientID:     c.Introspection.ClientID,
+				ClientSecret: c.Introspection.ClientSecret,
+				CacheTTL:     cacheTTL,
+			}
+		}
+		a, err := auth.NewOAuth2Authenticator(ctx, auth.OAuth2Config{
+			Issuer:    c.Issuer,
+			JWKSURL:   c.JWKSURL,
+			Audiences: c.Audiences,
+			Claims: auth.ClaimMap{
+				Subject:  c.Claims.Subject,
+				Consumer: c.Claims.Consumer,
+				Scopes:   c.Claims.Scopes,
+				Groups:   c.Claims.Groups,
+				Roles:    c.Claims.Roles,
+			},
+			Validation:    c.Validation,
+			Introspection: introspectionCfg,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return a, nil
+
+	case "proxy":
+		p := cfg.Auth.Proxy
+		// Fall back to server-level headers when proxy-specific ones are empty,
+		// so existing deployments keep working without any config change.
+		consumerHeader := p.ConsumerHeader
+		if consumerHeader == "" {
+			consumerHeader = cfg.Server.ConsumerHeader
+		}
+		userTypeHeader := p.UserTypeHeader
+		if userTypeHeader == "" {
+			userTypeHeader = cfg.Server.UserTypeHeader
+		}
+		return auth.NewHeaderAuthenticator(auth.HeaderConfig{
+			ConsumerHeader: consumerHeader,
+			UserTypeHeader: userTypeHeader,
+			GroupsHeader:   p.GroupsHeader,
+			RolesHeader:    p.RolesHeader,
+			ScopesHeader:   p.ScopesHeader,
+		}), nil
+
+	default: // "" — legacy, no auth
+		return nil, nil
+	}
 }

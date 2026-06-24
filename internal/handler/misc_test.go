@@ -1,15 +1,18 @@
 package handler_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/handler"
+	"gatewai/gateway/internal/health"
 	"gatewai/gateway/internal/service"
 )
 
@@ -50,6 +53,251 @@ func TestHealth_BodyHasStatusOK(t *testing.T) {
 	}
 	if _, ok := body["time"]; !ok {
 		t.Error(`expected "time" field in health response`)
+	}
+}
+
+// ── NewHealthHandler ──────────────────────────────────────────────────────────
+// The handler reads from a cached snapshot — no live probing on the request path.
+// Tests inject a snapshot function directly.
+
+func snapshotFn(snap *health.Snapshot, err error) func(context.Context) (*health.Snapshot, error) {
+	return func(_ context.Context) (*health.Snapshot, error) { return snap, err }
+}
+
+func TestNewHealthHandler_NoParams_LightweightResponse(t *testing.T) {
+	h := handler.NewHealthHandler(snapshotFn(nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "ok" {
+		t.Errorf(`expected "status": "ok", got %v`, body["status"])
+	}
+	if _, ok := body["time"]; !ok {
+		t.Error(`expected "time" field`)
+	}
+}
+
+func TestNewHealthHandler_NoSnapshot_ReturnsUnknown(t *testing.T) {
+	h := handler.NewHealthHandler(snapshotFn(nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "unknown" {
+		t.Errorf(`expected "status": "unknown" when no snapshot yet, got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_NoSnapshot_Strict_Returns500(t *testing.T) {
+	h := handler.NewHealthHandler(snapshotFn(nil, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true&mode=strict", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when no snapshot in strict mode, got %d", w.Code)
+	}
+}
+
+func TestNewHealthHandler_Verbose_AllUp(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up", "llava": "up"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf(`expected "status": "up", got %v`, body["status"])
+	}
+	backends, ok := body["backends"].(map[string]any)
+	if !ok {
+		t.Fatalf(`expected "backends" map, got %T`, body["backends"])
+	}
+	for model, s := range backends {
+		if s != "up" {
+			t.Errorf("model %q: expected up, got %v", model, s)
+		}
+	}
+}
+
+func TestNewHealthHandler_Verbose_OneDown_ReturnsPartial(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 (non-strict partial), got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "partial" {
+		t.Errorf(`expected "status": "partial", got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_Verbose_AllDown_ReturnsDown(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "down", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "down" {
+		t.Errorf(`expected "status": "down", got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_Strict_Partial_Returns500AndPartial(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true&mode=strict", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 (strict + partial), got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "partial" {
+		t.Errorf(`expected "status": "partial" in strict mode, got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_EmptySnapshot_ReturnsUnknown(t *testing.T) {
+	// Snapshot exists but no backends were probed (all disabled or no InferenceURL).
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "unknown" {
+		t.Errorf(`expected "status": "unknown" for empty backends, got %v`, body["status"])
+	}
+}
+
+func TestNewHealthHandler_ModelFilter_Up(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?model=whisper-large", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if body["status"] != "up" {
+		t.Errorf(`expected "status": "up" for whisper-large, got %v`, body["status"])
+	}
+	if _, ok := body["backends"]; ok {
+		t.Error(`"backends" should not be present without verbose=true`)
+	}
+}
+
+func TestNewHealthHandler_ModelFilter_Down_Strict(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up", "llava": "down"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?model=llava&mode=strict", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 for down model in strict mode, got %d", w.Code)
+	}
+}
+
+func TestNewHealthHandler_CheckedAt_PresentInVerbose(t *testing.T) {
+	snap := &health.Snapshot{
+		CheckedAt: time.Now(),
+		Backends:  map[string]string{"whisper-large": "up"},
+	}
+	h := handler.NewHealthHandler(snapshotFn(snap, nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/health?verbose=true", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("invalid JSON: %v", err)
+	}
+	if _, ok := body["checked_at"]; !ok {
+		t.Error(`expected "checked_at" in verbose response`)
 	}
 }
 

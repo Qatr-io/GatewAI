@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/qatr-io/gatewai/gateway
-  tag: "v0.17.0"
+  tag: "v0.18.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -35,6 +35,43 @@ server:
   # HTTP header set by the API gateway on high-priority requests.
   # When present, jobs are pushed to the head of the Redis queue.
   priorityHeader: ""
+
+# ── Authentication (optional) ─────────────────────────────────────────────────
+# Empty ⇒ no gateway-side auth: identity is trusted from the upstream headers
+# above (gateway behind an upstream reverse proxy). Pick ONE mode per deployment.
+#   auth:
+#     mode: oauth2                 # oauth2 | proxy
+#     oauth2:
+#       issuer: "https://idp.example.com/realm"
+#       jwksUrl: ""                # optional explicit override
+#       audiences: ["gatewai"]
+#       validation: auto           # auto | jwt | introspection
+#       introspection:             # for opaque tokens (RFC 7662) + live revocation
+#         clientId: "${OAUTH_CLIENT_ID}"
+#         clientSecret: "${OAUTH_CLIENT_SECRET}"
+#         cacheTtl: 60s
+#       claims:
+#         consumer: "preferred_username"
+#         scopes: "scope"
+#         groups: "groups"
+#         roles: "roles"
+#     proxy:
+#       consumerHeader: "X-Consumer-Username"
+#       userTypeHeader: "X-Consumer-Type"
+#       groupsHeader: "X-Consumer-Groups"
+#       rolesHeader: "X-Consumer-Roles"
+auth: {}
+
+# ── Access control (optional) ─────────────────────────────────────────────────
+# Default-deny model/service allowlist. Requires auth (above). Mirrors the
+# config.yaml `policies` structure verbatim (rendered as-is into the ConfigMap).
+#   policies:
+#     default: deny
+#     rules:
+#       - match: { groups: ["research-lab"] }
+#         allow_models: ["gpt-oss-120b", "chat-*"]
+#         allow_service_types: ["llm"]
+policies: {}
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 # Request-count rate limits per service type and user type.
@@ -363,6 +400,9 @@ configReloader:
 # the bundled collector's OTLP/HTTP receiver (aliased as "otlp").
 opentelemetry:
   enabled: false
+  # serviceName overrides the default "gatewai/gateway" resource attribute.
+  # Set this to match your Loki service_name label for log-to-trace correlation.
+  serviceName: ""
   exporter:
     endpoint: "http://{{ .Release.Name }}-otlp:4318"
     insecure: true

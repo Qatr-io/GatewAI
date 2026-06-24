@@ -538,3 +538,178 @@ func TestCheckProcessingTime(t *testing.T) {
 		t.Fatalf("over budget: want rejected, got %+v err=%v", r3, err)
 	}
 }
+
+// ── Policy-limits context tests ───────────────────────────────────────────────
+
+// TestCheck_PolicyLimits_PerConsumerBudget verifies that WithPolicyLimits
+// enforces a separate per-consumer request-rate budget on key rlp:{consumer}:{serviceType}.
+func TestCheck_PolicyLimits_PerConsumerBudget(t *testing.T) {
+	// No service-level rate_limits — only policy limits matter.
+	l, mr := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	policyCfg := &config.RateLimitConfig{Rate: 2, Period: "1m"}
+
+	makeReq := func(consumer string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		r.Header.Set("X-Consumer", consumer)
+		return r
+	}
+
+	ctx := ratelimit.WithPolicyLimits(context.Background(), policyCfg)
+
+	// consumer "alice": first 2 requests must be allowed.
+	for i := 1; i <= 2; i++ {
+		res, err := l.Check(ctx, makeReq("alice"), "llm")
+		if err != nil {
+			t.Fatalf("alice req %d: unexpected error: %v", i, err)
+		}
+		if !res.Allowed {
+			t.Fatalf("alice req %d: expected allowed (policy rate=2), got rejected", i)
+		}
+	}
+	// 3rd request must be rejected.
+	res, err := l.Check(ctx, makeReq("alice"), "llm")
+	if err != nil {
+		t.Fatalf("alice req 3: unexpected error: %v", err)
+	}
+	if res.Allowed {
+		t.Fatal("alice req 3: expected rejected after exceeding policy budget")
+	}
+
+	// "bob" has their own independent budget.
+	for i := 1; i <= 2; i++ {
+		res, err := l.Check(ctx, makeReq("bob"), "llm")
+		if err != nil {
+			t.Fatalf("bob req %d: unexpected error: %v", i, err)
+		}
+		if !res.Allowed {
+			t.Fatalf("bob req %d: expected allowed (independent budget)", i)
+		}
+	}
+
+	// Verify the Redis key format.
+	aliceKey := "rlp:alice:llm"
+	if v, err := mr.Get(aliceKey); err != nil || v == "" {
+		t.Errorf("expected key %q to exist in Redis, got %q err=%v", aliceKey, v, err)
+	}
+	bobKey := "rlp:bob:llm"
+	if v, err := mr.Get(bobKey); err != nil || v == "" {
+		t.Errorf("expected key %q to exist in Redis, got %q err=%v", bobKey, v, err)
+	}
+}
+
+// TestCheck_PolicyLimits_AnonymousSkipped verifies that anonymous consumers
+// bypass the policy-level rate check entirely (no Redis key written).
+func TestCheck_PolicyLimits_AnonymousSkipped(t *testing.T) {
+	l, mr := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	policyCfg := &config.RateLimitConfig{Rate: 1, Period: "1m"}
+	ctx := ratelimit.WithPolicyLimits(context.Background(), policyCfg)
+
+	// No consumer header → anonymous.
+	for i := 0; i < 5; i++ {
+		r := httptest.NewRequest(http.MethodPost, "/", nil)
+		res, err := l.Check(ctx, r, "llm")
+		if err != nil {
+			t.Fatalf("anon req %d: unexpected error: %v", i, err)
+		}
+		if !res.Allowed {
+			t.Fatalf("anon req %d: expected allowed (anonymous skips policy check)", i)
+		}
+	}
+
+	// No policy key should have been written.
+	if v, _ := mr.Get("rlp:anonymous:llm"); v != "" {
+		t.Errorf("expected no rlp:anonymous:llm key, but got %q", v)
+	}
+}
+
+// TestCheck_NoPolicyLimitsInCtx_ExistingBehaviorUnchanged confirms that when
+// no policy limits are stored in ctx the existing rate_limits behavior is unchanged.
+func TestCheck_NoPolicyLimitsInCtx_ExistingBehaviorUnchanged(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {Rate: 2, Period: "1m"}},
+	}
+	l, _ := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+
+	r1 := httptest.NewRequest(http.MethodPost, "/", nil)
+	r1.Header.Set("X-Consumer", "user1")
+	res, err := l.Check(context.Background(), r1, "audio")
+	if err != nil || !res.Allowed {
+		t.Fatalf("req 1: want allowed, got %+v err=%v", res, err)
+	}
+
+	r2 := httptest.NewRequest(http.MethodPost, "/", nil)
+	r2.Header.Set("X-Consumer", "user1")
+	res, err = l.Check(context.Background(), r2, "audio")
+	if err != nil || !res.Allowed {
+		t.Fatalf("req 2: want allowed, got %+v err=%v", res, err)
+	}
+
+	r3 := httptest.NewRequest(http.MethodPost, "/", nil)
+	r3.Header.Set("X-Consumer", "user1")
+	res, _ = l.Check(context.Background(), r3, "audio")
+	if res.Allowed {
+		t.Fatal("req 3: want rejected by existing rate_limits")
+	}
+}
+
+// TestCheckTokens_PolicyLimits_BudgetEnforced verifies that AddTokens beyond
+// the policy TokenRate causes CheckTokens to reject.
+func TestCheckTokens_PolicyLimits_BudgetEnforced(t *testing.T) {
+	// No service-level token limits; only policy limits.
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	policyCfg := &config.RateLimitConfig{TokenRate: 500, TokenPeriod: "1h"}
+	ctx := ratelimit.WithPolicyLimits(context.Background(), policyCfg)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.Header.Set("X-Consumer", "user1")
+
+	// Consume 400 tokens — within policy budget.
+	if err := l.AddTokens(ctx, req, "llm", 400); err != nil {
+		t.Fatalf("AddTokens: %v", err)
+	}
+	res, err := l.CheckTokens(ctx, req, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected allowed after 400/500 policy tokens consumed")
+	}
+
+	// Consume 200 more → total 600, over policy limit of 500.
+	if err := l.AddTokens(ctx, req, "llm", 200); err != nil {
+		t.Fatalf("AddTokens: %v", err)
+	}
+	res, err = l.CheckTokens(ctx, req, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected rejected after exceeding policy token budget")
+	}
+	if res.ResetAfter <= 0 {
+		t.Fatal("expected positive ResetAfter on policy token rejection")
+	}
+}
+
+// TestCheckTokens_PolicyLimits_AnonymousSkipped verifies that anonymous
+// consumers bypass the policy token layer.
+func TestCheckTokens_PolicyLimits_AnonymousSkipped(t *testing.T) {
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	policyCfg := &config.RateLimitConfig{TokenRate: 1, TokenPeriod: "1h"}
+	ctx := ratelimit.WithPolicyLimits(context.Background(), policyCfg)
+
+	// No consumer header → anonymous.
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+
+	// Add many tokens — should not be counted.
+	if err := l.AddTokens(ctx, req, "llm", 1000); err != nil {
+		t.Fatalf("AddTokens: %v", err)
+	}
+	res, err := l.CheckTokens(ctx, req, "llm")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected allowed: anonymous consumer should skip policy token check")
+	}
+}

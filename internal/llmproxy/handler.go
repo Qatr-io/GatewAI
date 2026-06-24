@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/cache"
@@ -163,9 +164,9 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		} else if hit {
 			metrics.CacheHitsTotal.WithLabelValues(def.Type, def.Model).Inc()
 			// Tokens are counted on every delivery (including cache hits) for billing purposes.
-			usage := emitTokenMetrics(def, "", userType, entry.Body)
+			usage := emitTokenMetrics(ctx, def, "", userType, entry.Body)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "cache", userType, "200").Inc()
-			metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType).Observe(time.Since(start).Seconds())
+			metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType), time.Since(start).Seconds())
 			if consumer != "" && usage != nil {
 				tCtx := context.WithoutCancel(r.Context())
 				h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
@@ -218,6 +219,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+reqErr.Error())
 			return
 		}
+		otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 		for k, v := range backend.Headers {
 			upstreamReq.Header.Set(k, v)
 		}
@@ -281,14 +283,14 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		span.SetStatus(codes.Error, "backend error")
 	}
 	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType).Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
 
 	if usage != nil {
 		total := usage.PromptTokens + usage.CompletionTokens
 		metrics.LLMTokensTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, userType, "prompt").Add(float64(usage.PromptTokens))
 		metrics.LLMTokensTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, userType, "completion").Add(float64(usage.CompletionTokens))
 		if total > 0 {
-			metrics.LLMTokensPerRequest.WithLabelValues(def.Type, def.Model, winningBackendModel, userType).Observe(float64(total))
+			metrics.ObserveWithExemplar(ctx, metrics.LLMTokensPerRequest.WithLabelValues(def.Type, def.Model, winningBackendModel, userType), float64(total))
 		}
 		if consumer != "" {
 			tCtx := context.WithoutCancel(r.Context())
@@ -371,7 +373,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	}
 }
 
-func emitTokenMetrics(def *service.Def, backendModel, userType string, body []byte) *provider.Usage {
+func emitTokenMetrics(ctx context.Context, def *service.Def, backendModel, userType string, body []byte) *provider.Usage {
 	var resp struct {
 		Usage struct {
 			PromptTokens     int `json:"prompt_tokens"`
@@ -389,7 +391,7 @@ func emitTokenMetrics(def *service.Def, backendModel, userType string, body []by
 	}
 	total := resp.Usage.PromptTokens + resp.Usage.CompletionTokens
 	if total > 0 {
-		metrics.LLMTokensPerRequest.WithLabelValues(def.Type, def.Model, backendModel, userType).Observe(float64(total))
+		metrics.ObserveWithExemplar(ctx, metrics.LLMTokensPerRequest.WithLabelValues(def.Type, def.Model, backendModel, userType), float64(total))
 	}
 	return &provider.Usage{
 		PromptTokens:     resp.Usage.PromptTokens,
@@ -483,6 +485,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			writeError(w, http.StatusInternalServerError, "failed to build upstream request: "+reqErr.Error())
 			return
 		}
+		otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 		for k, v := range backend.Headers {
 			upstreamReq.Header.Set(k, v)
 		}
@@ -532,7 +535,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 
 	statusStr := strconv.Itoa(resp.StatusCode)
 	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType).Observe(time.Since(start).Seconds())
+	metrics.ObserveWithExemplar(r.Context(), metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
 
 	// Pipe SSE lines to the client, flushing after each line.
 	// We track the last non-[DONE] data payload to extract usage counts once
@@ -572,7 +575,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 
 	var streamUsage *provider.Usage
 	if lastDataPayload != "" {
-		streamUsage = emitTokenMetrics(def, winningBackendModel, userType, []byte(lastDataPayload))
+		streamUsage = emitTokenMetrics(r.Context(), def, winningBackendModel, userType, []byte(lastDataPayload))
 		if streamUsage != nil && h.tokenLimiter != nil {
 			total := streamUsage.PromptTokens + streamUsage.CompletionTokens
 			if total > 0 {

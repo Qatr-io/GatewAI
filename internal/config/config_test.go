@@ -581,3 +581,682 @@ services:
 		t.Error("expected error for unknown guardrails.output check name")
 	}
 }
+
+// ── Auth config tests ─────────────────────────────────────────────────────────
+
+func TestLoad_Auth_DefaultMode_Legacy(t *testing.T) {
+	// No auth block → mode is "" (backward compatible).
+	path := writeConfig(t, minimalValid)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "" {
+		t.Errorf("expected empty auth mode (legacy), got %q", cfg.Auth.Mode)
+	}
+}
+
+func TestLoad_Auth_InvalidMode_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: "basic"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid auth.mode")
+	}
+}
+
+func TestLoad_Auth_OAuth2_MissingIssuer_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    audiences:
+      - myapp
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when auth.oauth2.issuer is missing")
+	}
+}
+
+func TestLoad_Auth_OAuth2_MissingAudiences_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when auth.oauth2.audiences is empty")
+	}
+}
+
+func TestLoad_Auth_OAuth2_Valid_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+    jwks_url: https://idp.example.com/.well-known/jwks.json
+    audiences:
+      - myapp
+      - otherapp
+    claims:
+      subject: sub
+      consumer: preferred_username
+      scopes: scope
+      groups: groups
+      roles: realm_access.roles
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "oauth2" {
+		t.Errorf("expected mode=oauth2, got %q", cfg.Auth.Mode)
+	}
+	if cfg.Auth.OAuth2.Issuer != "https://idp.example.com" {
+		t.Errorf("expected issuer, got %q", cfg.Auth.OAuth2.Issuer)
+	}
+	if cfg.Auth.OAuth2.JWKSURL != "https://idp.example.com/.well-known/jwks.json" {
+		t.Errorf("expected jwks_url, got %q", cfg.Auth.OAuth2.JWKSURL)
+	}
+	if len(cfg.Auth.OAuth2.Audiences) != 2 {
+		t.Errorf("expected 2 audiences, got %d", len(cfg.Auth.OAuth2.Audiences))
+	}
+	if cfg.Auth.OAuth2.Claims.Consumer != "preferred_username" {
+		t.Errorf("expected consumer claim=preferred_username, got %q", cfg.Auth.OAuth2.Claims.Consumer)
+	}
+	if cfg.Auth.OAuth2.Claims.Roles != "realm_access.roles" {
+		t.Errorf("expected roles claim=realm_access.roles, got %q", cfg.Auth.OAuth2.Claims.Roles)
+	}
+}
+
+func TestLoad_Auth_Proxy_Valid_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: proxy
+  proxy:
+    consumer_header: X-Consumer-Username
+    user_type_header: X-User-Type
+    groups_header: X-Groups
+    roles_header: X-Roles
+    scopes_header: X-Scopes
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "proxy" {
+		t.Errorf("expected mode=proxy, got %q", cfg.Auth.Mode)
+	}
+	if cfg.Auth.Proxy.ConsumerHeader != "X-Consumer-Username" {
+		t.Errorf("expected consumer_header, got %q", cfg.Auth.Proxy.ConsumerHeader)
+	}
+	if cfg.Auth.Proxy.GroupsHeader != "X-Groups" {
+		t.Errorf("expected groups_header, got %q", cfg.Auth.Proxy.GroupsHeader)
+	}
+}
+
+func TestLoad_Auth_ProxyMode_NoHeaders_OK(t *testing.T) {
+	// proxy mode with no headers configured is valid (headers may come from server.*).
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: proxy
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("proxy mode with no headers should be valid, got: %v", err)
+	}
+}
+
+// ── Policies config tests ─────────────────────────────────────────────────────
+
+func TestLoad_Policies_Absent_IsNil(t *testing.T) {
+	// No policies block → Policies field is nil.
+	path := writeConfig(t, minimalValid)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies != nil {
+		t.Errorf("expected Policies to be nil when absent, got %+v", cfg.Policies)
+	}
+}
+
+func TestLoad_Policies_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+  proxy:
+    consumer_header: X-Consumer-Username
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - research-lab
+        roles:
+          - analyst
+        scopes:
+          - llm:use
+        consumers:
+          - svc-account-1
+        user_types:
+          - premium
+      allow_models:
+        - "gpt-4o"
+        - "chat-*"
+      allow_service_types:
+        - "llm"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies == nil {
+		t.Fatal("expected Policies to be non-nil")
+	}
+	if cfg.Policies.Default != "deny" {
+		t.Errorf("expected default=deny, got %q", cfg.Policies.Default)
+	}
+	if len(cfg.Policies.Rules) != 1 {
+		t.Fatalf("expected 1 rule, got %d", len(cfg.Policies.Rules))
+	}
+	r := cfg.Policies.Rules[0]
+	if len(r.Match.Groups) != 1 || r.Match.Groups[0] != "research-lab" {
+		t.Errorf("unexpected groups: %v", r.Match.Groups)
+	}
+	if len(r.Match.Roles) != 1 || r.Match.Roles[0] != "analyst" {
+		t.Errorf("unexpected roles: %v", r.Match.Roles)
+	}
+	if len(r.Match.Scopes) != 1 || r.Match.Scopes[0] != "llm:use" {
+		t.Errorf("unexpected scopes: %v", r.Match.Scopes)
+	}
+	if len(r.Match.Consumers) != 1 || r.Match.Consumers[0] != "svc-account-1" {
+		t.Errorf("unexpected consumers: %v", r.Match.Consumers)
+	}
+	if len(r.Match.UserTypes) != 1 || r.Match.UserTypes[0] != "premium" {
+		t.Errorf("unexpected user_types: %v", r.Match.UserTypes)
+	}
+	if len(r.AllowModels) != 2 {
+		t.Errorf("expected 2 allow_models, got %d", len(r.AllowModels))
+	}
+	if len(r.AllowServiceTypes) != 1 || r.AllowServiceTypes[0] != "llm" {
+		t.Errorf("unexpected allow_service_types: %v", r.AllowServiceTypes)
+	}
+}
+
+func TestLoad_Policies_InvalidDefault_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: permit
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid policies.default")
+	}
+}
+
+func TestLoad_Policies_WithRules_RequiresAuthMode_Error(t *testing.T) {
+	// policies with rules but no auth.mode → error.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - admins
+      allow_models:
+        - "*"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policies have rules but auth.mode is empty")
+	}
+}
+
+func TestLoad_Policies_DefaultDenyNoRules_RequiresAuthMode_Error(t *testing.T) {
+	// policies with default=deny (even no rules) but no auth.mode → error.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: deny
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policies.default=deny but auth.mode is empty")
+	}
+}
+
+func TestLoad_Policies_WithAuthMode_OK(t *testing.T) {
+	// policies + auth.mode set → valid.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        roles:
+          - admin
+      allow_models:
+        - "*"
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("policies + auth.mode should be valid, got: %v", err)
+	}
+}
+
+func TestLoad_Policies_DefaultAllow_NoAuthRequired(t *testing.T) {
+	// Default "allow" disables enforcement; no auth.mode needed.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+policies:
+  default: allow
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("policies.default=allow without auth.mode should be valid, got: %v", err)
+	}
+}
+
+// ── Policy rule limits tests ──────────────────────────────────────────────────
+
+func TestLoad_PolicyRule_WithLimits_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - premium-users
+      allow_models:
+        - "*"
+      limits:
+        rate: 50
+        period: 1m
+        token_rate: 100000
+        token_period: 1h
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Policies == nil || len(cfg.Policies.Rules) != 1 {
+		t.Fatal("expected one policy rule")
+	}
+	rule := cfg.Policies.Rules[0]
+	if rule.Limits == nil {
+		t.Fatal("expected Limits to be non-nil")
+	}
+	if rule.Limits.Rate != 50 {
+		t.Errorf("expected Rate=50, got %d", rule.Limits.Rate)
+	}
+	if rule.Limits.Period != "1m" {
+		t.Errorf("expected Period=1m, got %q", rule.Limits.Period)
+	}
+	if rule.Limits.TokenRate != 100000 {
+		t.Errorf("expected TokenRate=100000, got %d", rule.Limits.TokenRate)
+	}
+	if rule.Limits.TokenPeriod != "1h" {
+		t.Errorf("expected TokenPeriod=1h, got %q", rule.Limits.TokenPeriod)
+	}
+}
+
+func TestLoad_PolicyRule_LimitsTokenRateWithoutPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - users
+      allow_models:
+        - "*"
+      limits:
+        token_rate: 5000
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policy rule limits.token_rate is set without token_period")
+	}
+}
+
+func TestLoad_PolicyRule_LimitsRateWithoutPeriod_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        groups:
+          - users
+      allow_models:
+        - "*"
+      limits:
+        rate: 20
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when policy rule limits.rate is set without period")
+	}
+}
+
+func TestLoad_PolicyRule_NilLimits_OK(t *testing.T) {
+	// A rule with no limits block is valid.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    inference_url: "http://llm.svc"
+auth:
+  mode: proxy
+policies:
+  default: deny
+  rules:
+    - match:
+        roles:
+          - analyst
+      allow_models:
+        - "*"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("rule without limits should be valid, got: %v", err)
+	}
+	if cfg.Policies.Rules[0].Limits != nil {
+		t.Errorf("expected Limits=nil for rule without limits block")
+	}
+}
+
+// ── Introspection / validation config tests ───────────────────────────────────
+
+// oauth2Base is a minimal valid oauth2 config snippet for reuse in introspection tests.
+const oauth2Base = `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    inference_url: "http://llm.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+    audiences:
+      - myapp
+`
+
+func TestLoad_OAuth2_InvalidValidation_Error(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: magic
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid auth.oauth2.validation value")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_MissingClientID_Error(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: introspection
+    introspection:
+      endpoint: https://idp.example.com/introspect
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when introspection.client_id is missing")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_MissingEndpointAndIssuer_Error(t *testing.T) {
+	// No issuer override here — but the base has issuer, so we need a config without issuer.
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    inference_url: "http://llm.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: ""
+    audiences:
+      - myapp
+    validation: introspection
+    introspection:
+      client_id: myclient
+`)
+	// issuer is "" and endpoint is "" → error.
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when both introspection.endpoint and issuer are empty")
+	}
+}
+
+func TestLoad_OAuth2_Introspection_ValidWithEndpoint_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: introspection
+    introspection:
+      endpoint: https://idp.example.com/introspect
+      client_id: myclient
+      client_secret: mysecret
+      cache_ttl: 120s
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "introspection" {
+		t.Errorf("Validation = %q, want introspection", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection == nil {
+		t.Fatal("expected Introspection to be non-nil")
+	}
+	if cfg.Auth.OAuth2.Introspection.Endpoint != "https://idp.example.com/introspect" {
+		t.Errorf("Endpoint = %q, want https://idp.example.com/introspect", cfg.Auth.OAuth2.Introspection.Endpoint)
+	}
+	if cfg.Auth.OAuth2.Introspection.ClientID != "myclient" {
+		t.Errorf("ClientID = %q, want myclient", cfg.Auth.OAuth2.Introspection.ClientID)
+	}
+	if cfg.Auth.OAuth2.Introspection.CacheTTL != "120s" {
+		t.Errorf("CacheTTL = %q, want 120s", cfg.Auth.OAuth2.Introspection.CacheTTL)
+	}
+}
+
+func TestLoad_OAuth2_Auto_WithIntrospection_Valid_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: auto
+    introspection:
+      endpoint: https://idp.example.com/introspect
+      client_id: myclient
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "auto" {
+		t.Errorf("Validation = %q, want auto", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection == nil {
+		t.Fatal("expected Introspection to be non-nil")
+	}
+}
+
+func TestLoad_OAuth2_JWT_NoIntrospectionNeeded_OK(t *testing.T) {
+	path := writeConfig(t, oauth2Base+`    validation: jwt
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error for jwt validation without introspection: %v", err)
+	}
+	if cfg.Auth.OAuth2.Validation != "jwt" {
+		t.Errorf("Validation = %q, want jwt", cfg.Auth.OAuth2.Validation)
+	}
+	if cfg.Auth.OAuth2.Introspection != nil {
+		t.Error("expected Introspection to be nil when validation=jwt and no introspection block")
+	}
+}

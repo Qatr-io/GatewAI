@@ -183,6 +183,20 @@ rate_limits:
 
 Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, stage, action, result}` (`stage` = `input`|`output`) and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
 
+### Authentication
+
+`internal/auth/`: optional gateway-side authentication. **Absent `auth` block ⇒ no gateway auth** — identity is trusted from upstream headers (the default when an upstream reverse proxy handles auth). One mode per deployment via `auth.mode`:
+- **`oauth2`** — validates OAuth2 **access tokens** (resource-server model, *not* OIDC id-tokens): JWT signature via cached JWKS (issuer discovery), `iss`/`aud`/`exp` checks, configurable claim mapping (`scope`/`groups`/`roles`/`consumer`). **Fails closed** (`401` invalid/missing, `503` if JWKS unreachable). Strips the client bearer before proxying. Resolves a `Principal{Subject,Consumer,Groups,Roles,Scopes,UserType}` into request context and bridges consumer/user_type into the headers downstream rate-limiting/ownership already read (after stripping inbound values — anti-spoof).
+- **`proxy`** — trusts identity headers set by an upstream reverse proxy, now incl. groups/roles.
+
+`/health` `/metrics` `/docs` `/openapi.yaml` are exempt. Auth config changes require a restart (not hot-reloaded). Deps: `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` (no OIDC lib — access-token validation only). Token format via `auth.oauth2.validation` (`auto` default | `jwt` | `introspection`): JWTs are verified locally via JWKS; opaque tokens via RFC 7662 **introspection** (`auth.oauth2.introspection` — client creds, result cache capped by token exp, gives live revocation); `auto` picks per token shape. See **Access control** below for model/role authz and per-group quotas.
+
+### Access control
+
+`internal/authz/`: optional default-deny model/service access control, enabled by the top-level `policies` block (requires `auth.mode` — it needs a `Principal`). `policies.rules` are allow-rules: a rule grants a request when its `match` intersects the caller (any-of within each non-empty field of `groups`/`roles`/`scopes`/`consumers`/`user_types`; empty match = everyone) AND the requested model matches the rule's `allow_models` globs (and `allow_service_types` if set). No granting rule → `403`. `default: allow` disables enforcement. Enforced on sync (`/v1/*`) and async (`/jobs`) after routing resolves the model, reading the `Principal` from context. Metric: `gatewai_authz_decisions_total{service_type, model, decision}`. Hot-reloadable; absent `policies` = no enforcement.
+
+A rule may also carry an optional **`limits`** block (a `RateLimitConfig`: `rate`/`period`, `token_rate`/`token_period`) — a **per-group quota** applied per-member (keyed by consumer) on the sync LLM path. The matched rule's limits are stashed in the request context (`ratelimit.WithPolicyLimits`) and enforced by the existing limiter (`rlp:`/`trlp:` keys), coexisting with `rate_limits`/`token_limits` (both must pass). Anonymous callers are skipped. (Per-group concurrent/processing-time and async enforcement are follow-ups.)
+
 ### Service headers
 
 `services[].headers`: static headers injected on every outgoing request to the backend. Values support `${VAR}` expansion. Config headers override client headers with the same name.

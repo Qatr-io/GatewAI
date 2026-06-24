@@ -14,6 +14,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
+
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy"
@@ -38,6 +43,7 @@ type SyncHandler struct {
 	retryBackoff      time.Duration                   // initial backoff between retry cycles; default 500ms
 	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
 	userTypeHeader    string
+	authz             *authz.Engine // nil = no enforcement
 }
 
 func NewSyncHandler(
@@ -78,6 +84,42 @@ func (h *SyncHandler) WithRetryBackoff(d time.Duration) *SyncHandler {
 	return h
 }
 
+// WithAuthz sets the authorization engine. nil disables enforcement (default).
+func (h *SyncHandler) WithAuthz(e *authz.Engine) *SyncHandler {
+	h.authz = e
+	return h
+}
+
+// checkAccess enforces the authz policy for (serviceType, model).
+// Returns true when the request is allowed to proceed, false when it was rejected
+// (the 403 response has already been written to w).
+// checkAccess returns the (possibly context-augmented) request and whether the
+// caller may proceed. When the granting policy rule carries per-group limits,
+// they are stashed in the request context so the rate/token limiters enforce
+// them per-consumer downstream.
+func (h *SyncHandler) checkAccess(w http.ResponseWriter, r *http.Request, def *service.Def) (*http.Request, bool) {
+	if h.authz == nil {
+		return r, true
+	}
+	p, _ := auth.FromContext(r.Context())
+	decision := h.authz.Evaluate(p, def.Type, def.Model)
+	if decision.Allowed {
+		metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "allow").Inc()
+		if decision.Limits != nil {
+			r = r.WithContext(ratelimit.WithPolicyLimits(r.Context(), decision.Limits))
+		}
+		return r, true
+	}
+	consumer := ""
+	if p != nil {
+		consumer = p.Consumer
+	}
+	slog.WarnContext(r.Context(), "access denied by policy", "service_type", def.Type, "model", def.Model, "consumer", consumer)
+	metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "deny").Inc()
+	writeError(w, http.StatusForbidden, fmt.Sprintf("access to model %q denied", def.Model))
+	return r, false
+}
+
 func (h *SyncHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -112,6 +154,11 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteSync(r.URL.Path, modelName)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	r, accessOK := h.checkAccess(w, r, def)
+	if !accessOK {
 		return
 	}
 
@@ -192,6 +239,11 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteSync(r.URL.Path, payload.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	r, accessOK := h.checkAccess(w, r, def)
+	if !accessOK {
 		return
 	}
 
@@ -278,7 +330,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		sw := &statusWriter{ResponseWriter: w}
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
-		metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model), time.Since(start).Seconds())
 		return
 	}
 
@@ -291,7 +343,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, def *service.Def, body []byte, contentType string) {
 	start := time.Now()
 	defer func() {
-		metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model).Observe(time.Since(start).Seconds())
+		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model), time.Since(start).Seconds())
 	}()
 
 	captureForPT := h.processingLimiter != nil
@@ -341,6 +393,8 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				lastErr = "failed to build upstream request: " + err.Error()
 				continue
 			}
+			// Propagate W3C trace context so the inference service receives traceparent.
+			otel.GetTextMapPropagator().Inject(r.Context(), propagation.HeaderCarrier(upstreamReq.Header))
 			upstreamReq.Header.Set("Content-Type", contentType)
 			if auth != "" {
 				upstreamReq.Header.Set("Authorization", auth)

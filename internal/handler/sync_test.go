@@ -15,6 +15,8 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/handler"
@@ -1010,5 +1012,211 @@ func TestSyncHandler_RateLimitHeaders_AbsentWhenNoLimiter(t *testing.T) {
 		if v := w.Header().Get(hdr); v != "" {
 			t.Errorf("expected header %q to be absent without limiter, got %q", hdr, v)
 		}
+	}
+}
+
+// ── Authz tests ───────────────────────────────────────────────────────────────
+
+// buildAuthzEngine returns an Engine that allows "ok-model" for any principal
+// and denies everything else (default deny).
+func buildAuthzEngine() *authz.Engine {
+	return authz.New(config.PoliciesConfig{
+		Rules: []config.PolicyRule{
+			{
+				Match:       config.PolicyMatch{},
+				AllowModels: []string{"ok-model"},
+			},
+		},
+	})
+}
+
+// buildAuthzRegistry returns a registry with two models: "ok-model" (allowed)
+// and "blocked-model" (denied by the test engine).
+func buildAuthzRegistry(backendURL string) *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:  "llm",
+			Model: "ok-model",
+			Operations: map[string][]string{
+				"chat": {"/v1/chat/completions"},
+			},
+			InferenceURL: backendURL,
+		},
+		{
+			Type:    "llm",
+			Model:   "blocked-model",
+			Default: false,
+			Operations: map[string][]string{
+				"chat": {"/v1/chat/completions"},
+			},
+			InferenceURL: backendURL,
+		},
+	})
+}
+
+// withPrincipal injects p into r's context.
+func withPrincipal(r *http.Request, p *auth.Principal) *http.Request {
+	return r.WithContext(auth.WithPrincipal(r.Context(), p))
+}
+
+// TestSyncHandler_Authz_NilEngine_NoEnforcement verifies that a nil engine
+// is fully backward-compatible: requests pass through regardless of model.
+func TestSyncHandler_Authz_NilEngine_NoEnforcement(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[],"usage":{}}`)
+	}))
+	defer backend.Close()
+
+	reg := buildAuthzRegistry(backend.URL)
+	h := handler.NewSyncHandler(reg, "", nil, nil) // no WithAuthz → nil engine
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"blocked-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("nil engine: expected 200, got %d", w.Code)
+	}
+	if !backendCalled {
+		t.Error("nil engine: backend should have been called")
+	}
+}
+
+// TestSyncHandler_Authz_DeniedModel_JSON verifies that a JSON request to a
+// denied model returns 403 and the backend is NOT called.
+func TestSyncHandler_Authz_DeniedModel_JSON(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	reg := buildAuthzRegistry(backend.URL)
+	engine := buildAuthzEngine()
+	h := handler.NewSyncHandler(reg, "", nil, nil).WithAuthz(engine)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"blocked-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = withPrincipal(req, &auth.Principal{Consumer: "alice", Authenticated: true})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for denied model (JSON), got %d: %s", w.Code, w.Body.String())
+	}
+	if backendCalled {
+		t.Error("backend must not be called when model is denied")
+	}
+	if !strings.Contains(w.Body.String(), "denied") {
+		t.Errorf("expected 'denied' in response body, got: %s", w.Body.String())
+	}
+}
+
+// TestSyncHandler_Authz_AllowedModel_JSON verifies that an allowed model
+// proceeds normally (2xx) when authz is configured.
+func TestSyncHandler_Authz_AllowedModel_JSON(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"choices":[],"usage":{}}`)
+	}))
+	defer backend.Close()
+
+	reg := buildAuthzRegistry(backend.URL)
+	engine := buildAuthzEngine()
+	h := handler.NewSyncHandler(reg, "", nil, nil).WithAuthz(engine)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"ok-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = withPrincipal(req, &auth.Principal{Consumer: "alice", Authenticated: true})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for allowed model (JSON), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestSyncHandler_Authz_DeniedModel_Multipart verifies that a multipart request
+// to a denied model returns 403 without calling the backend.
+func TestSyncHandler_Authz_DeniedModel_Multipart(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	// Use a registry with both models under the transcription type.
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:  "transcription",
+			Model: "ok-model",
+			Operations: map[string][]string{
+				"transcription": {"/v1/audio/transcriptions"},
+			},
+			InferenceURL: backend.URL,
+			AcceptedExts: []string{".wav"},
+		},
+		{
+			Type:  "transcription",
+			Model: "blocked-model",
+			Operations: map[string][]string{
+				"transcription": {"/v1/audio/transcriptions"},
+			},
+			InferenceURL: backend.URL,
+			AcceptedExts: []string{".wav"},
+		},
+	})
+	engine := buildAuthzEngine()
+	h := handler.NewSyncHandler(reg, "", nil, nil).WithAuthz(engine)
+
+	req := multipartRequest(t, "/v1/audio/transcriptions", "blocked-model", []byte("audio"))
+	req = withPrincipal(req, &auth.Principal{Consumer: "alice", Authenticated: true})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for denied model (multipart), got %d: %s", w.Code, w.Body.String())
+	}
+	if backendCalled {
+		t.Error("backend must not be called when model is denied (multipart)")
+	}
+}
+
+// TestSyncHandler_Authz_DenyMetricIncremented verifies that the deny counter
+// is incremented when access is denied.
+func TestSyncHandler_Authz_DenyMetricIncremented(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	reg := buildAuthzRegistry(backend.URL)
+	engine := buildAuthzEngine()
+	h := handler.NewSyncHandler(reg, "", nil, nil).WithAuthz(engine)
+
+	counter := metrics.AuthzDecisionsTotal.WithLabelValues("llm", "blocked-model", "deny")
+	before := testutil.ToFloat64(counter)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"blocked-model","messages":[]}`))
+	req.Header.Set("Content-Type", "application/json")
+	req = withPrincipal(req, &auth.Principal{Consumer: "alice", Authenticated: true})
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	after := testutil.ToFloat64(counter)
+	if after-before != 1 {
+		t.Errorf("expected deny counter to increment by 1, got delta %.0f", after-before)
 	}
 }

@@ -13,6 +13,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/relay/internal/adapter"
 	"gatewai/relay/internal/config"
@@ -54,8 +59,8 @@ func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	slog.SetDefault(logger)
+	// Bootstrap logger for config-load phase; reconfigured below once log_level is known.
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
 	cfgPath := "config.yaml"
 	if v := os.Getenv("CONFIG_PATH"); v != "" {
@@ -68,10 +73,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: cfg.SlogLevel()})))
+
 	// ── OpenTelemetry ─────────────────────────────────────────────────────────
 	// The relay is a one-shot process: ForceFlush via shutdown is critical so
 	// spans are not dropped when the pod exits after processing a single job.
-	_, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, "gatewai/relay", version)
+	otelSvcName := cfg.Otel.ServiceName
+	if otelSvcName == "" {
+		otelSvcName = "gatewai/relay"
+	}
+	_, otelShutdown, err := telemetry.Setup(context.Background(), cfg.Otel, otelSvcName, version)
 	if err != nil {
 		slog.Error("failed to initialise OpenTelemetry", "error", err)
 		os.Exit(1)
@@ -162,11 +173,33 @@ func main() {
 		}
 	}()
 
+	relayTracer := otel.Tracer("gatewai/relay")
+	getJobStart := time.Now()
 	job, err := s.GetJob(ctx, jobID)
+	getJobEnd := time.Now()
 	if err != nil {
+		// Root span: traceparent unknown, we still want the failure recorded.
+		_, getJobSpan := relayTracer.Start(ctx, "relay.redis.get_job",
+			trace.WithTimestamp(getJobStart),
+			trace.WithAttributes(attribute.String("job_id", jobID)))
+		getJobSpan.RecordError(err)
+		getJobSpan.SetStatus(codes.Error, err.Error())
+		getJobSpan.End(trace.WithTimestamp(getJobEnd))
 		slog.Error("failed to get job from Redis", "job_id", jobID, "error", err)
 		os.Exit(1)
 	}
+	// Parent the span under the gateway trace now that we have the traceparent.
+	// Use backdated timestamps so the span reflects the actual Redis call timing.
+	getJobParentCtx := ctx
+	if job.TraceContext != "" {
+		carrier := propagation.MapCarrier{"traceparent": job.TraceContext}
+		getJobParentCtx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+	}
+	_, getJobSpan := relayTracer.Start(getJobParentCtx, "relay.redis.get_job",
+		trace.WithTimestamp(getJobStart),
+		trace.WithAttributes(attribute.String("job_id", jobID)))
+	getJobSpan.End(trace.WithTimestamp(getJobEnd))
+	slog.Debug("redis job retrieved", "job_id", jobID)
 
 	// If the gateway cancelled the job between our pop and this read, stop now.
 	if job.Status == model.JobStatusCancelled {
@@ -176,8 +209,6 @@ func main() {
 		}
 		return
 	}
-
-	slog.Info("processing job", "job_id", jobID, "service_type", job.ServiceType)
 
 	if err := proc.Process(jobCtx, job); err != nil {
 		if errors.Is(err, context.Canceled) {

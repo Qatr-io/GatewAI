@@ -16,6 +16,21 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.18.0] — 2026-06-24
+
+#### Added
+
+- **Authentication (OAuth2)**: optional gateway-side auth via a new top-level `auth` block. `auth.mode: oauth2` validates OAuth2 access tokens (JWT via JWKS discovery; `iss`/`aud`/`exp` + configurable claim mapping for scope/groups/roles/consumer), **fails closed** (`401`/`503`), and strips the client bearer before proxying. `auth.mode: proxy` trusts identity headers set by an upstream reverse proxy (incl. groups/roles). An absent `auth` block preserves the previous header-trust behavior. `/health`, `/metrics`, `/docs`, `/openapi.yaml` are exempt; auth config changes require a restart. Foundation for the access control and quota features below.
+- **OAuth2 token introspection** (RFC 7662): `auth.oauth2.validation` (`auto` | `jwt` | `introspection`) adds validation of **opaque** access tokens via the IdP's introspection endpoint (client-credentials auth; results cached up to `cache_ttl`, capped by token `exp`). `auto` verifies JWTs locally and introspects opaque tokens. Fails closed, and provides **live revocation** for any token type.
+- **Access control (policies)**: optional default-deny model/service allowlist via a top-level `policies` block (requires `auth.mode`). Rules match caller identity (`groups`/`roles`/`scopes`/`consumers`/`user_types`) and grant `allow_models`/`allow_service_types` (globs); a request with no granting rule gets `403`. Enforced on both sync (`POST /v1/*`) and async (`POST /jobs`) after routing resolves the model; hot-reloadable; absent `policies` = no enforcement. Metric: `gatewai_authz_decisions_total{service_type, model, decision}`.
+- **Per-group quotas**: a policy rule may carry an optional `limits` block (`rate`/`period`, `token_rate`/`token_period`) — a per-member request-rate and token budget tiered by the caller's group/role, enforced on the sync LLM path (keyed per consumer; coexists with `rate_limits`/`token_limits`). Per-group concurrent/processing-time limits and async enforcement are planned follow-ups.
+
+#### Fixed
+
+- **OTel trace propagation** on the sync-direct path (`POST /v1/*`): W3C `traceparent` header is now correctly injected into upstream requests.
+- **OTLP exporter path filtering**: paths in `opentelemetry.ignore_paths` are now correctly excluded from trace export.
+- **Health check** status reporting: fixed incorrect `partial` / `unknown` statuses when probes are absent or run in batch mode; `GET /health` now returns the correct HTTP method default.
+
 ### [v0.17.0] — 2026-06-19
 
 #### Added
@@ -637,6 +652,20 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [v0.9.0] — 2026-06-24
+
+#### Added
+
+- **Configurable log level**: `log_level` config field (or `LOG_LEVEL` env var) sets the relay's structured log verbosity (`debug` | `info` | `warn` | `error`). Debug mode emits detailed per-operation logs for all traced OTel spans.
+- **OTel spans for S3 and Redis operations**: new child spans under `relay.process_job` — `relay.s3.download`, `relay.s3.upload`, `relay.s3.delete`, `relay.redis.get_job`, `relay.redis.publish_result` — enabling per-operation latency visibility in distributed traces.
+
+#### Fixed
+
+- **`relay.redis.get_job` span timing**: span creation deferred until the traceparent is extracted from the job record, preventing incorrect parent-less root spans.
+- **Trace fields in relay logs**: `trace_id` and `span_id` are now correctly injected into all relay structured log entries during job processing.
+
+---
 
 ### [v0.8.0] — 2026-06-19
 

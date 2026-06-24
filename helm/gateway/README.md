@@ -226,6 +226,71 @@ rate_limits:
 
 Returns `429 Too Many Requests` with `Retry-After` when exceeded.
 
+### Authentication (optional)
+
+Gateway-side OAuth2 access-token validation. Absent `auth` block = no gateway auth (identity trusted from upstream headers). Auth config changes require a pod restart.
+
+| Parameter | Description | Default |
+|---|---|---|
+| `auth.mode` | `oauth2` — validate tokens; `proxy` — trust upstream identity headers | `""` (disabled) |
+| `auth.oauth2.issuer` | IdP issuer URL (used for JWKS discovery) | |
+| `auth.oauth2.jwksUrl` | Explicit JWKS endpoint (overrides discovery) | `""` |
+| `auth.oauth2.audiences` | Required `aud` claim values | `[]` |
+| `auth.oauth2.validation` | `auto` (JWT locally, opaque via introspection) \| `jwt` \| `introspection` | `auto` |
+| `auth.oauth2.introspection.clientId` | Client ID for RFC 7662 introspection (supports `${VAR}`) | |
+| `auth.oauth2.introspection.clientSecret` | Client secret (supports `${VAR}`) | |
+| `auth.oauth2.introspection.cacheTtl` | How long to cache introspection results | `60s` |
+| `auth.oauth2.claims.consumer` | JWT claim mapped to consumer identity | `preferred_username` |
+| `auth.oauth2.claims.scopes` | JWT claim for scopes | `scope` |
+| `auth.oauth2.claims.groups` | JWT claim for groups | `groups` |
+| `auth.oauth2.claims.roles` | JWT claim for roles | `roles` |
+| `auth.proxy.consumerHeader` | Header carrying consumer identity (upstream proxy mode) | |
+| `auth.proxy.userTypeHeader` | Header carrying user type | |
+| `auth.proxy.groupsHeader` | Header carrying groups | |
+| `auth.proxy.rolesHeader` | Header carrying roles | |
+
+### Access control (optional)
+
+Default-deny model/service allowlist. Requires `auth.mode` to be set.
+
+| Parameter | Description |
+|---|---|
+| `policies.default` | `deny` (default-deny) \| `allow` (disabled) |
+| `policies.rules[]` | Allow rules — each grants a set of callers access to specific models |
+| `policies.rules[].match.groups` | Groups allowed by this rule (any-of) |
+| `policies.rules[].match.roles` | Roles allowed |
+| `policies.rules[].match.scopes` | Scopes allowed |
+| `policies.rules[].match.consumers` | Consumer identities allowed |
+| `policies.rules[].match.user_types` | User types allowed |
+| `policies.rules[].allow_models` | Glob patterns for allowed model names |
+| `policies.rules[].allow_service_types` | Allowed service types (optional) |
+| `policies.rules[].limits.rate` | Per-member request rate limit for this group | |
+| `policies.rules[].limits.period` | Rate limit window (e.g. `1m`) | |
+| `policies.rules[].limits.token_rate` | Per-member token budget | |
+| `policies.rules[].limits.token_period` | Token budget window | |
+
+Enforced on both sync (`POST /v1/*`) and async (`POST /jobs/*`) after model resolution. Hot-reloadable. Metric: `gatewai_authz_decisions_total{service_type, model, decision}`.
+
+### OpenTelemetry
+
+Distributed tracing and OTLP push for traces, metrics, and logs.
+
+| Parameter | Description | Default |
+|---|---|---|
+| `opentelemetry.enabled` | Enable OTel instrumentation | `false` |
+| `opentelemetry.serviceName` | `service.name` resource attribute | `gatewai/gateway` |
+| `opentelemetry.exporter.endpoint` | OTLP/HTTP endpoint | `http://<release>-otlp:4318` |
+| `opentelemetry.exporter.insecure` | Disable TLS verification | `true` |
+| `opentelemetry.traces.enabled` | Export traces | `true` |
+| `opentelemetry.traces.sampleRatio` | Sampling ratio (0.0–1.0) | `1.0` |
+| `opentelemetry.metrics.enabled` | Push metrics via OTLP | `false` |
+| `opentelemetry.metrics.interval` | Push interval | `60s` |
+| `opentelemetry.logs.enabled` | Forward structured logs via OTLP | `false` |
+
+**Option A — bundled OTel Collector** (`otlp.enabled: true`): deploys the `opentelemetry-collector` sub-chart alongside the gateway (aliased `otlp`). Configure `otlp.config` with your exporters.
+
+**Option B — Operator CRD** (`otlpOperator.enabled: true`): creates an `OpenTelemetryCollector` CR; requires the OTel Operator to be installed on the cluster.
+
 ### Extra environment variables
 
 Arbitrary environment variables injected into the gateway container after the chart-managed ones. Accepts any Kubernetes env syntax (`value`, `valueFrom`, `secretKeyRef`, …).
@@ -455,3 +520,14 @@ The relay sidecar exposes its own `/metrics` endpoint (scraped separately, e.g. 
 
 **New optional parameters:**
 - `lifecycle.gc.enabled` / `lifecycle.gc.interval` / `lifecycle.gc.orphanMinAge` — unified GC (off by default, see [Lifecycle and job retention](#lifecycle-and-job-retention))
+
+### 0.17.0 → 0.18.0
+
+No breaking changes.
+
+**New optional parameters:**
+- `auth` — gateway-side OAuth2 authentication (see [Authentication](#authentication-optional))
+- `policies` — policy-based default-deny access control (see [Access control](#access-control-optional))
+- `opentelemetry` — OTel tracing/metrics/logs export (see [OpenTelemetry](#opentelemetry))
+- `otlp` — bundled OTel Collector sub-chart
+- `otlpOperator` — OTel Operator CRD option

@@ -25,6 +25,74 @@ server:
   # Leave empty to apply only the "*" fallback (no per-type differentiation).
   user_type_header: "${USER_TYPE_HEADER:-}"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Authentication (optional). Absent ⇒ no gateway-side auth: identity is trusted
+# from the upstream headers above (the default when the gateway sits behind an
+# upstream reverse proxy that authenticates). Pick ONE mode per deployment.
+# ─────────────────────────────────────────────────────────────────────────────
+# auth:
+#   mode: oauth2                  # oauth2 | proxy
+#   oauth2:                       # validate OAuth2 access tokens (resource-server model)
+#     issuer: "${OAUTH_ISSUER}"   # discovery → jwks_uri + introspection_endpoint
+#     jwks_url: ""                # optional explicit override (else discovered from issuer)
+#     validation: auto            # auto | jwt | introspection
+#                                 #   auto: JWT tokens → local JWKS; opaque tokens → introspection
+#     introspection:              # RFC 7662 — validates opaque tokens AND gives live revocation
+#       client_id: "${OAUTH_CLIENT_ID}"
+#       client_secret: "${OAUTH_CLIENT_SECRET}"
+#       cache_ttl: 60s            # cache introspection results (capped by token exp)
+#     audiences: ["gatewai"]      # at least one must match the token's aud
+#     claims:                     # dotted paths — configure per identity provider
+#       consumer: "preferred_username"
+#       scopes:   "scope"
+#       groups:   "groups"
+#       roles:    "roles"
+#   proxy:                        # trust identity headers set by an upstream reverse proxy
+#     consumer_header: "X-Consumer-Username"
+#     user_type_header: "X-Consumer-Type"
+#     groups_header:   "X-Consumer-Groups"
+#     roles_header:    "X-Consumer-Roles"
+# oauth2 fails closed (401 invalid/missing, 503 if the IdP/JWKS is unreachable) and
+# strips the client bearer before proxying to backends. /health /metrics /docs
+# /openapi.yaml are always exempt. Auth config changes require a gateway restart.
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Access control (optional). Requires auth.mode to be set. Default-deny allowlist:
+# a request is allowed only if some rule both matches the caller's identity and
+# grants the requested model. Absent ⇒ no access control. Hot-reloadable.
+# ─────────────────────────────────────────────────────────────────────────────
+# policies:
+#   default: deny                 # deny (allowlist) | allow (enforcement disabled)
+#   rules:
+#     - match:                    # each non-empty field must intersect the caller; empty match = everyone
+#         groups: ["research-lab"]
+#         # roles / scopes / consumers / user_types are also supported
+#       allow_models: ["gpt-oss-120b", "chat-*"]   # globs against the model alias
+#       allow_service_types: ["llm"]               # optional; globs against service type
+#       limits:                     # optional per-group quota (per-member; coexists with rate_limits)
+#         rate: 1000                #   request rate
+#         period: 1m
+#         token_rate: 5000000       #   token budget (LLM)
+#         token_period: 1h
+#     - match: { roles: ["admin"] }
+#       allow_models: ["*"]
+
+# Health check probing (GET /health?verbose=true)
+# By default GET /health returns {"status":"ok"} with no backend probing.
+# Pass ?verbose=true to probe each backend and get per-model status.
+# Pass ?mode=strict to return 500 when any backend is down.
+# Pass ?model=<name> to probe a single model.
+# ─────────────────────────────────────────────────────────────────────────────
+health:
+  # How often the background health batch runs. GET /health reads the cached result —
+  # no live probing happens on the request path.
+  # In multi-instance deployments only one replica probes per cycle (Redis lock).
+  interval: "${HEALTH_INTERVAL:-30s}"
+  # Default HTTP timeout for each backend probe within a batch.
+  # Override per-service via services[].health.timeout for models that scale to 0
+  # (Knative cold start can take 30–60 s).
+  timeout: "${HEALTH_TIMEOUT:-5s}"
+
 s3:
   # Standard S3-compatible object storage — configured here for Scaleway.
   # Endpoint format (Scaleway): https://s3.<region>.scw.cloud
@@ -137,6 +205,13 @@ services:
     inference_url: "${TRANSCRIPTION_WHISPER_LARGE_V3_URL:-http://gatewai-transcription-predictor.default.svc.cluster.local}"
     accepted_exts: [".mp3", ".wav", ".m4a", ".ogg", ".flac"]
     max_file_size_mb: 500
+    # health: backend probing config for GET /health?verbose=true.
+    # Uncomment and tune for models that scale to 0 (Knative cold start can
+    # take 30-60 s; the global 5 s default will mark them as "down").
+    # health:
+    #   timeout: "60s"   # wait up to 60 s for cold-start
+    #   path: "/health"  # default; override if the backend uses a different path
+    #   disabled: false  # set true to skip this model in health probes
 
   # ── Example: add a second model variant for the same service type ──────────
   # - type: audio
