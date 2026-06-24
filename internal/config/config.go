@@ -26,6 +26,43 @@ type Config struct {
 	// Leave empty to disable rate limiting.
 	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
 	Otel       telemetry.OtelConfig                  `yaml:"opentelemetry"`
+	Auth       AuthConfig                            `yaml:"auth"`
+}
+
+// AuthConfig selects and configures the authentication mode.
+// Mode "" (empty) is legacy/none — fully backward compatible.
+// Mode "oauth2" validates JWT Bearer tokens via JWKS.
+// Mode "proxy" trusts identity headers injected by an upstream proxy.
+type AuthConfig struct {
+	Mode   string           `yaml:"mode"` // "" | "oauth2" | "proxy"
+	OAuth2 OAuth2AuthConfig `yaml:"oauth2"`
+	Proxy  ProxyAuthConfig  `yaml:"proxy"`
+}
+
+// OAuth2AuthConfig holds configuration for OAuth2 JWT validation.
+type OAuth2AuthConfig struct {
+	Issuer    string         `yaml:"issuer"`
+	JWKSURL   string         `yaml:"jwks_url"`
+	Audiences []string       `yaml:"audiences"`
+	Claims    ClaimMapConfig `yaml:"claims"`
+}
+
+// ClaimMapConfig maps Principal fields to JWT claim names.
+type ClaimMapConfig struct {
+	Subject  string `yaml:"subject"`
+	Consumer string `yaml:"consumer"`
+	Scopes   string `yaml:"scopes"`
+	Groups   string `yaml:"groups"`
+	Roles    string `yaml:"roles"`
+}
+
+// ProxyAuthConfig holds the header names for proxy-injected identity.
+type ProxyAuthConfig struct {
+	ConsumerHeader string `yaml:"consumer_header"`
+	UserTypeHeader string `yaml:"user_type_header"`
+	GroupsHeader   string `yaml:"groups_header"`
+	RolesHeader    string `yaml:"roles_header"`
+	ScopesHeader   string `yaml:"scopes_header"`
 }
 
 // AuditLogConfig controls structured per-request audit logging for LLM requests.
@@ -345,6 +382,18 @@ func (c *Config) applyDefaults() {
 }
 
 func (c *Config) validate() error {
+	validModes := map[string]bool{"": true, "oauth2": true, "proxy": true}
+	if !validModes[c.Auth.Mode] {
+		return fmt.Errorf("auth.mode %q is invalid (valid: \"\", \"oauth2\", \"proxy\")", c.Auth.Mode)
+	}
+	if c.Auth.Mode == "oauth2" {
+		if c.Auth.OAuth2.Issuer == "" {
+			return fmt.Errorf("auth.oauth2.issuer is required when auth.mode is \"oauth2\"")
+		}
+		if len(c.Auth.OAuth2.Audiences) == 0 {
+			return fmt.Errorf("auth.oauth2.audiences must have at least one entry when auth.mode is \"oauth2\"")
+		}
+	}
 	if c.S3.Endpoint == "" {
 		return fmt.Errorf("s3.endpoint is required")
 	}

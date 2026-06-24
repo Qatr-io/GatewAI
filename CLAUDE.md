@@ -183,6 +183,14 @@ rate_limits:
 
 Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, stage, action, result}` (`stage` = `input`|`output`) and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
 
+### Authentication
+
+`internal/auth/`: optional gateway-side authentication. **Absent `auth` block ⇒ no gateway auth** — identity is trusted from upstream headers (the default when an upstream reverse proxy handles auth). One mode per deployment via `auth.mode`:
+- **`oauth2`** — validates OAuth2 **access tokens** (resource-server model, *not* OIDC id-tokens): JWT signature via cached JWKS (issuer discovery), `iss`/`aud`/`exp` checks, configurable claim mapping (`scope`/`groups`/`roles`/`consumer`). **Fails closed** (`401` invalid/missing, `503` if JWKS unreachable). Strips the client bearer before proxying. Resolves a `Principal{Subject,Consumer,Groups,Roles,Scopes,UserType}` into request context and bridges consumer/user_type into the headers downstream rate-limiting/ownership already read (after stripping inbound values — anti-spoof).
+- **`proxy`** — trusts identity headers set by an upstream reverse proxy, now incl. groups/roles.
+
+`/health` `/metrics` `/docs` `/openapi.yaml` are exempt. Auth config changes require a restart (not hot-reloaded). Deps: `golang-jwt/jwt/v5` + `MicahParks/keyfunc/v3` (no OIDC lib — access-token validation only). Planned follow-ups: opaque-token introspection (RFC 7662), default-deny model/role access control, and group/role-scoped quotas.
+
 ### Service headers
 
 `services[].headers`: static headers injected on every outgoing request to the backend. Values support `${VAR}` expansion. Config headers override client headers with the same name.

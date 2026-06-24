@@ -22,6 +22,49 @@ data:
       user_type_header: {{ .Values.server.userTypeHeader | quote }}
       {{- end }}
 
+    {{- with .Values.auth }}
+    auth:
+      mode: {{ .mode | default "" | quote }}
+      {{- with .oauth2 }}
+      oauth2:
+        issuer: {{ .issuer | quote }}
+        {{- if .jwksUrl }}
+        jwks_url: {{ .jwksUrl | quote }}
+        {{- end }}
+        audiences: [{{ range $i, $a := .audiences }}{{ if $i }}, {{ end }}{{ $a | quote }}{{ end }}]
+        {{- with .claims }}
+        claims:
+          {{- if .consumer }}
+          consumer: {{ .consumer | quote }}
+          {{- end }}
+          {{- if .scopes }}
+          scopes: {{ .scopes | quote }}
+          {{- end }}
+          {{- if .groups }}
+          groups: {{ .groups | quote }}
+          {{- end }}
+          {{- if .roles }}
+          roles: {{ .roles | quote }}
+          {{- end }}
+        {{- end }}
+      {{- end }}
+      {{- with .proxy }}
+      proxy:
+        {{- if .consumerHeader }}
+        consumer_header: {{ .consumerHeader | quote }}
+        {{- end }}
+        {{- if .userTypeHeader }}
+        user_type_header: {{ .userTypeHeader | quote }}
+        {{- end }}
+        {{- if .groupsHeader }}
+        groups_header: {{ .groupsHeader | quote }}
+        {{- end }}
+        {{- if .rolesHeader }}
+        roles_header: {{ .rolesHeader | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
     s3:
       endpoint:   "{{ .Values.s3.endpoint }}"
       region:     "{{ .Values.s3.region }}"

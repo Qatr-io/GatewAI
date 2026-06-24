@@ -581,3 +581,188 @@ services:
 		t.Error("expected error for unknown guardrails.output check name")
 	}
 }
+
+// ── Auth config tests ─────────────────────────────────────────────────────────
+
+func TestLoad_Auth_DefaultMode_Legacy(t *testing.T) {
+	// No auth block → mode is "" (backward compatible).
+	path := writeConfig(t, minimalValid)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "" {
+		t.Errorf("expected empty auth mode (legacy), got %q", cfg.Auth.Mode)
+	}
+}
+
+func TestLoad_Auth_InvalidMode_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: "basic"
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error for invalid auth.mode")
+	}
+}
+
+func TestLoad_Auth_OAuth2_MissingIssuer_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    audiences:
+      - myapp
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when auth.oauth2.issuer is missing")
+	}
+}
+
+func TestLoad_Auth_OAuth2_MissingAudiences_Error(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+`)
+	_, err := config.Load(path)
+	if err == nil {
+		t.Error("expected error when auth.oauth2.audiences is empty")
+	}
+}
+
+func TestLoad_Auth_OAuth2_Valid_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: oauth2
+  oauth2:
+    issuer: https://idp.example.com
+    jwks_url: https://idp.example.com/.well-known/jwks.json
+    audiences:
+      - myapp
+      - otherapp
+    claims:
+      subject: sub
+      consumer: preferred_username
+      scopes: scope
+      groups: groups
+      roles: realm_access.roles
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "oauth2" {
+		t.Errorf("expected mode=oauth2, got %q", cfg.Auth.Mode)
+	}
+	if cfg.Auth.OAuth2.Issuer != "https://idp.example.com" {
+		t.Errorf("expected issuer, got %q", cfg.Auth.OAuth2.Issuer)
+	}
+	if cfg.Auth.OAuth2.JWKSURL != "https://idp.example.com/.well-known/jwks.json" {
+		t.Errorf("expected jwks_url, got %q", cfg.Auth.OAuth2.JWKSURL)
+	}
+	if len(cfg.Auth.OAuth2.Audiences) != 2 {
+		t.Errorf("expected 2 audiences, got %d", len(cfg.Auth.OAuth2.Audiences))
+	}
+	if cfg.Auth.OAuth2.Claims.Consumer != "preferred_username" {
+		t.Errorf("expected consumer claim=preferred_username, got %q", cfg.Auth.OAuth2.Claims.Consumer)
+	}
+	if cfg.Auth.OAuth2.Claims.Roles != "realm_access.roles" {
+		t.Errorf("expected roles claim=realm_access.roles, got %q", cfg.Auth.OAuth2.Claims.Roles)
+	}
+}
+
+func TestLoad_Auth_Proxy_Valid_Parses(t *testing.T) {
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: proxy
+  proxy:
+    consumer_header: X-Consumer-Username
+    user_type_header: X-User-Type
+    groups_header: X-Groups
+    roles_header: X-Roles
+    scopes_header: X-Scopes
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Auth.Mode != "proxy" {
+		t.Errorf("expected mode=proxy, got %q", cfg.Auth.Mode)
+	}
+	if cfg.Auth.Proxy.ConsumerHeader != "X-Consumer-Username" {
+		t.Errorf("expected consumer_header, got %q", cfg.Auth.Proxy.ConsumerHeader)
+	}
+	if cfg.Auth.Proxy.GroupsHeader != "X-Groups" {
+		t.Errorf("expected groups_header, got %q", cfg.Auth.Proxy.GroupsHeader)
+	}
+}
+
+func TestLoad_Auth_ProxyMode_NoHeaders_OK(t *testing.T) {
+	// proxy mode with no headers configured is valid (headers may come from server.*).
+	path := writeConfig(t, `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: transcription
+    inference_url: "http://inference.svc"
+auth:
+  mode: proxy
+`)
+	_, err := config.Load(path)
+	if err != nil {
+		t.Errorf("proxy mode with no headers should be valid, got: %v", err)
+	}
+}

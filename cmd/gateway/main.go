@@ -18,10 +18,11 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/gateway/internal/auth"
 	"gatewai/gateway/internal/cache"
-	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/handler"
 	"gatewai/gateway/internal/llmproxy"
 	"gatewai/gateway/internal/llmproxy/provider"
@@ -89,6 +90,9 @@ func reservedGatewayPath(path string) bool {
 	return false
 }
 
+// authExemptPrefixes lists the path prefixes that bypass authentication checks.
+var authExemptPrefixes = []string{"/health", "/metrics", "/docs", "/openapi.yaml"}
+
 func buildRouter(
 	cfg *config.Config,
 	reg *service.Registry,
@@ -100,6 +104,7 @@ func buildRouter(
 	limiter *ratelimit.Limiter,
 	llmHandler *llmproxy.Handler,
 	tracer trace.Tracer,
+	authenticator auth.Authenticator,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
@@ -113,6 +118,9 @@ func buildRouter(
 	r.Use(handler.OtelMiddleware(tracer, "/health", "/metrics"))
 	r.Use(handler.StructuredLogger(logger))
 	r.Use(chimw.Recoverer)
+	if authenticator != nil {
+		r.Use(auth.Middleware(authenticator, cfg.Auth.Mode, authExemptPrefixes, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader))
+	}
 
 	spec := handler.GenerateSpec(reg, version)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
@@ -241,6 +249,19 @@ func main() {
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
 		tokenChecker(limiter))
 
+	// ── Authenticator ────────────────────────────────────────────────────────
+	// Build once; reused across reloads. The JWKS refresh goroutine is started
+	// with context.Background() so it lives for the full process lifetime.
+	// Auth config changes require a gateway restart.
+	authenticator, err := buildAuthenticator(context.Background(), cfg)
+	if err != nil {
+		slog.Error("failed to initialise authenticator", "error", err)
+		os.Exit(1)
+	}
+	if cfg.Auth.Mode != "" {
+		slog.Info("authentication enabled", "mode", cfg.Auth.Mode)
+	}
+
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
 	// and reconciles Redis subscribers (stopping removed, starting added models).
@@ -295,14 +316,15 @@ func main() {
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			tokenChecker(limiter))
 
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
+		// Reuse the existing authenticator. Auth config changes require a restart.
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"))
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
@@ -407,4 +429,53 @@ func main() {
 	}
 
 	slog.Info("server stopped")
+}
+
+// buildAuthenticator creates the Authenticator requested by cfg.Auth.Mode.
+// Returns (nil, nil) when mode is "" (legacy/no-auth).
+// On error the caller must treat startup as fatal.
+func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authenticator, error) {
+	switch cfg.Auth.Mode {
+	case "oauth2":
+		c := cfg.Auth.OAuth2
+		a, err := auth.NewOAuth2Authenticator(ctx, auth.OAuth2Config{
+			Issuer:    c.Issuer,
+			JWKSURL:   c.JWKSURL,
+			Audiences: c.Audiences,
+			Claims: auth.ClaimMap{
+				Subject:  c.Claims.Subject,
+				Consumer: c.Claims.Consumer,
+				Scopes:   c.Claims.Scopes,
+				Groups:   c.Claims.Groups,
+				Roles:    c.Claims.Roles,
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return a, nil
+
+	case "proxy":
+		p := cfg.Auth.Proxy
+		// Fall back to server-level headers when proxy-specific ones are empty,
+		// so existing deployments keep working without any config change.
+		consumerHeader := p.ConsumerHeader
+		if consumerHeader == "" {
+			consumerHeader = cfg.Server.ConsumerHeader
+		}
+		userTypeHeader := p.UserTypeHeader
+		if userTypeHeader == "" {
+			userTypeHeader = cfg.Server.UserTypeHeader
+		}
+		return auth.NewHeaderAuthenticator(auth.HeaderConfig{
+			ConsumerHeader: consumerHeader,
+			UserTypeHeader: userTypeHeader,
+			GroupsHeader:   p.GroupsHeader,
+			RolesHeader:    p.RolesHeader,
+			ScopesHeader:   p.ScopesHeader,
+		}), nil
+
+	default: // "" — legacy, no auth
+		return nil, nil
+	}
 }
