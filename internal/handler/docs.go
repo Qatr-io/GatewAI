@@ -122,22 +122,95 @@ func DocsUI(specs []SwaggerSpec) http.HandlerFunc {
 // ── Path item builders ─────────────────────────────────────────────────────────
 
 func healthPathItem() map[string]any {
+	statusSchema := map[string]any{
+		"type": "string",
+		"enum": []any{"ok", "up", "partial", "down", "unknown"},
+	}
+	backendsSchema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": map[string]any{"type": "string", "enum": []any{"up", "down", "unknown"}},
+		"description":          "Per-model status (only present when verbose=true)",
+	}
+	verboseResponseSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status":     statusSchema,
+			"checked_at": map[string]any{"type": "string", "format": "date-time"},
+			"backends":   backendsSchema,
+		},
+	}
+	simpleResponseSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status": map[string]any{"type": "string", "example": "ok"},
+			"time":   map[string]any{"type": "string", "format": "date-time"},
+		},
+	}
+	errorResponseSchema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"status": statusSchema,
+			"error":  map[string]any{"type": "string"},
+		},
+	}
+
 	return map[string]any{
 		"get": map[string]any{
 			"summary":     "Health check",
 			"operationId": "healthCheck",
 			"security":    []any{}, // public — no API key required
+			"description": "Without query params returns a lightweight `{\"status\":\"ok\"}` with no backend probing.\n\n" +
+				"Add `?verbose=true` or `?model=<name>` to retrieve the cached per-backend probe results " +
+				"(populated by the background health-check loop).\n\n" +
+				"Possible aggregate statuses: **up** (all backends up), **partial** (some up / some down), " +
+				"**down** (all down), **unknown** (not yet probed or no backends configured).",
+			"parameters": []any{
+				map[string]any{
+					"name":        "verbose",
+					"in":          "query",
+					"required":    false,
+					"description": "Include per-backend statuses and last probe timestamp in the response.",
+					"schema":      map[string]any{"type": "boolean", "default": false},
+				},
+				map[string]any{
+					"name":        "mode",
+					"in":          "query",
+					"required":    false,
+					"description": "Set to `strict` to return HTTP 500 when the aggregate status is not `up` (partial / down / unknown). The response body is unchanged.",
+					"schema":      map[string]any{"type": "string", "enum": []any{"strict"}},
+				},
+				map[string]any{
+					"name":        "model",
+					"in":          "query",
+					"required":    false,
+					"description": "Filter to a single model name. Implies backend lookup (same as verbose=true).",
+					"schema":      map[string]any{"type": "string"},
+				},
+			},
 			"responses": map[string]any{
 				"200": map[string]any{
-					"description": "Service is healthy",
+					"description": "Health status (aggregate up, partial, or unknown in non-strict mode)",
 					"content": map[string]any{
 						"application/json": map[string]any{
 							"schema": map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"status": map[string]any{"type": "string", "example": "ok"},
-								},
+								"oneOf": []any{simpleResponseSchema, verboseResponseSchema},
 							},
+						},
+					},
+				},
+				"500": map[string]any{
+					"description": "One or more backends are not up (strict mode only)",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": verboseResponseSchema,
+						},
+					},
+				},
+				"503": map[string]any{
+					"description": "Health cache unavailable (Redis error)",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": errorResponseSchema,
 						},
 					},
 				},

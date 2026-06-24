@@ -46,6 +46,7 @@ type Def struct {
 	ResponseCacheTTL time.Duration
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
+	HealthCheck      config.ServiceHealthConfig
 }
 
 // OperationPath returns the first path for the given operation name.
@@ -220,6 +221,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			ResponseCacheTTL:  time.Duration(cfg.ResponseCacheTTL) * time.Second,
 			Retries:           cfg.Retries,
 			Guardrails:        resolveGuardrails(cfg.Guardrails),
+			HealthCheck:       cfg.Health,
 		}
 
 		if r.byTypeModel[cfg.Type] == nil {
