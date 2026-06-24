@@ -36,6 +36,21 @@ func def(inferenceURL string, healthCfg config.ServiceHealthConfig) *service.Def
 
 func TestProbe_Up_2xx(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	got := probeVia(t, def(srv.URL, config.ServiceHealthConfig{}), "5s")
+	if got != "up" {
+		t.Errorf("expected up, got %s", got)
+	}
+}
+
+func TestProbe_Method_Override(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodHead {
 			t.Errorf("expected HEAD, got %s", r.Method)
 		}
@@ -43,7 +58,7 @@ func TestProbe_Up_2xx(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	got := probeVia(t, def(srv.URL, config.ServiceHealthConfig{}), "5s")
+	got := probeVia(t, def(srv.URL, config.ServiceHealthConfig{Method: "HEAD"}), "5s")
 	if got != "up" {
 		t.Errorf("expected up, got %s", got)
 	}
