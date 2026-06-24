@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
@@ -105,11 +106,15 @@ func buildRouter(
 	llmHandler *llmproxy.Handler,
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
+	authzEngine *authz.Engine,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
+	}
+	if authzEngine != nil {
+		jobHandler.WithAuthz(authzEngine)
 	}
 
 	r := chi.NewRouter()
@@ -142,6 +147,9 @@ func buildRouter(
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
+		}
+		if authzEngine != nil {
+			sh.WithAuthz(authzEngine)
 		}
 		syncHandler := sh
 		r.Get("/v1/models", handler.ListModels(reg))
@@ -222,10 +230,12 @@ func main() {
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
 	modelLimits := buildModelLimits(cfg.Services)
-	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 {
+	// The limiter is also needed when policies carry per-group limits, since those
+	// are enforced through the same limiter (via request-context policy limits).
+	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 || cfg.Policies != nil {
 		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, modelLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
 		rl = limiter
-		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits))
+		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
@@ -299,7 +309,7 @@ func main() {
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
-		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 {
+		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 || newCfg.Policies != nil {
 			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newModelLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
 			rl = limiter
 		} else {
@@ -317,14 +327,22 @@ func main() {
 			tokenChecker(limiter))
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
+		var newAuthzEngine *authz.Engine
+		if newCfg.Policies != nil {
+			newAuthzEngine = authz.New(*newCfg.Policies)
+		}
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
 	}
 
 	// ── HTTP router ───────────────────────────────────────────────────────────
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator)
+	var authzEngine *authz.Engine
+	if cfg.Policies != nil {
+		authzEngine = authz.New(*cfg.Policies)
+	}
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
@@ -438,6 +456,21 @@ func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authentic
 	switch cfg.Auth.Mode {
 	case "oauth2":
 		c := cfg.Auth.OAuth2
+		var introspectionCfg *auth.IntrospectionConfig
+		if c.Introspection != nil {
+			cacheTTL := 60 * time.Second
+			if c.Introspection.CacheTTL != "" {
+				if d, err := time.ParseDuration(c.Introspection.CacheTTL); err == nil {
+					cacheTTL = d
+				}
+			}
+			introspectionCfg = &auth.IntrospectionConfig{
+				Endpoint:     c.Introspection.Endpoint,
+				ClientID:     c.Introspection.ClientID,
+				ClientSecret: c.Introspection.ClientSecret,
+				CacheTTL:     cacheTTL,
+			}
+		}
 		a, err := auth.NewOAuth2Authenticator(ctx, auth.OAuth2Config{
 			Issuer:    c.Issuer,
 			JWKSURL:   c.JWKSURL,
@@ -449,6 +482,8 @@ func buildAuthenticator(ctx context.Context, cfg *config.Config) (auth.Authentic
 				Groups:   c.Claims.Groups,
 				Roles:    c.Claims.Roles,
 			},
+			Validation:    c.Validation,
+			Introspection: introspectionCfg,
 		})
 		if err != nil {
 			return nil, err

@@ -43,6 +43,7 @@ export default defineConfig({
           items: [
             { label: 'Configuration reference', slug: 'configure/configuration' },
             { label: 'Authentication',          slug: 'configure/authentication' },
+            { label: 'Access control',          slug: 'configure/access-control' },
             { label: 'Service registry',        slug: 'configure/service-registry' },
             { label: 'Priority routing',        slug: 'configure/priority-routing' },
             { label: 'LLM proxy',               slug: 'configure/llm-proxy' },

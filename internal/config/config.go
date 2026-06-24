@@ -27,6 +27,51 @@ type Config struct {
 	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
 	Otel       telemetry.OtelConfig                  `yaml:"opentelemetry"`
 	Auth       AuthConfig                            `yaml:"auth"`
+	// Policies configures identity-based access control. Nil means no enforcement.
+	Policies *PoliciesConfig `yaml:"policies"`
+}
+
+// PoliciesConfig controls which principals may access which services and models.
+// Default posture is deny-all; rules grant access explicitly.
+type PoliciesConfig struct {
+	// Default is the baseline decision when no rule matches.
+	// Valid values: "" (treated as "deny"), "deny", "allow".
+	// "allow" disables enforcement entirely (useful for gradual rollout).
+	Default string       `yaml:"default"`
+	Rules   []PolicyRule `yaml:"rules"`
+}
+
+// PolicyRule grants access to a set of models/service types for principals
+// whose identity satisfies Match. ALL specified Match fields must pass (AND).
+type PolicyRule struct {
+	Match PolicyMatch `yaml:"match"`
+	// AllowModels is a list of glob patterns matched against the model alias.
+	// Empty means the rule grants nothing (must list "*" to allow all models).
+	AllowModels []string `yaml:"allow_models"`
+	// AllowServiceTypes is a list of glob patterns matched against the service type.
+	// Empty means no service-type constraint (the model match alone is sufficient).
+	AllowServiceTypes []string `yaml:"allow_service_types"`
+	// Limits is an optional rate/token budget applied per-consumer when this rule
+	// grants access. Nil means no additional policy-level limiting.
+	// Use Rate+Period for request-count limiting and TokenRate+TokenPeriod for
+	// token budget limiting; both can be set simultaneously.
+	Limits *RateLimitConfig `yaml:"limits"`
+}
+
+// PolicyMatch defines the principal attributes required for a rule to fire.
+// Fields are ANDed: all non-empty fields must match.
+// An empty PolicyMatch{} matches every principal (including nil/anonymous).
+type PolicyMatch struct {
+	// Groups: principal must belong to at least one of these groups.
+	Groups []string `yaml:"groups"`
+	// Roles: principal must hold at least one of these roles.
+	Roles []string `yaml:"roles"`
+	// Scopes: principal must have at least one of these OAuth2 scopes.
+	Scopes []string `yaml:"scopes"`
+	// Consumers: principal.Consumer must be one of these values.
+	Consumers []string `yaml:"consumers"`
+	// UserTypes: principal.UserType must be one of these values.
+	UserTypes []string `yaml:"user_types"`
 }
 
 // AuthConfig selects and configures the authentication mode.
@@ -41,10 +86,20 @@ type AuthConfig struct {
 
 // OAuth2AuthConfig holds configuration for OAuth2 JWT validation.
 type OAuth2AuthConfig struct {
-	Issuer    string         `yaml:"issuer"`
-	JWKSURL   string         `yaml:"jwks_url"`
-	Audiences []string       `yaml:"audiences"`
-	Claims    ClaimMapConfig `yaml:"claims"`
+	Issuer        string                   `yaml:"issuer"`
+	JWKSURL       string                   `yaml:"jwks_url"`
+	Audiences     []string                 `yaml:"audiences"`
+	Claims        ClaimMapConfig           `yaml:"claims"`
+	Validation    string                   `yaml:"validation"` // "" | "auto" | "jwt" | "introspection"
+	Introspection *IntrospectionAuthConfig `yaml:"introspection"`
+}
+
+// IntrospectionAuthConfig holds configuration for RFC 7662 token introspection.
+type IntrospectionAuthConfig struct {
+	Endpoint     string `yaml:"endpoint"` // optional; else discovered via introspection_endpoint
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	CacheTTL     string `yaml:"cache_ttl"` // e.g. "60s"; caps how long an introspection result is cached
 }
 
 // ClaimMapConfig maps Principal fields to JWT claim names.
@@ -386,12 +441,52 @@ func (c *Config) validate() error {
 	if !validModes[c.Auth.Mode] {
 		return fmt.Errorf("auth.mode %q is invalid (valid: \"\", \"oauth2\", \"proxy\")", c.Auth.Mode)
 	}
+	if c.Policies != nil {
+		validDefaults := map[string]bool{"": true, "deny": true, "allow": true}
+		if !validDefaults[c.Policies.Default] {
+			return fmt.Errorf("policies.default %q is invalid (valid: \"\", \"deny\", \"allow\")", c.Policies.Default)
+		}
+		// Policies require an authenticated identity; enforce that auth is configured.
+		if len(c.Policies.Rules) > 0 || c.Policies.Default == "deny" || c.Policies.Default == "" {
+			if c.Auth.Mode == "" {
+				return fmt.Errorf("policies require auth.mode to be set (oauth2 or proxy): cannot enforce identity-based access without authentication")
+			}
+		}
+		for i, rule := range c.Policies.Rules {
+			if rule.Limits == nil {
+				continue
+			}
+			if rule.Limits.Rate > 0 && rule.Limits.Period == "" {
+				return fmt.Errorf("policies.rules[%d].limits: rate requires period", i)
+			}
+			if rule.Limits.TokenRate > 0 && rule.Limits.TokenPeriod == "" {
+				return fmt.Errorf("policies.rules[%d].limits: token_rate requires token_period", i)
+			}
+		}
+	}
 	if c.Auth.Mode == "oauth2" {
 		if c.Auth.OAuth2.Issuer == "" {
 			return fmt.Errorf("auth.oauth2.issuer is required when auth.mode is \"oauth2\"")
 		}
 		if len(c.Auth.OAuth2.Audiences) == 0 {
 			return fmt.Errorf("auth.oauth2.audiences must have at least one entry when auth.mode is \"oauth2\"")
+		}
+		validValidations := map[string]bool{"": true, "auto": true, "jwt": true, "introspection": true}
+		if !validValidations[c.Auth.OAuth2.Validation] {
+			return fmt.Errorf("auth.oauth2.validation %q is invalid (valid: \"\", \"auto\", \"jwt\", \"introspection\")", c.Auth.OAuth2.Validation)
+		}
+		needsIntrospection := c.Auth.OAuth2.Validation == "introspection" ||
+			(c.Auth.OAuth2.Validation == "auto" && c.Auth.OAuth2.Introspection != nil)
+		if needsIntrospection {
+			if c.Auth.OAuth2.Introspection == nil {
+				return fmt.Errorf("auth.oauth2.introspection block is required when validation is \"introspection\"")
+			}
+			if c.Auth.OAuth2.Introspection.ClientID == "" {
+				return fmt.Errorf("auth.oauth2.introspection.client_id is required")
+			}
+			if c.Auth.OAuth2.Introspection.Endpoint == "" && c.Auth.OAuth2.Issuer == "" {
+				return fmt.Errorf("auth.oauth2.introspection.endpoint or auth.oauth2.issuer is required for introspection endpoint discovery")
+			}
 		}
 	}
 	if c.S3.Endpoint == "" {

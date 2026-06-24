@@ -45,6 +45,11 @@ server:
 #       issuer: "https://idp.example.com/realm"
 #       jwksUrl: ""                # optional explicit override
 #       audiences: ["gatewai"]
+#       validation: auto           # auto | jwt | introspection
+#       introspection:             # for opaque tokens (RFC 7662) + live revocation
+#         clientId: "${OAUTH_CLIENT_ID}"
+#         clientSecret: "${OAUTH_CLIENT_SECRET}"
+#         cacheTtl: 60s
 #       claims:
 #         consumer: "preferred_username"
 #         scopes: "scope"
@@ -56,6 +61,17 @@ server:
 #       groupsHeader: "X-Consumer-Groups"
 #       rolesHeader: "X-Consumer-Roles"
 auth: {}
+
+# ── Access control (optional) ─────────────────────────────────────────────────
+# Default-deny model/service allowlist. Requires auth (above). Mirrors the
+# config.yaml `policies` structure verbatim (rendered as-is into the ConfigMap).
+#   policies:
+#     default: deny
+#     rules:
+#       - match: { groups: ["research-lab"] }
+#         allow_models: ["gpt-oss-120b", "chat-*"]
+#         allow_service_types: ["llm"]
+policies: {}
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 # Request-count rate limits per service type and user type.

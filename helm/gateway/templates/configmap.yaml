@@ -47,6 +47,24 @@ data:
           roles: {{ .roles | quote }}
           {{- end }}
         {{- end }}
+        {{- if .validation }}
+        validation: {{ .validation | quote }}
+        {{- end }}
+        {{- with .introspection }}
+        introspection:
+          {{- if .clientId }}
+          client_id: {{ .clientId | quote }}
+          {{- end }}
+          {{- if .clientSecret }}
+          client_secret: {{ .clientSecret | quote }}
+          {{- end }}
+          {{- if .endpoint }}
+          endpoint: {{ .endpoint | quote }}
+          {{- end }}
+          {{- if .cacheTtl }}
+          cache_ttl: {{ .cacheTtl | quote }}
+          {{- end }}
+        {{- end }}
       {{- end }}
       {{- with .proxy }}
       proxy:
@@ -63,6 +81,11 @@ data:
         roles_header: {{ .rolesHeader | quote }}
         {{- end }}
       {{- end }}
+    {{- end }}
+
+    {{- with .Values.policies }}
+    policies:
+{{ toYaml . | indent 6 }}
     {{- end }}
 
     s3:

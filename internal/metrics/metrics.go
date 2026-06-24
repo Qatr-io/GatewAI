@@ -212,4 +212,10 @@ var (
 		Name: "gatewai_async_jobs_purged_total",
 		Help: "Total async jobs deleted by the admin purge endpoint.",
 	}, []string{"model"})
+
+	// AuthzDecisionsTotal counts authorization decisions by result and service type.
+	AuthzDecisionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_authz_decisions_total",
+		Help: "Authorization decisions by result and service type.",
+	}, []string{"service_type", "model", "decision"}) // decision = allow | deny
 )

@@ -19,6 +19,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
@@ -63,6 +65,7 @@ type JobHandler struct {
 	concurrentLimiter     ratelimit.ConcurrentChecker     // nil = no concurrent limit
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
 	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
+	authz                 *authz.Engine                   // nil = no enforcement
 }
 
 func NewJobHandler(
@@ -95,6 +98,12 @@ func (h *JobHandler) WithConcurrentLimiter(l ratelimit.ConcurrentChecker, userTy
 // WithProcessingTimeLimiter sets the processing time budget limiter.
 func (h *JobHandler) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *JobHandler {
 	h.processingTimeLimiter = l
+	return h
+}
+
+// WithAuthz sets the authorization engine. nil disables enforcement (default).
+func (h *JobHandler) WithAuthz(e *authz.Engine) *JobHandler {
+	h.authz = e
 	return h
 }
 
@@ -205,6 +214,22 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	if !def.SupportsAsync {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Sprintf("service %q only supports sync requests (POST /v1/*)", def.Model))
 		return
+	}
+
+	if h.authz != nil {
+		p, _ := auth.FromContext(r.Context())
+		if h.authz.Allowed(p, def.Type, def.Model) {
+			metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "allow").Inc()
+		} else {
+			consumer := ""
+			if p != nil {
+				consumer = p.Consumer
+			}
+			slog.WarnContext(r.Context(), "access denied by policy", "service_type", def.Type, "model", def.Model, "consumer", consumer)
+			metrics.AuthzDecisionsTotal.WithLabelValues(def.Type, def.Model, "deny").Inc()
+			writeError(w, http.StatusForbidden, fmt.Sprintf("access to model %q denied", def.Model))
+			return
+		}
 	}
 
 	file, header, err := r.FormFile("file")

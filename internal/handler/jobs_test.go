@@ -9,12 +9,15 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/handler"
 	"gatewai/gateway/internal/model"
@@ -887,6 +890,116 @@ func TestSubmit_ConcurrentLimit_NoReleaseWhenDenied(t *testing.T) {
 	}
 	if limiter.releaseCalls != 0 {
 		t.Errorf("expected ReleaseSlot not called when denied, got %d", limiter.releaseCalls)
+	}
+}
+
+// ── Authz tests ───────────────────────────────────────────────────────────────
+
+// buildJobAuthzEngine returns an Engine that allows "faster-whisper" for any
+// principal and denies everything else (default deny).
+func buildJobAuthzEngine() *authz.Engine {
+	return authz.New(config.PoliciesConfig{
+		Rules: []config.PolicyRule{
+			{
+				Match:       config.PolicyMatch{},
+				AllowModels: []string{"faster-whisper"},
+			},
+		},
+	})
+}
+
+// singleOpRegistryWithExtra adds a "blocked-model" service alongside the
+// default singleOpRegistry model so we have a model the engine will deny.
+func singleOpRegistryWithExtra() *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:  "transcription",
+			Model: "faster-whisper",
+			Operations: map[string][]string{
+				"transcription": {"/v1/audio/transcriptions"},
+			},
+			AcceptedExts:  []string{".mp3", ".wav"},
+			MaxFileSizeMB: 100,
+		},
+		{
+			Type:  "transcription",
+			Model: "blocked-model",
+			Operations: map[string][]string{
+				"transcription": {"/v1/audio/transcriptions"},
+			},
+			AcceptedExts:  []string{".mp3", ".wav"},
+			MaxFileSizeMB: 100,
+		},
+	})
+}
+
+// TestSubmit_Authz_NilEngine_NoEnforcement verifies backward compatibility:
+// with a nil engine requests proceed regardless of model.
+func TestSubmit_Authz_NilEngine_NoEnforcement(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{Consumer: "alice", Authenticated: true}))
+	w := httptest.NewRecorder()
+	// No WithAuthz → nil engine
+	newAsyncHandler(singleOpRegistry(), s3, store).Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("nil engine: expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestSubmit_Authz_DeniedModel_Returns403 verifies that submitting to a denied
+// model returns 403 with no S3 or Redis side effects.
+func TestSubmit_Authz_DeniedModel_Returns403(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	engine := buildJobAuthzEngine()
+	req := submitReq(t, "transcription", "blocked-model", "", "audio.wav", []byte("data"))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{Consumer: "alice", Authenticated: true}))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistryWithExtra(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithAuthz(engine).
+		Submit(w, req)
+
+	if w.Code != http.StatusForbidden {
+		t.Errorf("expected 403 for denied model, got %d: %s", w.Code, w.Body.String())
+	}
+	if s3.uploaded {
+		t.Error("S3 upload must not be called when model is denied")
+	}
+	if store.saved {
+		t.Error("Redis SaveJob must not be called when model is denied")
+	}
+	if !strings.Contains(w.Body.String(), "denied") {
+		t.Errorf("expected 'denied' in response body, got: %s", w.Body.String())
+	}
+}
+
+// TestSubmit_Authz_AllowedModel_Proceeds verifies that the allowed model
+// proceeds to the normal 202 path when authz is configured.
+func TestSubmit_Authz_AllowedModel_Proceeds(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	engine := buildJobAuthzEngine()
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	req = req.WithContext(auth.WithPrincipal(req.Context(), &auth.Principal{Consumer: "alice", Authenticated: true}))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithAuthz(engine).
+		Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202 for allowed model, got %d: %s", w.Code, w.Body.String())
+	}
+	if !s3.uploaded {
+		t.Error("S3 upload should have been called for allowed model")
+	}
+	if !store.saved {
+		t.Error("Redis SaveJob should have been called for allowed model")
 	}
 }
 
