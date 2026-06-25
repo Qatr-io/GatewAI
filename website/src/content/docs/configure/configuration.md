@@ -305,6 +305,47 @@ inference_headers:
   X-Api-Key: "${BACKEND_KEY}"
 ```
 
+## OpenTelemetry
+
+```yaml
+opentelemetry:
+  enabled: false
+  service_name: ""          # overrides the default "gatewai/gateway" resource attribute
+  exporter:
+    endpoint: "http://otel-collector:4318"
+    insecure: false
+    headers:
+      Authorization: "Bearer ${OTEL_TOKEN}"
+  traces:
+    enabled: true
+    sample_ratio: 1.0
+    ignore_paths:           # path prefixes excluded from tracing (prefix-based)
+      - /health             # default list — applied when ignore_paths is absent
+      - /metrics
+      - /docs
+      - /openapi.yaml
+  metrics:
+    enabled: false
+    interval: "60s"
+  logs:
+    enabled: false
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Master switch — `false` = no-op providers, zero overhead |
+| `service_name` | `"gatewai/gateway"` | OTel resource `service.name` attribute |
+| `exporter.endpoint` | — | Base OTLP/HTTP endpoint for all signals |
+| `exporter.insecure` | `false` | Skip TLS verification (dev only) |
+| `traces.enabled` | `true` | Enable distributed tracing |
+| `traces.sample_ratio` | `1.0` | Sampling rate: `1.0` = always, `0.1` = 10% |
+| `traces.ignore_paths` | `[/health, /metrics, /docs, /openapi.yaml]` | Path prefixes excluded from tracing; overrides the default list entirely when set |
+| `metrics.enabled` | `false` | Enable OTLP metrics push |
+| `metrics.interval` | `"60s"` | Push interval |
+| `logs.enabled` | `false` | Enable OTLP log export via slog bridge |
+
+See [OpenTelemetry](../observe/opentelemetry.md) for the full guide (per-signal endpoint overrides, sampling, Helm sub-chart, backend examples).
+
 ## Hot reload
 
 `POST /-/reload` re-reads the config file and atomically swaps the router. S3 and Redis connections are not re-initialised.
