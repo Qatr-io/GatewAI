@@ -165,6 +165,12 @@ data:
       traces:
         enabled: {{ .Values.opentelemetry.traces.enabled | default true }}
         sample_ratio: {{ .Values.opentelemetry.traces.sampleRatio | default 1.0 }}
+        {{- if .Values.opentelemetry.traces.ignorePaths }}
+        ignore_paths:
+          {{- range .Values.opentelemetry.traces.ignorePaths }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
       metrics:
         enabled: {{ .Values.opentelemetry.metrics.enabled | default false }}
         interval: {{ .Values.opentelemetry.metrics.interval | default "60s" | quote }}

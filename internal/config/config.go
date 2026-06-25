@@ -469,7 +469,7 @@ func (c *Config) applyDefaults() {
 		c.Lifecycle.GC.OrphanMinAge = "5m"
 	}
 	if len(c.Otel.Traces.IgnorePaths) == 0 {
-		c.Otel.Traces.IgnorePaths = []string{"/health", "/metrics"}
+		c.Otel.Traces.IgnorePaths = []string{"/health", "/metrics", "/docs", "/openapi.yaml"}
 	}
 	for i := range c.Services {
 		if c.Services[i].MaxFileSizeMB == 0 {

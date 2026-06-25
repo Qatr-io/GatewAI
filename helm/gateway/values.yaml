@@ -409,6 +409,9 @@ opentelemetry:
   traces:
     enabled: true
     sampleRatio: 1.0
+    # ignorePaths: path prefixes excluded from tracing (prefix-based).
+    # Defaults: ["/health", "/metrics", "/docs", "/openapi.yaml"]
+    ignorePaths: []
   metrics:
     enabled: false
     interval: "60s"
