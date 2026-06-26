@@ -144,6 +144,29 @@ func TestProbeURL_DefaultPath(t *testing.T) {
 	}
 }
 
+func TestProbe_ScaleToZero_NeverProbed(t *testing.T) {
+	probed := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probed = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	d := &service.Def{
+		Type:         "llm",
+		Model:        "kserve-model",
+		InferenceURL: srv.URL,
+		HealthCheck:  config.ServiceHealthConfig{ScaleToZero: true},
+	}
+	got := probeVia(t, d, "5s")
+	if probed {
+		t.Error("scale_to_zero: backend should not have been probed")
+	}
+	if got != "dormant" {
+		t.Errorf("expected dormant, got %s", got)
+	}
+}
+
 func TestProbe_InferenceHeaders_Sent(t *testing.T) {
 	var gotAuth string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

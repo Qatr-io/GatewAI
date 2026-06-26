@@ -164,8 +164,12 @@ func (c *Checker) runOnce(ctx context.Context) {
 }
 
 // probe makes an HTTP request to the backend's health endpoint.
-// Returns "up" for 2xx–4xx, "down" for 5xx or connection errors.
+// Returns "up" for 2xx–4xx, "down" for 5xx or connection errors,
+// or "dormant" when scale_to_zero is set (no request sent).
 func (c *Checker) probe(ctx context.Context, d *service.Def) string {
+	if d.HealthCheck.ScaleToZero {
+		return "dormant"
+	}
 	timeout := c.defaultTimeout
 	if t := d.HealthCheck.TimeoutDuration(); t > 0 {
 		timeout = t
