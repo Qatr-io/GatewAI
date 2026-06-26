@@ -188,6 +188,26 @@ func (c *Checker) probe(ctx context.Context, d *service.Def) string {
 	if err != nil {
 		return "down"
 	}
+
+	// Apply headers in increasing priority order:
+	// 1. service-level inference headers
+	// 2. per-backend headers (for the backend matching InferenceURL)
+	// 3. health-check-specific headers (highest priority)
+	for k, v := range d.InferenceHeaders {
+		req.Header.Set(k, v)
+	}
+	for _, b := range d.Backends {
+		if b.URL == d.InferenceURL {
+			for k, v := range b.Headers {
+				req.Header.Set(k, v)
+			}
+			break
+		}
+	}
+	for k, v := range d.HealthCheck.Headers {
+		req.Header.Set(k, v)
+	}
+
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return "down"

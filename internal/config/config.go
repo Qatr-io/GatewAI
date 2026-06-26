@@ -147,6 +147,11 @@ type ServiceHealthConfig struct {
 	// Method is the HTTP method used for health probes. Default: "GET".
 	// Use "HEAD" for backends that return no body but support HEAD on their health endpoint.
 	Method string `yaml:"method"`
+	// Headers are additional HTTP headers sent with every health probe for this service.
+	// Values support ${VAR} env expansion. Applied on top of the service-level
+	// inference_headers and per-backend headers (highest priority — overrides both).
+	// Useful for auth tokens or routing hints required specifically by the health endpoint.
+	Headers map[string]string `yaml:"headers"`
 }
 
 func (h ServiceHealthConfig) TimeoutDuration() time.Duration { return parseDuration(h.Timeout) }
