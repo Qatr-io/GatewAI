@@ -287,20 +287,27 @@ func TestApplyGatewayOverlay_MultiOp_InjectsOperationField(t *testing.T) {
 	}
 }
 
-func TestApplyGatewayOverlay_OnlyTouchesConfiguredPaths(t *testing.T) {
+func TestApplyGatewayOverlay_FiltersUnconfiguredPaths(t *testing.T) {
 	svc := whisperSvc(map[string][]string{
 		"transcription": {"/v1/audio/transcriptions"},
-		// /v1/audio/translations is NOT in Operations
+		// /v1/audio/translations and /v1/models are NOT in Operations
 	})
-	models := []string{"whisper-large-v3", "whisper-large-v3-turbo"}
-	result := ApplyGatewayOverlay(whisperFixture, svc, models)
+	result := ApplyGatewayOverlay(whisperFixture, svc, []string{"whisper-large-v3"})
 
-	translationProps := getProperties(t, result, "/v1/audio/translations", "post")
-	if translationProps == nil {
-		t.Fatal("expected translation path to still exist")
+	var spec map[string]any
+	if err := json.Unmarshal(result, &spec); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
 	}
-	if _, ok := translationProps["model"]; ok {
-		t.Error("model field must not be injected into non-configured path")
+	paths, _ := spec["paths"].(map[string]any)
+
+	if _, ok := paths["/v1/audio/translations"]; ok {
+		t.Error("/v1/audio/translations must be removed: not declared in service operations")
+	}
+	if _, ok := paths["/v1/models"]; ok {
+		t.Error("/v1/models must be removed: not declared in service operations")
+	}
+	if _, ok := paths["/v1/audio/transcriptions"]; !ok {
+		t.Error("/v1/audio/transcriptions must be kept: declared in service operations")
 	}
 }
 
