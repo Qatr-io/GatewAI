@@ -87,6 +87,7 @@ func ApplyGatewayOverlay(raw json.RawMessage, svc config.ServiceConfig, allModel
 
 	for path, item := range paths {
 		if !managedPaths[path] {
+			delete(paths, path)
 			continue
 		}
 		overlayPathItem(item, spec, svc.Model, opNames)
