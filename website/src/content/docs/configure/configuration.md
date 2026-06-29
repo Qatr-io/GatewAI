@@ -74,6 +74,8 @@ rate_limits:
     user:
       rate: 20
       period: 1m
+      token_rate: 500000     # optional: token budget per window
+      token_period: 24h
     "*":             # fallback: user_type absent or not listed
       rate: 10
       period: 1m
@@ -91,8 +93,37 @@ Per-consumer, per-service fixed-window rate limiting backed by Redis. Returns `4
 | Sub-key (e.g. `sa`) | User type from `server.user_type_header`; `"*"` is the catch-all fallback |
 | `rate` | Maximum requests allowed in the `period` |
 | `period` | Window duration: `30s`, `1m`, `1h`, `24h` |
+| `token_rate` | Optional: maximum total LLM tokens per `token_period`; applies on sync LLM requests only |
+| `token_period` | Window duration for the token budget: `1h`, `24h` |
+| `max_concurrent` | Optional: maximum pending+processing async jobs at the same time per consumer; `0` = disabled |
+| `processing_time` | Optional: maximum cumulative inference seconds per `processing_period`; async only; `0` = disabled |
+| `processing_period` | Window duration for the processing-time budget: `1h`, `24h` |
 
-Leave `rate_limits` empty to disable. See [Rate limiting](../architecture/rate-limiting.md) for details.
+Leave `rate_limits` empty to disable. See [Rate limiting](../configure/rate-limiting) for details.
+
+## Token limits per model
+
+For finer-grained control, token budgets can be set **per model** under `services[].token_limits`. This is the recommended approach when several models share the same `type` but should have independent quotas.
+
+```yaml
+services:
+  - type: llm
+    model: gpt-4o
+    provider: openai
+    inference_url: "https://api.openai.com"
+    token_limits:
+      user:
+        token_rate: 100000
+        token_period: 24h
+      sa:
+        token_rate: 1000000
+        token_period: 1h
+      "*":
+        token_rate: 50000
+        token_period: 24h
+```
+
+When both `rate_limits[type][user_type].token_rate` and `services[].token_limits[user_type].token_rate` are configured, **both** checks must pass. The model-level limit is enforced first.
 
 ## S3
 
@@ -257,6 +288,8 @@ services:
 | `provider` | no | `""` | LLM provider: `openai`, `anthropic`, `ollama`, `passthrough` |
 | `backend_model` | no | `""` | Backend model name — gateway rewrites the `model` field in the request |
 | `response_cache_ttl` | no | `0` | Redis response cache TTL in seconds; `0` = disabled |
+| `max_concurrent_sync` | no | `0` | Max simultaneous sync requests for this model across all replicas; `0` = unlimited. Returns `503` when full. |
+| `token_limits` | no | `{}` | Per-user-type token budgets for LLM requests — see [Rate limiting](../configure/rate-limiting#token-budget-limiting) |
 | `swagger_url` | no | `""` | URL to fetch an OpenAPI spec from |
 | `swagger_headers` | no | `{}` | HTTP headers for `swagger_url` fetch |
 
