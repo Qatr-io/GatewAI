@@ -11,6 +11,14 @@ import (
 	"gatewai/gateway/internal/service"
 )
 
+func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?model="+modelName, nil)
+	w := httptest.NewRecorder()
+	handler.ListModels(reg)(w, req)
+	return w
+}
+
 // modelsResponse mirrors the JSON structure returned by GET /v1/models.
 type modelsResponse struct {
 	Object string `json:"object"`
@@ -193,6 +201,65 @@ func TestListModels_Capabilities_MultiBackend(t *testing.T) {
 	}
 	if !m.Capabilities.SupportsStreaming {
 		t.Error("expected supports_streaming=true (has provider)")
+	}
+}
+
+func TestListModels_ProxyModel_ForwardsToBackend(t *testing.T) {
+	backendResp := `{"object":"list","data":[{"id":"gpt-4o","object":"model","context_length":128000}]}`
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(backendResp))
+	}))
+	defer backend.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:         "llm",
+		Model:        "gpt-4o",
+		Provider:     "openai",
+		InferenceURL: backend.URL + "/v1/chat/completions",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+	}})
+
+	w := callListModelsWithModel(t, reg, "gpt-4o")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if w.Body.String() != backendResp {
+		t.Errorf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestListModels_ProxyModel_NotFound(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:  "llm",
+		Model: "gpt-4o",
+	}})
+
+	w := callListModelsWithModel(t, reg, "unknown-model")
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", w.Code)
+	}
+}
+
+func TestListModels_ProxyModel_NoBackend_NotFound(t *testing.T) {
+	// Model exists but has no inference_url
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:         "transcription",
+		Model:        "whisper-large-v3",
+		AcceptedExts: []string{".mp3"},
+		Operations:   map[string][]string{"transcription": {"/v1/audio/transcriptions"}},
+	}})
+
+	w := callListModelsWithModel(t, reg, "whisper-large-v3")
+
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for model without backend, got %d", w.Code)
 	}
 }
 

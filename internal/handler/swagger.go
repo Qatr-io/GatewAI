@@ -93,11 +93,51 @@ func ApplyGatewayOverlay(raw json.RawMessage, svc config.ServiceConfig, allModel
 		overlayPathItem(item, spec, svc.Model, opNames)
 	}
 
+	// Always inject /v1/models GET with model query param so the per-model swagger
+	// documents the gateway's proxy feature with the correct default model value.
+	paths["/v1/models"] = modelsPathItemForModel(svc.Model)
+
 	out, err := json.Marshal(spec)
 	if err != nil {
 		return raw
 	}
 	return out
+}
+
+func modelsPathItemForModel(model string) map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"summary": "Get model information",
+			"description": "Proxied by the gateway to the underlying model backend. " +
+				"Returns the model's native information (context size, capabilities, etc.).",
+			"operationId": "getModelInfo_" + model,
+			"parameters": []any{
+				map[string]any{
+					"name":        "model",
+					"in":          "query",
+					"required":    false,
+					"description": "Model name. Defaults to this model.",
+					"schema": map[string]any{
+						"type":    "string",
+						"default": model,
+						"enum":    []string{model},
+					},
+				},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Model information from the backend",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"type": "object"},
+						},
+					},
+				},
+				"404": map[string]any{"description": "Model not found or has no backend"},
+				"502": map[string]any{"description": "Backend unreachable"},
+			},
+		},
+	}
 }
 
 func overlayPathItem(pathItem any, spec map[string]any, model string, opNames []string) {
