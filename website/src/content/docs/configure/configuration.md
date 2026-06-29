@@ -397,3 +397,20 @@ Parameters updated at runtime without pod restart:
 | `server.user_type_header` | Applied to new requests |
 
 Not hot-reloadable (restart required): `redis.addr`, `s3.*`, `server.addr`, `server.*_timeout`, `metrics.top_consumers`.
+
+## Usage tracking
+
+```yaml
+usage:
+  retention: ""      # Go duration string; empty = all-time (no TTL)
+```
+
+Controls how long per-consumer cumulative usage data is kept in Redis sorted sets.
+
+| Field | Description |
+|---|---|
+| `retention` | Duration before usage sorted sets expire. Empty or absent = no expiry (all-time accumulation). Accepts Go duration strings: `"720h"` (30 days), `"8760h"` (365 days). Note: `"d"` suffix is not a valid Go duration — use `"h"`. |
+
+When `server.consumer_header` is not configured, a no-op tracker is used and no data is written. `retention` is hot-reloadable and affects new sorted-set keys only (existing keys keep their original TTL).
+
+See [API reference](../reference/api) for the `GET /usage` and `GET /-/usage` endpoints that expose this data.

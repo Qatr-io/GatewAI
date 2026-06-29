@@ -237,6 +237,8 @@ ptrl:{consumer}:{service_type}:{user_type}
 
 All checks are **fail-open** (Redis errors are logged, request allowed). All checks except `max_concurrent` are **optimistic** (the triggering request passes; subsequent ones are blocked).
 
+> **Reading current-window values:** Use `GET /usage` to see the current-window counters for your consumer alongside cumulative totals. The `window.reset_at` field shows when each counter resets. See [API reference](../reference/api) for details.
+
 ---
 
 ## Response
