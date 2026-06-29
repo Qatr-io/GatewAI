@@ -9,7 +9,7 @@
 <section class="section">
   <h2>Current Quotas</h2>
   <div id="quota-cards"
-       hx-get="/partials/quota"
+       hx-get="{{url .BasePath "/partials/quota"}}"
        hx-trigger="every 30s"
        hx-swap="outerHTML"
        hx-target="#quota-cards">
@@ -52,7 +52,7 @@
 </section>
 {{else}}
 <section class="section">
-  <p class="empty">PostgreSQL not configured — historical usage data unavailable.</p>
+  <p class="empty">Historical usage data unavailable.</p>
 </section>
 {{end}}
 {{end}}

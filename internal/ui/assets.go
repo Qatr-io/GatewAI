@@ -5,6 +5,7 @@ import (
 	"html/template"
 	"io/fs"
 	"net/http"
+	"strings"
 )
 
 //go:embed templates/* static/*
@@ -21,7 +22,15 @@ func parseTemplates() (*template.Template, error) {
 		"add": func(a, b int) int { return a + b },
 		"int": func(v int64) int { return int(v) },
 		"isLastRow": func(e any, events any, page, limit int, total int64) bool {
-			return false // simplified; infinite-scroll sentinel handled per-page
+			return false
+		},
+		// url joins a base path (e.g. "/ui") with a route path (e.g. "/history").
+		// Returns just the route path when base is empty.
+		"url": func(base, path string) string {
+			if base == "" {
+				return path
+			}
+			return strings.TrimRight(base, "/") + path
 		},
 	}
 	return template.New("").Funcs(funcMap).ParseFS(assetsFS,

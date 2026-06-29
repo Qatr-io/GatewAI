@@ -6,7 +6,7 @@
 <h1>Request History</h1>
 
 <div class="filters">
-  <form method="get" action="/history" style="display:flex;gap:.75rem;flex-wrap:wrap">
+  <form method="get" action="{{url .BasePath "/history"}}" style="display:flex;gap:.75rem;flex-wrap:wrap">
     <select name="service_type">
       <option value="">All services</option>
       {{range .ServiceTypes}}
@@ -45,7 +45,7 @@
 <p style="margin-top:.75rem;color:#6b7280;font-size:.8rem">
   Showing {{len .Events}} of {{.Total}} events
   {{if lt (add .Offset (len .Events)) (int .Total)}}
-  — <a href="/history?page={{add .Page 1}}&service_type={{.Filters.ServiceType}}&days={{.Filters.Days}}">Next page</a>
+  — <a href="{{url .BasePath "/history"}}?page={{add .Page 1}}&service_type={{.Filters.ServiceType}}&days={{.Filters.Days}}">Next page</a>
   {{end}}
 </p>
 {{end}}

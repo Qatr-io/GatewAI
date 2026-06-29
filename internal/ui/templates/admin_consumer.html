@@ -3,7 +3,7 @@
 {{define "title"}}{{.ConsumerName}} — Admin — GatewAI{{end}}
 
 {{define "content"}}
-<p style="margin-bottom:1rem"><a href="/admin">← Back to admin</a></p>
+<p style="margin-bottom:1rem"><a href="{{url .BasePath "/admin"}}">← Back to admin</a></p>
 <h1>Consumer: {{.ConsumerName}}</h1>
 
 {{if .Summary.Consumer}}

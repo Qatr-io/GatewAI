@@ -12,6 +12,7 @@ type basePage struct {
 	Consumer   string
 	UserType   string
 	IsAdmin    bool
+	BasePath   string // URL prefix, e.g. "/ui" or "" for root
 }
 
 // QuotaRow represents one service/user-type quota card.

@@ -18,6 +18,16 @@ import (
 	"gatewai/gateway/internal/pgstore"
 )
 
+func (h *Handler) base(activePage string, consumer, userType string, isAdmin bool) basePage {
+	return basePage{
+		ActivePage: activePage,
+		Consumer:   consumer,
+		UserType:   userType,
+		IsAdmin:    isAdmin,
+		BasePath:   h.basePath,
+	}
+}
+
 // Handler serves all UI routes.
 type Handler struct {
 	store       *pgstore.Store // nil when Postgres is not configured
@@ -26,14 +36,17 @@ type Handler struct {
 	adminGroups []string
 	adminRoles  []string
 	rateLimits  map[string]map[string]config.RateLimitConfig
+	basePath    string // URL prefix, e.g. "/ui" or "" for root
 }
 
 // New creates a Handler. store may be nil (Postgres disabled); redis is required.
+// basePath is the URL prefix under which the UI is mounted (e.g. "/ui" or "").
 func New(
 	store *pgstore.Store,
 	redis RedisReader,
 	adminGroups, adminRoles []string,
 	rateLimits map[string]map[string]config.RateLimitConfig,
+	basePath string,
 ) (*Handler, error) {
 	tmpl, err := parseTemplates()
 	if err != nil {
@@ -46,6 +59,7 @@ func New(
 		adminGroups: adminGroups,
 		adminRoles:  adminRoles,
 		rateLimits:  rateLimits,
+		basePath:    strings.TrimRight(basePath, "/"),
 	}, nil
 }
 
@@ -94,7 +108,7 @@ func (h *Handler) Dashboard(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	data := DashboardData{
-		basePage:   basePage{ActivePage: "dashboard", Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+		basePage:   h.base("dashboard", consumer, userType, isAdmin),
 		HasHistory: h.store != nil,
 	}
 
@@ -120,7 +134,7 @@ func (h *Handler) QuotaPartial(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := DashboardData{
-		basePage: basePage{Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+		basePage: h.base("", consumer, userType, isAdmin),
 	}
 	data.Quotas = h.buildQuotaRows(r.Context(), consumer, userType)
 	if err := h.tmpl.ExecuteTemplate(w, "quota_cards", data); err != nil {
@@ -138,7 +152,7 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 
 	if h.store == nil {
 		h.render(w, "history.html", HistoryData{
-			basePage: basePage{ActivePage: "history", Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+			basePage: h.base("history", consumer, userType, isAdmin),
 		})
 		return
 	}
@@ -172,7 +186,7 @@ func (h *Handler) History(w http.ResponseWriter, r *http.Request) {
 
 	serviceTypes := h.serviceTypeList()
 	data := HistoryData{
-		basePage:     basePage{ActivePage: "history", Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+		basePage:     h.base("history", consumer, userType, isAdmin),
 		Events:       events,
 		Total:        total,
 		Page:         page,
@@ -205,7 +219,7 @@ func (h *Handler) Admin(w http.ResponseWriter, r *http.Request) {
 
 	ctx := r.Context()
 	data := AdminData{
-		basePage:    basePage{ActivePage: "admin", Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+		basePage:    h.base("admin", consumer, userType, isAdmin),
 		Since:       time.Now().UTC().Add(-30 * 24 * time.Hour),
 		QueueDepths: map[string]int64{},
 	}
@@ -238,7 +252,7 @@ func (h *Handler) AdminConsumer(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	data := AdminConsumerData{
-		basePage:     basePage{ActivePage: "admin", Consumer: consumer, UserType: userType, IsAdmin: isAdmin},
+		basePage:     h.base("admin", consumer, userType, isAdmin),
 		ConsumerName: targetConsumer,
 	}
 

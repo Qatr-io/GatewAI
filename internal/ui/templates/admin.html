@@ -40,7 +40,7 @@
         <td>{{.TotalRequests}}</td>
         <td>{{.TotalTokens}}</td>
         <td style="font-size:.8rem;color:#6b7280">{{.LastSeenAt.Format "2006-01-02 15:04"}}</td>
-        <td><a href="/admin/consumer/{{.Consumer}}">details →</a></td>
+        <td><a href="{{url $.BasePath "/admin/consumer/"}}{{.Consumer}}">details →</a></td>
       </tr>
       {{end}}
     </tbody>

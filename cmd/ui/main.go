@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -71,8 +72,10 @@ func main() {
 		slog.Info("authentication enabled", "mode", cfg.Auth.Mode)
 	}
 
+	basePath := strings.TrimRight(cfg.UI.BasePath, "/")
+
 	// UI handler.
-	h, err := ui.New(store, ui.NewRedisReader(redisClient.Raw()), cfg.UI.AdminGroups, cfg.UI.AdminRoles, cfg.RateLimits)
+	h, err := ui.New(store, ui.NewRedisReader(redisClient.Raw()), cfg.UI.AdminGroups, cfg.UI.AdminRoles, cfg.RateLimits, basePath)
 	if err != nil {
 		slog.Error("failed to initialise ui handler", "error", err)
 		os.Exit(1)
@@ -84,21 +87,35 @@ func main() {
 	r.Use(chimw.RealIP)
 	r.Use(chimw.Recoverer)
 
-	// Health and static files are always public.
+	// /healthz is always at root for k8s probes (no proxy in between).
 	r.Get("/healthz", h.Health)
-	r.Handle("/static/*", http.StripPrefix("/static/", ui.StaticHandler()))
 
-	// Auth middleware wraps all remaining routes.
+	staticStrip := basePath + "/static/"
+
+	// Auth middleware exempt list covers health + static.
 	if authenticator != nil {
-		exempt := []string{"/healthz", "/static"}
+		exempt := []string{"/healthz", basePath + "/static"}
 		r.Use(auth.Middleware(authenticator, cfg.Auth.Mode, exempt, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader))
 	}
 
-	r.Get("/", h.Dashboard)
-	r.Get("/history", h.History)
-	r.Get("/partials/quota", h.QuotaPartial)
-	r.Get("/admin", h.Admin)
-	r.Get("/admin/consumer/{name}", h.AdminConsumer)
+	// Static assets are registered at the absolute pattern regardless of basePath.
+	r.Handle(basePath+"/static/*", http.StripPrefix(staticStrip, ui.StaticHandler()))
+
+	if basePath == "" {
+		r.Get("/", h.Dashboard)
+		r.Get("/history", h.History)
+		r.Get("/partials/quota", h.QuotaPartial)
+		r.Get("/admin", h.Admin)
+		r.Get("/admin/consumer/{name}", h.AdminConsumer)
+	} else {
+		r.Route(basePath, func(sub chi.Router) {
+			sub.Get("/", h.Dashboard)
+			sub.Get("/history", h.History)
+			sub.Get("/partials/quota", h.QuotaPartial)
+			sub.Get("/admin", h.Admin)
+			sub.Get("/admin/consumer/{name}", h.AdminConsumer)
+		})
+	}
 
 	addr := cfg.UI.Addr
 	slog.Info("ui server starting", "addr", addr, "version", version)

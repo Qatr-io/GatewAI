@@ -52,6 +52,10 @@ type PostgresConfig struct {
 type UIConfig struct {
 	// Addr is the HTTP listen address for the UI server. Default: ":8090".
 	Addr string `yaml:"addr"`
+	// BasePath is the URL prefix under which the UI is served.
+	// Example: "/ui" → dashboard at /ui/, static at /ui/static/*.
+	// Default: "" (serve at root).
+	BasePath string `yaml:"base_path"`
 	// AdminGroups lists OAuth2 group names that grant admin access.
 	// A user in any listed group sees all consumers' data.
 	AdminGroups []string `yaml:"admin_groups"`

@@ -276,6 +276,9 @@ data:
     {{- if .Values.ui.enabled }}
     ui:
       addr: ":8090"
+      {{- if .Values.ui.basePath }}
+      base_path: {{ .Values.ui.basePath | quote }}
+      {{- end }}
       {{- if .Values.ui.adminGroups }}
       admin_groups:
         {{- range .Values.ui.adminGroups }}

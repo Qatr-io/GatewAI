@@ -517,6 +517,10 @@ ui:
   tolerations: []
   affinity: {}
   extraEnvVars: []
+  # URL prefix under which the UI is served by the reverse proxy.
+  # Example: "/ui" → dashboard at /ui/, static at /ui/static/*.
+  # Leave empty to serve at root (default when the UI has its own hostname).
+  basePath: ""
   # Groups or roles that grant admin access (see all consumers' data).
   adminGroups: []
   adminRoles: []
