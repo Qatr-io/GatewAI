@@ -1,0 +1,34 @@
+{{define "quota_cards"}}
+<div id="quota-cards"
+     hx-get="/partials/quota"
+     hx-trigger="every 30s"
+     hx-swap="outerHTML"
+     hx-target="#quota-cards">
+{{if .Quotas}}
+<div class="cards">
+  {{range .Quotas}}
+  <div class="card">
+    <div class="card-title">{{.ServiceType}} / {{.UserType}}</div>
+    {{if gt .RequestLimit 0}}
+    <div class="card-value">{{.Requests}} <small style="font-size:.9rem;font-weight:400">/ {{.RequestLimit}}</small></div>
+    <div class="card-sub">requests — resets in {{.TTLMinutes}} min</div>
+    <div class="card-bar">
+      <div class="card-bar-fill {{.BarClass}}" style="width:{{.RequestPct}}%"></div>
+    </div>
+    {{else}}
+    <div class="card-value">{{.Requests}}</div>
+    <div class="card-sub">requests (no limit)</div>
+    {{end}}
+    {{if gt .TokenLimit 0}}
+    <div style="margin-top:.75rem;font-size:.8rem;color:#6b7280">
+      Tokens: {{.Tokens}} / {{.TokenLimit}}
+    </div>
+    {{end}}
+  </div>
+  {{end}}
+</div>
+{{else}}
+<p class="empty">No rate limits configured for your account.</p>
+{{end}}
+</div>
+{{end}}

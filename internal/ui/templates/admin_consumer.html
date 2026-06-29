@@ -1,0 +1,67 @@
+{{template "base.html" .}}
+
+{{define "title"}}{{.ConsumerName}} — Admin — GatewAI{{end}}
+
+{{define "content"}}
+<p style="margin-bottom:1rem"><a href="/admin">← Back to admin</a></p>
+<h1>Consumer: {{.ConsumerName}}</h1>
+
+{{if .Summary.Consumer}}
+<div class="cards" style="margin-bottom:2rem">
+  <div class="card">
+    <div class="card-title">Total Requests (30d)</div>
+    <div class="card-value">{{.Summary.TotalRequests}}</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Total Tokens (30d)</div>
+    <div class="card-value">{{.Summary.TotalTokens}}</div>
+  </div>
+  <div class="card">
+    <div class="card-title">Last Active</div>
+    <div class="card-value" style="font-size:1rem">{{.Summary.LastSeenAt.Format "2006-01-02 15:04"}}</div>
+  </div>
+</div>
+{{end}}
+
+<section class="section">
+  <h2>Recent Events</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Time</th>
+        <th>Type</th>
+        <th>Service</th>
+        <th>Model</th>
+        <th>Status</th>
+        <th>Prompt</th>
+        <th>Completion</th>
+        <th>Latency</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Events}}
+      <tr>
+        <td style="white-space:nowrap;font-size:.8rem">{{.OccurredAt.Format "2006-01-02 15:04:05"}}</td>
+        <td><span class="badge badge-info">{{.EventType}}</span></td>
+        <td>{{.ServiceType}}</td>
+        <td>{{.Model}}</td>
+        <td>
+          {{if gt .HTTPStatus 0}}
+            {{if lt .HTTPStatus 300}}<span class="badge badge-ok">{{.HTTPStatus}}</span>
+            {{else if lt .HTTPStatus 500}}<span class="badge badge-warn">{{.HTTPStatus}}</span>
+            {{else}}<span class="badge badge-err">{{.HTTPStatus}}</span>{{end}}
+          {{else if .JobStatus}}
+            <span class="badge badge-info">{{.JobStatus}}</span>
+          {{end}}
+        </td>
+        <td>{{if gt .PromptTokens 0}}{{.PromptTokens}}{{else}}—{{end}}</td>
+        <td>{{if gt .CompletionTokens 0}}{{.CompletionTokens}}{{else}}—{{end}}</td>
+        <td>{{if gt .DurationMs 0}}{{.DurationMs}} ms{{else}}—{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="8" class="empty">No events found.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

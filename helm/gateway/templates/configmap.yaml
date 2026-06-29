@@ -265,4 +265,28 @@ data:
         accepted_exts:     {{ .acceptedExts | toJson }}
         max_file_size_mb:  {{ .maxFileSizeMB }}
     {{- end }}
+
+    {{- if .Values.postgres.dsn }}
+    postgres:
+      dsn: "${POSTGRES_DSN}"
+      max_conns: {{ .Values.postgres.maxConns | default 10 }}
+      connect_timeout: {{ .Values.postgres.connectTimeout | default "5s" | quote }}
+    {{- end }}
+
+    {{- if .Values.ui.enabled }}
+    ui:
+      addr: ":8090"
+      {{- if .Values.ui.adminGroups }}
+      admin_groups:
+        {{- range .Values.ui.adminGroups }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+      {{- if .Values.ui.adminRoles }}
+      admin_roles:
+        {{- range .Values.ui.adminRoles }}
+        - {{ . | quote }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
 {{- end }}

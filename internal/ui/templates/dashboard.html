@@ -1,0 +1,58 @@
+{{template "base.html" .}}
+
+{{define "title"}}Dashboard — GatewAI{{end}}
+
+{{define "content"}}
+<h1>Welcome, {{.Consumer}}</h1>
+
+<!-- Live quota cards, refreshed every 30s via HTMX -->
+<section class="section">
+  <h2>Current Quotas</h2>
+  <div id="quota-cards"
+       hx-get="/partials/quota"
+       hx-trigger="every 30s"
+       hx-swap="outerHTML"
+       hx-target="#quota-cards">
+    {{template "quota_cards" .}}
+  </div>
+</section>
+
+<!-- 30-day usage summary from PostgreSQL -->
+{{if .HasHistory}}
+<section class="section">
+  <h2>Usage — Last 30 Days</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Service</th>
+        <th>Model</th>
+        <th>Requests</th>
+        <th>Prompt Tokens</th>
+        <th>Completion Tokens</th>
+        <th>Avg Latency</th>
+        <th>Errors</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Summary}}
+      <tr>
+        <td>{{.ServiceType}}</td>
+        <td>{{.Model}}</td>
+        <td>{{.TotalRequests}}</td>
+        <td>{{.TotalPromptTokens}}</td>
+        <td>{{.TotalCompletionTokens}}</td>
+        <td>{{printf "%.0f" .AvgDurationMs}} ms</td>
+        <td>{{if gt .ErrorCount 0}}<span class="badge badge-err">{{.ErrorCount}}</span>{{else}}<span class="badge badge-ok">0</span>{{end}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="7" class="empty">No data yet. Start making API requests to see usage here.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{else}}
+<section class="section">
+  <p class="empty">PostgreSQL not configured — historical usage data unavailable.</p>
+</section>
+{{end}}
+{{end}}

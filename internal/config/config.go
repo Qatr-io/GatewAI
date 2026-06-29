@@ -30,6 +30,33 @@ type Config struct {
 	Auth       AuthConfig                            `yaml:"auth"`
 	// Policies configures identity-based access control. Nil means no enforcement.
 	Policies *PoliciesConfig `yaml:"policies"`
+	Postgres PostgresConfig  `yaml:"postgres"`
+	UI       UIConfig        `yaml:"ui"`
+}
+
+// PostgresConfig holds the DSN for the optional PostgreSQL backing store.
+// Used by the gateway for event writes and by the UI binary for reads.
+// Empty DSN disables PostgreSQL integration.
+type PostgresConfig struct {
+	// DSN is a full PostgreSQL connection string. Supports ${VAR} expansion.
+	// Example: "postgres://gatewai:secret@postgres:5432/gatewai?sslmode=require"
+	DSN string `yaml:"dsn"`
+	// MaxConns is the pgxpool maximum connection count. Default: 10.
+	MaxConns int `yaml:"max_conns"`
+	// ConnectTimeout is the dial timeout. Default: "5s".
+	ConnectTimeout string `yaml:"connect_timeout"`
+}
+
+// UIConfig holds configuration for the optional UI binary.
+// The gateway binary ignores this block entirely.
+type UIConfig struct {
+	// Addr is the HTTP listen address for the UI server. Default: ":8090".
+	Addr string `yaml:"addr"`
+	// AdminGroups lists OAuth2 group names that grant admin access.
+	// A user in any listed group sees all consumers' data.
+	AdminGroups []string `yaml:"admin_groups"`
+	// AdminRoles lists OAuth2 role names that grant admin access.
+	AdminRoles []string `yaml:"admin_roles"`
 }
 
 // PoliciesConfig controls which principals may access which services and models.
@@ -475,6 +502,15 @@ func (c *Config) applyDefaults() {
 		if c.Services[i].MaxFileSizeMB == 0 {
 			c.Services[i].MaxFileSizeMB = 100
 		}
+	}
+	if c.Postgres.MaxConns == 0 {
+		c.Postgres.MaxConns = 10
+	}
+	if c.Postgres.ConnectTimeout == "" {
+		c.Postgres.ConnectTimeout = "5s"
+	}
+	if c.UI.Addr == "" {
+		c.UI.Addr = ":8090"
 	}
 }
 

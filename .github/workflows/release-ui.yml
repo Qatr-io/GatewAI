@@ -1,0 +1,91 @@
+name: Release — UI
+
+on:
+  push:
+    tags:
+      - "ui/v*"
+
+env:
+  IMAGE: ghcr.io/${{ github.repository_owner }}/gatewai/ui
+
+jobs:
+  release:
+    name: Build, push image & create release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write       # create GitHub release + upload assets
+      packages: write       # push to ghcr.io
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Extract version from tag (ui/v0.1.0 → v0.1.0) ──────────────────────
+      - name: Extract version
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"          # ui/v0.1.0
+          VERSION="${TAG#ui/}"              # v0.1.0
+          SEMVER="${VERSION#v}"             # 0.1.0
+          echo "tag=$TAG"         >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "semver=$SEMVER"   >> $GITHUB_OUTPUT
+
+      # ── Go binary (linux/amd64) ─────────────────────────────────────────────
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w -X main.version=${{ steps.version.outputs.version }}" \
+            -trimpath -o gatewai-ui-linux-amd64 ./cmd/ui
+
+      # ── Docker image ─────────────────────────────────────────────────────────
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE }}
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=latest
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.ui
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── GitHub Release ───────────────────────────────────────────────────────
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          name: UI ${{ steps.version.outputs.version }}
+          body: |
+            ## Docker image
+            ```
+            docker pull ${{ env.IMAGE }}:${{ steps.version.outputs.version }}
+            ```
+
+            ## Binary
+            Linux amd64 binary attached below.
+
+            ## Changelog
+            See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md).
+          files: gatewai-ui-linux-amd64
+          generate_release_notes: false

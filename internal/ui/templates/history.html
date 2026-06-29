@@ -1,0 +1,52 @@
+{{template "base.html" .}}
+
+{{define "title"}}History — GatewAI{{end}}
+
+{{define "content"}}
+<h1>Request History</h1>
+
+<div class="filters">
+  <form method="get" action="/history" style="display:flex;gap:.75rem;flex-wrap:wrap">
+    <select name="service_type">
+      <option value="">All services</option>
+      {{range .ServiceTypes}}
+      <option value="{{.}}" {{if eq . $.Filters.ServiceType}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+    <select name="days">
+      <option value="1"  {{if eq $.Filters.Days 1 }}selected{{end}}>Last 24h</option>
+      <option value="7"  {{if eq $.Filters.Days 7 }}selected{{end}}>Last 7 days</option>
+      <option value="30" {{if eq $.Filters.Days 30}}selected{{end}}>Last 30 days</option>
+    </select>
+    <button type="submit" style="padding:.4rem .9rem;border:1px solid #d1d5db;border-radius:6px;background:#fff;cursor:pointer">Filter</button>
+  </form>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Time</th>
+      <th>Type</th>
+      <th>Service</th>
+      <th>Model</th>
+      <th>Status</th>
+      <th>Prompt</th>
+      <th>Completion</th>
+      <th>Latency</th>
+      <th>Cache</th>
+    </tr>
+  </thead>
+  <tbody id="history-rows">
+    {{template "history_rows" .}}
+  </tbody>
+</table>
+
+{{if gt .Total 0}}
+<p style="margin-top:.75rem;color:#6b7280;font-size:.8rem">
+  Showing {{len .Events}} of {{.Total}} events
+  {{if lt (add .Offset (len .Events)) (int .Total)}}
+  — <a href="/history?page={{add .Page 1}}&service_type={{.Filters.ServiceType}}&days={{.Filters.Days}}">Next page</a>
+  {{end}}
+</p>
+{{end}}
+{{end}}
