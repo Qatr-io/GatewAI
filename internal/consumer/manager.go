@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
+	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
@@ -17,6 +19,7 @@ type Manager struct {
 	redis         *storage.RedisClient
 	webhookSender *WebhookSender
 	sub           *Subscriber
+	emitter       pgstore.EventEmitter // nil = disabled
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 
@@ -99,6 +102,12 @@ func (m *Manager) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *
 	return m
 }
 
+// WithEventEmitter attaches a PostgreSQL event emitter. Call before Start.
+func (m *Manager) WithEventEmitter(e pgstore.EventEmitter) *Manager {
+	m.emitter = e
+	return m
+}
+
 // UpdatePersistsResult updates S3 result retention policy.
 // Safe to call concurrently with in-flight webhook goroutines.
 func (m *Manager) UpdatePersistsResult(v bool) {
@@ -132,6 +141,20 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		if err := m.processingTimeLimiter.AddProcessingTime(ctx, job.ConsumerName, job.UserType, job.ServiceType, job.ProcessingTime); err != nil {
 			slog.Error("manager: failed to add processing time", "job_id", jobID, "error", err)
 		}
+	}
+
+	if m.emitter != nil {
+		m.emitter.EmitAsyncJob(context.WithoutCancel(ctx), pgstore.AsyncJobEvent{
+			OccurredAt:      time.Now().UTC(),
+			EventType:       "async_job_completed",
+			Consumer:        job.ConsumerName,
+			UserType:        job.UserType,
+			ServiceType:     job.ServiceType,
+			Model:           job.Model,
+			JobID:           job.ID,
+			JobStatus:       string(job.Status),
+			ProcessingTimeS: job.ProcessingTime,
+		})
 	}
 
 	if job.CallbackURL != "" {

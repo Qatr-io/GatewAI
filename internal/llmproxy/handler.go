@@ -20,10 +20,12 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/gateway/internal/auth"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 )
@@ -51,6 +53,7 @@ type Handler struct {
 	audit          AuditConfig
 	tokenLimiter   ratelimit.TokenChecker // nil = token rate limiting disabled
 	guard          *guardrails.Checker    // output DLP scanner
+	emitter        pgstore.EventEmitter   // nil = event writes disabled
 }
 
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
@@ -58,7 +61,7 @@ type Handler struct {
 // empty disables user_type labelling. tracker records per-consumer token usage.
 // audit controls structured audit logging (disabled when audit.Enabled == false).
 // tl is the optional token rate limiter; nil disables token budget enforcement.
-func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, audit AuditConfig, tl ratelimit.TokenChecker) *Handler {
+func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader string, tracker metrics.ConsumerTracker, audit AuditConfig, tl ratelimit.TokenChecker, emitter pgstore.EventEmitter) *Handler {
 	return &Handler{
 		cache:          c,
 		providers:      p,
@@ -68,6 +71,7 @@ func New(c cache.Cache, p *provider.Registry, hc *http.Client, userTypeHeader st
 		audit:          audit,
 		tokenLimiter:   tl,
 		guard:          guardrails.New(),
+		emitter:        emitter,
 	}
 }
 
@@ -185,6 +189,25 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 						_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
 					}
 				}
+			}
+			if h.emitter != nil {
+				ev := pgstore.LLMEvent{
+					OccurredAt:  start,
+					Consumer:    consumer,
+					UserType:    userType,
+					Subject:     subjectFromContext(r),
+					ServiceType: def.Type,
+					Model:       def.Model,
+					Provider:    def.Provider,
+					HTTPStatus:  http.StatusOK,
+					DurationMs:  time.Since(start).Milliseconds(),
+					CacheHit:    true,
+				}
+				if usage != nil {
+					ev.PromptTokens = usage.PromptTokens
+					ev.CompletionTokens = usage.CompletionTokens
+				}
+				h.emitter.EmitLLM(context.WithoutCancel(r.Context()), ev)
 			}
 			return
 		}
@@ -353,6 +376,26 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
 		finalStatus, time.Since(start).Milliseconds(), false, body, usage)
+
+	if h.emitter != nil {
+		ev := pgstore.LLMEvent{
+			OccurredAt:  start,
+			Consumer:    consumer,
+			UserType:    userType,
+			Subject:     subjectFromContext(r),
+			ServiceType: def.Type,
+			Model:       def.Model,
+			Provider:    def.Provider,
+			HTTPStatus:  finalStatus,
+			DurationMs:  time.Since(start).Milliseconds(),
+			CacheHit:    false,
+		}
+		if usage != nil {
+			ev.PromptTokens = usage.PromptTokens
+			ev.CompletionTokens = usage.CompletionTokens
+		}
+		h.emitter.EmitLLM(context.WithoutCancel(r.Context()), ev)
+	}
 
 	// ── Cache-fill async (only 200 responses, non-streaming, not output-blocked) ─
 	if !outputBlocked && cacheable && cacheKey != "" && finalStatus == http.StatusOK {
@@ -605,6 +648,22 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 
 	h.auditLog(r.Context(), def, consumer, userType, winningBackendURL, winningBackendModel,
 		resp.StatusCode, time.Since(start).Milliseconds(), true, body, streamUsage)
+
+	if h.emitter != nil && streamUsage != nil {
+		h.emitter.EmitLLM(context.WithoutCancel(r.Context()), pgstore.LLMEvent{
+			OccurredAt:       start,
+			Consumer:         consumer,
+			UserType:         userType,
+			Subject:          subjectFromContext(r),
+			ServiceType:      def.Type,
+			Model:            def.Model,
+			Provider:         def.Provider,
+			PromptTokens:     streamUsage.PromptTokens,
+			CompletionTokens: streamUsage.CompletionTokens,
+			HTTPStatus:       resp.StatusCode,
+			DurationMs:       time.Since(start).Milliseconds(),
+		})
+	}
 }
 
 // auditLog emits a structured slog record for the LLM request when audit is enabled.
@@ -635,6 +694,15 @@ func (h *Handler) auditLog(ctx context.Context, def *service.Def, consumer, user
 		args = append(args, "prompt", string(reqBody))
 	}
 	slog.InfoContext(ctx, "llm request", args...)
+}
+
+// subjectFromContext extracts the OAuth2 subject from the request context.
+// Returns empty string when authentication is disabled or the principal is absent.
+func subjectFromContext(r *http.Request) string {
+	if p, ok := auth.FromContext(r.Context()); ok && p != nil {
+		return p.Subject
+	}
+	return ""
 }
 
 func writeTokenLimitHeaders(w http.ResponseWriter, res ratelimit.CheckResult) {

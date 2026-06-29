@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{block "title" .}}GatewAI Dashboard{{end}}</title>
+  <link rel="stylesheet" href="{{url .BasePath "/static/style.css"}}">
+  <script src="{{url .BasePath "/static/htmx.min.js"}}" defer></script>
+</head>
+<body>
+  <nav>
+    <span class="brand">GatewAI</span>
+    <a href="{{url .BasePath "/"}}" {{if eq .ActivePage "dashboard"}}class="active"{{end}}>Dashboard</a>
+    <a href="{{url .BasePath "/history"}}" {{if eq .ActivePage "history"}}class="active"{{end}}>History</a>
+    {{if .IsAdmin}}<a href="{{url .BasePath "/admin"}}" {{if eq .ActivePage "admin"}}class="active"{{end}}>Admin</a>{{end}}
+  </nav>
+  <main>
+    {{block "content" .}}{{end}}
+  </main>
+  <footer>GatewAI &bull; {{.Consumer}}</footer>
+</body>
+</html>

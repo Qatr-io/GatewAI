@@ -1,0 +1,32 @@
+{{define "history_rows"}}
+{{range .Events}}
+<tr {{if isLastRow . $.Events $.Page $.Limit $.Total}}
+    hx-get="/history?page={{add $.Page 1}}&service_type={{$.Filters.ServiceType}}&days={{$.Filters.Days}}&partial=1"
+    hx-trigger="revealed"
+    hx-swap="afterend"
+    hx-target="this"
+    {{end}}>
+  <td style="white-space:nowrap;font-size:.8rem">{{.OccurredAt.Format "2006-01-02 15:04:05"}}</td>
+  <td><span class="badge badge-info">{{.EventType}}</span></td>
+  <td>{{.ServiceType}}</td>
+  <td>{{.Model}}</td>
+  <td>
+    {{if gt .HTTPStatus 0}}
+      {{if lt .HTTPStatus 300}}<span class="badge badge-ok">{{.HTTPStatus}}</span>
+      {{else if lt .HTTPStatus 500}}<span class="badge badge-warn">{{.HTTPStatus}}</span>
+      {{else}}<span class="badge badge-err">{{.HTTPStatus}}</span>{{end}}
+    {{else if .JobStatus}}
+      {{if eq .JobStatus "completed"}}<span class="badge badge-ok">{{.JobStatus}}</span>
+      {{else if eq .JobStatus "failed"}}<span class="badge badge-err">{{.JobStatus}}</span>
+      {{else}}<span class="badge badge-info">{{.JobStatus}}</span>{{end}}
+    {{end}}
+  </td>
+  <td>{{if gt .PromptTokens 0}}{{.PromptTokens}}{{else}}—{{end}}</td>
+  <td>{{if gt .CompletionTokens 0}}{{.CompletionTokens}}{{else}}—{{end}}</td>
+  <td>{{if gt .DurationMs 0}}{{.DurationMs}} ms{{else}}—{{end}}</td>
+  <td>{{if .CacheHit}}<span class="badge badge-ok">HIT</span>{{else}}—{{end}}</td>
+</tr>
+{{else}}
+<tr><td colspan="9" class="empty">No events found for the selected filters.</td></tr>
+{{end}}
+{{end}}

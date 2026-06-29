@@ -497,3 +497,43 @@ otlpOperator:
         logs:
           receivers: [otlp]
           exporters: [debug]
+
+
+# ── Dashboard UI (optional, disabled by default) ──────────────────────────────
+ui:
+  enabled: false
+  image:
+    repository: ghcr.io/qatr-io/gatewai/ui
+    tag: ""           # defaults to .Chart.AppVersion
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 80
+  ingress:
+    enabled: false
+    className: "nginx"
+    annotations: {}
+    host: ui.gatewai.example.com
+    tls: []
+  resources: {}
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  extraEnvVars: []
+  # URL prefix under which the UI is served by the reverse proxy.
+  # Example: "/ui" → dashboard at /ui/, static at /ui/static/*.
+  # Leave empty to serve at root (default when the UI has its own hostname).
+  basePath: ""
+  # Groups or roles that grant admin access (see all consumers' data).
+  adminGroups: []
+  adminRoles: []
+
+# ── PostgreSQL (optional, required for UI history) ────────────────────────────
+postgres:
+  # Full PostgreSQL connection string. Supports ${VAR} expansion.
+  # Example: "postgres://gatewai:${PG_PASSWORD}@postgres:5432/gatewai?sslmode=require"
+  dsn: ""
+  maxConns: 10
+  connectTimeout: "5s"
+  # Name of an existing Secret with key POSTGRES_DSN (overrides dsn above).
+  existingSecret: ""

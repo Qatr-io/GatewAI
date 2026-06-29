@@ -44,6 +44,8 @@ jobs:
           cache: true
       - run: go vet ./...
       - run: go test -count=1 ./...
+      - name: Build UI binary (smoke)
+        run: CGO_ENABLED=0 go build ./cmd/ui
 
   test-relay:
     name: Relay — test & vet
