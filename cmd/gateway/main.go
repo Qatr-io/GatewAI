@@ -34,6 +34,7 @@ import (
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
 	"gatewai/gateway/internal/telemetry"
+	"gatewai/gateway/internal/usage"
 )
 
 // version is set at build time via -ldflags "-X main.version=v0.4.1".
@@ -80,6 +81,7 @@ var reservedGatewayPaths = []string{
 	"/docs",
 	"/openapi.yaml",
 	"/jobs",
+	"/usage",
 	"/-",
 }
 
@@ -109,8 +111,10 @@ func buildRouter(
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
 	authzEngine *authz.Engine,
-	healthChecker *health.Checker,
-	emitter pgstore.EventEmitter,
+	healthChecker    *health.Checker,
+	emitter          pgstore.EventEmitter,
+	usageTracker     usage.UsageTracker,
+	usageHTTPHandler *usage.UsageHandler,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
@@ -122,6 +126,9 @@ func buildRouter(
 	}
 	if emitter != nil {
 		jobHandler.WithEventEmitter(emitter)
+	}
+	if usageTracker != nil {
+		jobHandler.WithUsageTracker(usageTracker)
 	}
 
 	r := chi.NewRouter()
@@ -148,6 +155,10 @@ func buildRouter(
 	r.Delete("/jobs/{service_type}/{id}", jobHandler.Cancel)
 	r.Post("/-/reload", handler.NewReloadHandler(reloadFn))
 	r.Post("/-/jobs/purge", jobHandler.AdminPurge)
+	if usageHTTPHandler != nil {
+		r.Get("/usage", usageHTTPHandler.GetMyUsage)
+		r.Get("/-/usage", usageHTTPHandler.AdminListUsage)
+	}
 
 	if reg.HasSyncServices() {
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
@@ -157,6 +168,9 @@ func buildRouter(
 		}
 		if authzEngine != nil {
 			sh.WithAuthz(authzEngine)
+		}
+		if usageTracker != nil {
+			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
 		r.Get("/v1/models", handler.ListModels(reg))
@@ -278,6 +292,18 @@ func main() {
 		consumerTracker = gmetrics.NewRedisTracker(redisClient.Raw())
 	}
 
+	// ── Usage tracker ─────────────────────────────────────────────────────────
+	var usageTracker usage.UsageTracker
+	var usageHTTPHandler *usage.UsageHandler
+	if cfg.Server.ConsumerHeader != "" {
+		ut := usage.NewRedisUsageTracker(redisClient.Raw(), cfg.Usage.RetentionDuration())
+		usageTracker = ut
+		usageStore := usage.NewRedisUsageStore(redisClient.Raw(), cfg.Usage.Retention)
+		usageHTTPHandler = usage.NewUsageHandler(usageStore, initialRegistry, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
+		manager.WithUsageTracker(usageTracker)
+		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
+	}
+
 	var llmHandler *llmproxy.Handler
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
@@ -363,7 +389,13 @@ func main() {
 		if newCfg.Policies != nil {
 			newAuthzEngine = authz.New(*newCfg.Policies)
 		}
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, emitter)
+		if usageTracker != nil {
+			usageTracker.UpdateRetention(newCfg.Usage.RetentionDuration())
+		}
+		if usageHTTPHandler != nil {
+			usageHTTPHandler.UpdateRegistry(newReg)
+		}
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, emitter, usageTracker, usageHTTPHandler)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
@@ -374,7 +406,7 @@ func main() {
 	if cfg.Policies != nil {
 		authzEngine = authz.New(*cfg.Policies)
 	}
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, emitter)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, emitter, usageTracker, usageHTTPHandler)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
