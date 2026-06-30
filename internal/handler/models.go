@@ -2,11 +2,16 @@ package handler
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"time"
 
 	"gatewai/gateway/internal/service"
 )
+
+var modelsProxyClient = &http.Client{Timeout: 30 * time.Second}
 
 // modelCapabilities describes what a model supports.
 type modelCapabilities struct {
@@ -34,10 +39,16 @@ type modelsListResponse struct {
 	Data   []modelObject `json:"data"`
 }
 
-// ListModels handles GET /v1/models and returns all configured models
-// in the OpenAI-compatible format, enriched with capability metadata.
+// ListModels handles GET /v1/models.
+// Without query params, returns all configured models in OpenAI-compatible format.
+// With ?model=<name>, proxies to the underlying model backend to retrieve its native info.
 func ListModels(registry *service.Registry) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if modelName := r.URL.Query().Get("model"); modelName != "" {
+			proxyModelsToBackend(w, r, registry, modelName)
+			return
+		}
+
 		defs := registry.Models()
 
 		data := make([]modelObject, 0, len(defs))
@@ -65,6 +76,59 @@ func ListModels(registry *service.Registry) http.HandlerFunc {
 		enc.SetEscapeHTML(false)
 		_ = enc.Encode(modelsListResponse{Object: "list", Data: data})
 	}
+}
+
+func proxyModelsToBackend(w http.ResponseWriter, r *http.Request, reg *service.Registry, modelName string) {
+	var found *service.Def
+	for _, d := range reg.Models() {
+		if d.Model == modelName && d.InferenceURL != "" {
+			found = d
+			break
+		}
+	}
+	if found == nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"model not found or has no backend"}`))
+		return
+	}
+
+	u, err := url.Parse(found.InferenceURL)
+	if err != nil || u.Host == "" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"invalid backend URL"}`))
+		return
+	}
+	backendURL := u.Scheme + "://" + u.Host + "/v1/models"
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, backendURL, nil)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"failed to build backend request"}`))
+		return
+	}
+	for k, v := range found.InferenceHeaders {
+		req.Header.Set(k, v)
+	}
+
+	resp, err := modelsProxyClient.Do(req)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte(`{"error":"backend unreachable"}`))
+		return
+	}
+	defer resp.Body.Close()
+
+	for k, vv := range resp.Header {
+		for _, v := range vv {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
 }
 
 func sortedExts(m map[string]struct{}) []string {

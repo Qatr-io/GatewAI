@@ -290,7 +290,7 @@ func TestApplyGatewayOverlay_MultiOp_InjectsOperationField(t *testing.T) {
 func TestApplyGatewayOverlay_FiltersUnconfiguredPaths(t *testing.T) {
 	svc := whisperSvc(map[string][]string{
 		"transcription": {"/v1/audio/transcriptions"},
-		// /v1/audio/translations and /v1/models are NOT in Operations
+		// /v1/audio/translations is NOT in Operations
 	})
 	result := ApplyGatewayOverlay(whisperFixture, svc, []string{"whisper-large-v3"})
 
@@ -303,11 +303,46 @@ func TestApplyGatewayOverlay_FiltersUnconfiguredPaths(t *testing.T) {
 	if _, ok := paths["/v1/audio/translations"]; ok {
 		t.Error("/v1/audio/translations must be removed: not declared in service operations")
 	}
-	if _, ok := paths["/v1/models"]; ok {
-		t.Error("/v1/models must be removed: not declared in service operations")
-	}
 	if _, ok := paths["/v1/audio/transcriptions"]; !ok {
 		t.Error("/v1/audio/transcriptions must be kept: declared in service operations")
+	}
+	// /v1/models is always injected by the overlay to document the gateway proxy feature.
+	if _, ok := paths["/v1/models"]; !ok {
+		t.Error("/v1/models must always be present in per-model swagger")
+	}
+}
+
+func TestApplyGatewayOverlay_InjectsModelsEndpointWithDefault(t *testing.T) {
+	svc := whisperSvc(map[string][]string{
+		"transcription": {"/v1/audio/transcriptions"},
+	})
+	result := ApplyGatewayOverlay(whisperFixture, svc, []string{"whisper-large-v3"})
+
+	var spec map[string]any
+	if err := json.Unmarshal(result, &spec); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	paths, _ := spec["paths"].(map[string]any)
+	item, _ := paths["/v1/models"].(map[string]any)
+	get, _ := item["get"].(map[string]any)
+	if get == nil {
+		t.Fatal("expected GET operation on /v1/models")
+	}
+	params, _ := get["parameters"].([]any)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 parameter, got %d", len(params))
+	}
+	param, _ := params[0].(map[string]any)
+	if param["name"] != "model" || param["in"] != "query" {
+		t.Errorf("unexpected parameter: %v", param)
+	}
+	schema, _ := param["schema"].(map[string]any)
+	if schema["default"] != "whisper-large-v3" {
+		t.Errorf("expected default=whisper-large-v3, got %v", schema["default"])
+	}
+	enum, _ := schema["enum"].([]any)
+	if len(enum) != 1 || enum[0] != "whisper-large-v3" {
+		t.Errorf("expected enum=[whisper-large-v3], got %v", enum)
 	}
 }
 
