@@ -174,13 +174,15 @@ Service types with zero cumulative data are omitted. `window` is omitted when no
 
 ---
 
-### List all consumers' usage (admin)
+## Admin
+
+### List all consumers' usage
 
 ```
 GET /-/usage
 ```
 
-Returns usage for all consumers, paginated and filterable. This is an admin endpoint in the `/-/` namespace — caller is responsible for upstream authentication.
+Returns usage for all consumers, paginated and filterable. Caller is responsible for upstream authentication.
 
 **Query parameters**
 
@@ -210,8 +212,6 @@ Returns usage for all consumers, paginated and filterable. This is an admin endp
 ```
 
 ---
-
-## Admin
 
 ### Hot reload config
 
