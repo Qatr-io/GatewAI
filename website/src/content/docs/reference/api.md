@@ -182,16 +182,34 @@ Service types with zero cumulative data are omitted. `window` is omitted when no
 GET /-/usage
 ```
 
-Returns usage for all consumers, paginated and filterable. Caller is responsible for upstream authentication.
+Returns usage for all consumers, paginated. Caller is responsible for upstream authentication.
 
 **Query parameters**
 
 | Parameter | Default | Description |
 |---|---|---|
-| `consumer` | — | Filter to a single consumer (returns a single-element list) |
-| `type` | — | Filter by service type; paginates consumers ranked by request count |
-| `limit` | `20` | Max results per page (max `100`) |
+| `consumer` | — | Return a single consumer by exact name; `total` is always `1` |
+| `type` | — | Filter by service type; consumers are ranked by request count for that type, and only that type's data is returned per consumer |
+| `limit` | `20` | Page size (max `100`) |
 | `offset` | `0` | Pagination offset |
+
+`consumer` and `type` can be combined: `?consumer=alice&type=llm` returns Alice's LLM data only.
+
+**Examples**
+
+```bash
+# All consumers, page 2
+GET /-/usage?limit=20&offset=20
+
+# Top consumers for the llm service type
+GET /-/usage?type=llm&limit=10
+
+# Single consumer lookup
+GET /-/usage?consumer=alice
+
+# Single consumer, one service type
+GET /-/usage?consumer=alice&type=audio
+```
 
 **Response**
 
@@ -205,11 +223,26 @@ Returns usage for all consumers, paginated and filterable. Caller is responsible
       "consumer": "alice",
       "retention": "all-time",
       "last_active": "2026-06-29T10:55:00Z",
-      "usage": [...]
+      "usage": [
+        {
+          "service_type": "llm",
+          "total": {
+            "requests": 1250,
+            "tokens": { "prompt": 45000, "completion": 12000 }
+          },
+          "window": {
+            "requests": 42,
+            "tokens": 8500,
+            "reset_at": "2026-06-29T11:00:00Z"
+          }
+        }
+      ]
     }
   ]
 }
 ```
+
+`total` is the number of known consumers (or `1` when `consumer` is set). Each element of `consumers` follows the same shape as `GET /usage`.
 
 ---
 
