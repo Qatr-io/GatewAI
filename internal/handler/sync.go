@@ -25,6 +25,7 @@ import (
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/usage"
 )
 
 // SyncHandler handles OpenAI-compatible POST /v1/* requests.
@@ -43,7 +44,8 @@ type SyncHandler struct {
 	retryBackoff      time.Duration                   // initial backoff between retry cycles; default 500ms
 	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
 	userTypeHeader    string
-	authz             *authz.Engine // nil = no enforcement
+	authz             *authz.Engine       // nil = no enforcement
+	usageTracker      usage.UsageTracker  // nil = no usage tracking
 }
 
 func NewSyncHandler(
@@ -87,6 +89,12 @@ func (h *SyncHandler) WithRetryBackoff(d time.Duration) *SyncHandler {
 // WithAuthz sets the authorization engine. nil disables enforcement (default).
 func (h *SyncHandler) WithAuthz(e *authz.Engine) *SyncHandler {
 	h.authz = e
+	return h
+}
+
+// WithUsageTracker attaches a usage tracker. Call before serving requests.
+func (h *SyncHandler) WithUsageTracker(t usage.UsageTracker) *SyncHandler {
+	h.usageTracker = t
 	return h
 }
 
@@ -331,6 +339,10 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
 		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model), time.Since(start).Seconds())
+		if h.usageTracker != nil && consumer != "" && sw.Status() < 500 {
+			h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
+			h.usageTracker.TrackActive(r.Context(), consumer)
+		}
 		return
 	}
 
@@ -428,6 +440,13 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 			// Success or 4xx: forward immediately, do not retry.
 			defer resp.Body.Close()
 			metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, strconv.Itoa(resp.StatusCode)).Inc()
+			if h.usageTracker != nil && resp.StatusCode < 500 {
+				consumer, _ := h.resolveConsumerAndType(r)
+				if consumer != "" {
+					h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
+					h.usageTracker.TrackActive(r.Context(), consumer)
+				}
+			}
 			for key, values := range resp.Header {
 				for _, v := range values {
 					w.Header().Add(key, v)

@@ -10,6 +10,7 @@ import (
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
+	"gatewai/gateway/internal/usage"
 )
 
 // Manager subscribes to job completion events for all async models.
@@ -22,6 +23,7 @@ type Manager struct {
 	emitter       pgstore.EventEmitter // nil = disabled
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
+	usageTracker          usage.UsageTracker              // nil = no usage tracking
 
 	mu        sync.Mutex
 	parentCtx context.Context
@@ -108,6 +110,12 @@ func (m *Manager) WithEventEmitter(e pgstore.EventEmitter) *Manager {
 	return m
 }
 
+// WithUsageTracker attaches a usage tracker for processing-time recording.
+func (m *Manager) WithUsageTracker(t usage.UsageTracker) *Manager {
+	m.usageTracker = t
+	return m
+}
+
 // UpdatePersistsResult updates S3 result retention policy.
 // Safe to call concurrently with in-flight webhook goroutines.
 func (m *Manager) UpdatePersistsResult(v bool) {
@@ -155,6 +163,11 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 			JobStatus:       string(job.Status),
 			ProcessingTimeS: job.ProcessingTime,
 		})
+	}
+
+	if m.usageTracker != nil && job.ConsumerName != "" && job.ProcessingTime > 0 {
+		m.usageTracker.TrackProcessingTime(ctx, job.ConsumerName, job.ServiceType, job.ProcessingTime)
+		m.usageTracker.TrackActive(ctx, job.ConsumerName)
 	}
 
 	if job.CallbackURL != "" {

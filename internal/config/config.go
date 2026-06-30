@@ -32,6 +32,7 @@ type Config struct {
 	Policies *PoliciesConfig `yaml:"policies"`
 	Postgres PostgresConfig  `yaml:"postgres"`
 	UI       UIConfig        `yaml:"ui"`
+	Usage    UsageConfig     `yaml:"usage"`
 }
 
 // PostgresConfig holds the DSN for the optional PostgreSQL backing store.
@@ -329,6 +330,17 @@ type GCConfig struct {
 func (g GCConfig) IntervalDuration() time.Duration     { return parseDuration(g.Interval) }
 func (g GCConfig) OrphanMinAgeDuration() time.Duration { return parseDuration(g.OrphanMinAge) }
 
+// UsageConfig controls per-consumer usage tracking retention.
+type UsageConfig struct {
+	// Retention is the duration sorted-set keys are kept before expiry.
+	// Empty or "0" means no TTL (all-time accumulation).
+	// Accepts Go duration strings: "24h", "720h", "8760h".
+	// Note: "d" suffix is not a valid Go duration — use "h" (e.g. "8760h" for 365 days).
+	Retention string `yaml:"retention"`
+}
+
+func (u UsageConfig) RetentionDuration() time.Duration { return parseDuration(u.Retention) }
+
 // BackendConfig describes one backend in a multi-backend list.
 type BackendConfig struct {
 	URL     string            `yaml:"url"`
@@ -434,6 +446,21 @@ type GuardrailsConfig struct {
 	Output *GuardrailsStageConfig `yaml:"output"`
 }
 
+// LoadFromBytes parses a YAML config from an in-memory byte slice.
+// Exported for testing; production code uses Load(path).
+func LoadFromBytes(data []byte) (*Config, error) {
+	expanded := []byte(os.Expand(string(data), expandWithDefault))
+	var cfg Config
+	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	cfg.applyDefaults()
+	if err := cfg.validate(); err != nil {
+		return nil, fmt.Errorf("invalid config: %w", err)
+	}
+	return &cfg, nil
+}
+
 // Load reads and validates the YAML config file at path.
 // Values of the form ${VAR} or ${VAR:-default} are expanded from the environment.
 func Load(path string) (*Config, error) {
@@ -441,21 +468,7 @@ func Load(path string) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading config %q: %w", path, err)
 	}
-
-	expanded := []byte(os.Expand(string(data), expandWithDefault))
-
-	var cfg Config
-	if err := yaml.Unmarshal(expanded, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
-	}
-
-	cfg.applyDefaults()
-
-	if err := cfg.validate(); err != nil {
-		return nil, fmt.Errorf("invalid config: %w", err)
-	}
-
-	return &cfg, nil
+	return LoadFromBytes(data)
 }
 
 // expandWithDefault gère la syntaxe ${VAR:-default} que os.ExpandEnv ne supporte pas.

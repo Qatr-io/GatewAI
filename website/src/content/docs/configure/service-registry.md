@@ -129,6 +129,30 @@ When `provider` is set, JSON requests bypass the standard direct proxy and go th
 
 See [LLM proxy](llm-proxy.md) for full documentation.
 
+## Sync concurrency cap (`max_concurrent_sync`)
+
+To protect a backend from being overwhelmed by simultaneous sync requests, set `max_concurrent_sync` on the service entry:
+
+```yaml
+services:
+  - type: llm
+    model: "gpt-4o"
+    provider: openai
+    inference_url: "https://api.openai.com"
+    max_concurrent_sync: 10   # at most 10 parallel sync calls for this model
+    operations:
+      chat:
+        - "/v1/*"
+```
+
+The limit is enforced by a **shared Redis semaphore** (`gateway:semaphore:sync:{model}`) — the cap applies across all gateway replicas, not per pod. When all slots are busy, the gateway returns **`503 Service Unavailable`** immediately (no queuing).
+
+- `0` (default) — no limit
+- **Fail-open**: Redis errors are logged and the request is allowed through
+- **Scope**: sync-direct and LLM-proxy requests only (`/v1/*`); async jobs are unaffected
+
+The semaphore TTL is 30 minutes — a safety net that resets the counter if a gateway replica crashes while holding a slot.
+
 ## Hot reload
 
 The service registry is reloaded atomically via `POST /-/reload`. The HTTP router is swapped with the new registry. Infrastructure (S3, Redis) is not re-initialised.

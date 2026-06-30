@@ -27,6 +27,7 @@ import (
 	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/usage"
 )
 
 // s3Store is the subset of storage.S3Client used by JobHandler.
@@ -68,6 +69,7 @@ type JobHandler struct {
 	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 	authz                 *authz.Engine                   // nil = no enforcement
 	emitter               pgstore.EventEmitter            // nil = event writes disabled
+	usageTracker          usage.UsageTracker              // nil = no usage tracking
 }
 
 func NewJobHandler(
@@ -112,6 +114,12 @@ func (h *JobHandler) WithAuthz(e *authz.Engine) *JobHandler {
 // WithEventEmitter sets the PostgreSQL event emitter. nil disables event writes (default).
 func (h *JobHandler) WithEventEmitter(e pgstore.EventEmitter) *JobHandler {
 	h.emitter = e
+	return h
+}
+
+// WithUsageTracker attaches a usage tracker. Call before serving requests.
+func (h *JobHandler) WithUsageTracker(t usage.UsageTracker) *JobHandler {
+	h.usageTracker = t
 	return h
 }
 
@@ -412,6 +420,11 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	metrics.AsyncJobsSubmittedTotal.WithLabelValues(serviceType, def.Model).Inc()
 	if consumerName != "" {
 		metrics.JobsByConsumerTotal.WithLabelValues(mode, serviceType, def.Model, consumerName).Inc()
+		if h.usageTracker != nil {
+			h.usageTracker.TrackRequest(ctx, consumerName, serviceType)
+			h.usageTracker.TrackJob(ctx, consumerName, serviceType)
+			h.usageTracker.TrackActive(ctx, consumerName)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
