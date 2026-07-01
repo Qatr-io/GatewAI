@@ -135,18 +135,18 @@ data:
         {{- range $userType, $cfg := $userLimits }}
         {{ $userType | quote }}:
           {{- if $cfg.rate }}
-          rate:   {{ $cfg.rate }}
+          rate:   {{ $cfg.rate | int64 }}
           period: {{ $cfg.period | quote }}
           {{- end }}
           {{- if $cfg.tokenRate }}
-          token_rate:   {{ $cfg.tokenRate }}
+          token_rate:   {{ $cfg.tokenRate | int64 }}
           token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
           {{- if $cfg.maxConcurrent }}
-          max_concurrent: {{ $cfg.maxConcurrent }}
+          max_concurrent: {{ $cfg.maxConcurrent | int64 }}
           {{- end }}
           {{- if $cfg.processingTime }}
-          processing_time:   {{ $cfg.processingTime }}
+          processing_time:   {{ $cfg.processingTime | int64 }}
           processing_period: {{ $cfg.processingPeriod | quote }}
           {{- end }}
         {{- end }}
@@ -264,7 +264,7 @@ data:
         token_limits:
           {{- range $userType, $cfg := .tokenLimits }}
           {{ $userType | quote }}:
-            token_rate:   {{ $cfg.tokenRate }}
+            token_rate:   {{ $cfg.tokenRate | int64 }}
             token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
         {{- end }}
