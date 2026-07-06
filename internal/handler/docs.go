@@ -42,9 +42,9 @@ func GenerateSpec(reg *service.Registry, appVersion string) []byte {
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"tags":    specTags(reg),
-		// Global security: all endpoints require the API key unless overridden.
+		// Global security: all endpoints require a bearer token unless overridden.
 		"security": []any{
-			map[string]any{"ApiKeyAuth": []any{}},
+			map[string]any{"BearerAuth": []any{}},
 		},
 		"paths":      paths,
 		"components": specComponents(),
@@ -578,10 +578,10 @@ func syncPathItems(reg *service.Registry) map[string]any {
 func specComponents() map[string]any {
 	return map[string]any{
 		"securitySchemes": map[string]any{
-			"ApiKeyAuth": map[string]any{
-				"type": "apiKey",
-				"in":   "header",
-				"name": "apikey",
+			"BearerAuth": map[string]any{
+				"type":         "http",
+				"scheme":       "bearer",
+				"bearerFormat": "JWT",
 			},
 		},
 		"schemas": map[string]any{
