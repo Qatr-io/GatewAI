@@ -345,3 +345,54 @@ func TestExtractProcessingTime(t *testing.T) {
 		})
 	}
 }
+
+func TestExtractTokens(t *testing.T) {
+	tests := []struct {
+		name               string
+		input              []byte
+		expectedPrompt     int64
+		expectedCompletion int64
+	}{
+		{
+			name:               "chat-style prompt and completion",
+			input:              []byte(`{"text":"hello","usage":{"prompt_tokens":120,"completion_tokens":45,"total_tokens":165}}`),
+			expectedPrompt:     120,
+			expectedCompletion: 45,
+		},
+		{
+			name:               "embeddings-style prompt only",
+			input:              []byte(`{"usage":{"prompt_tokens":30,"total_tokens":30}}`),
+			expectedPrompt:     30,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "total_tokens fallback when prompt and completion absent",
+			input:              []byte(`{"usage":{"total_tokens":50}}`),
+			expectedPrompt:     50,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "missing usage object",
+			input:              []byte(`{"text":"hello"}`),
+			expectedPrompt:     0,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "malformed JSON",
+			input:              []byte(`not json`),
+			expectedPrompt:     0,
+			expectedCompletion: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPrompt, gotCompletion := extractTokens(tc.input)
+			if gotPrompt != tc.expectedPrompt {
+				t.Errorf("prompt: got %d, want %d", gotPrompt, tc.expectedPrompt)
+			}
+			if gotCompletion != tc.expectedCompletion {
+				t.Errorf("completion: got %d, want %d", gotCompletion, tc.expectedCompletion)
+			}
+		})
+	}
+}

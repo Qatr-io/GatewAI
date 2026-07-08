@@ -267,3 +267,26 @@ func extractProcessingTime(result []byte) float64 {
 	}
 	return v.ProcessingTime
 }
+
+// extractTokens parses the OpenAI-compatible usage.prompt_tokens /
+// usage.completion_tokens fields from the inference result JSON. If both are
+// absent but usage.total_tokens is present, the total is attributed to prompt
+// tokens. Returns (0, 0) if the usage object is absent or unparseable.
+func extractTokens(result []byte) (prompt, completion int64) {
+	var v struct {
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(result, &v); err != nil {
+		return 0, 0
+	}
+	prompt = v.Usage.PromptTokens
+	completion = v.Usage.CompletionTokens
+	if prompt == 0 && completion == 0 && v.Usage.TotalTokens > 0 {
+		prompt = v.Usage.TotalTokens
+	}
+	return prompt, completion
+}
