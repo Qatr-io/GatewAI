@@ -120,6 +120,7 @@ func buildRouter(
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
+		jobHandler.WithTokenLimiter(limiter)
 	}
 	if authzEngine != nil {
 		jobHandler.WithAuthz(authzEngine)
@@ -165,6 +166,7 @@ func buildRouter(
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
+			sh.WithTokenLimiter(limiter)
 		}
 		if authzEngine != nil {
 			sh.WithAuthz(authzEngine)
@@ -279,6 +281,7 @@ func main() {
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
 	if limiter != nil {
 		manager.WithProcessingTimeLimiter(limiter)
+		manager.WithTokenLimiter(limiter)
 	}
 	manager.WithEventEmitter(emitter)
 
@@ -376,8 +379,10 @@ func main() {
 		}
 		if limiter != nil {
 			manager.WithProcessingTimeLimiter(limiter)
+			manager.WithTokenLimiter(limiter)
 		} else {
 			manager.WithProcessingTimeLimiter(nil)
+			manager.WithTokenLimiter(nil)
 		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
@@ -415,6 +420,7 @@ func main() {
 
 	if cfg.Metrics.TopConsumers > 0 {
 		gmetrics.StartTopNRefresh(ctx, redisClient.Raw(), cfg.Metrics.TopConsumers, 60*time.Second)
+		gmetrics.StartUsageTopNRefresh(ctx, redisClient.Raw(), cfg.Metrics.TopConsumers, 60*time.Second, initialRegistry.Types())
 	}
 
 	manager.Start(ctx, initialRegistry)
