@@ -43,8 +43,8 @@ type redisPublisher struct {
 	q  *queue.Queue
 }
 
-func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64) error {
-	if err := p.st.UpdateJobResult(ctx, jobID, status, resultRef, errMsg, processingTime); err != nil {
+func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64, promptTokens, completionTokens int64) error {
+	if err := p.st.UpdateJobResult(ctx, jobID, status, resultRef, errMsg, processingTime, promptTokens, completionTokens); err != nil {
 		return err
 	}
 	if err := p.q.Publish(ctx, jobID); err != nil {

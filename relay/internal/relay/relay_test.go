@@ -51,10 +51,12 @@ func (a *mockAdapter) Call(_ context.Context, _ adapter.CallInput) ([]byte, erro
 }
 
 type publishCall struct {
-	jobID     string
-	status    model.JobStatus
-	resultRef string
-	errMsg    string
+	jobID            string
+	status           model.JobStatus
+	resultRef        string
+	errMsg           string
+	promptTokens     int64
+	completionTokens int64
 }
 
 type mockPublisher struct {
@@ -62,8 +64,8 @@ type mockPublisher struct {
 	err   error
 }
 
-func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64) error {
-	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg})
+func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64, promptTokens, completionTokens int64) error {
+	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg, promptTokens, completionTokens})
 	return p.err
 }
 
@@ -223,6 +225,28 @@ func TestProcess_Success_PublishesCompletedResult(t *testing.T) {
 	}
 	if len(s3.deleted) != 1 || s3.deleted[0] != testJob().InputRef {
 		t.Errorf("expected input file %q to be deleted, got %v", testJob().InputRef, s3.deleted)
+	}
+}
+
+// TestProcess_Success_ExtractsAndPublishesTokens verifies that prompt/completion
+// tokens parsed from the inference result are forwarded to PublishResult.
+func TestProcess_Success_ExtractsAndPublishesTokens(t *testing.T) {
+	s3 := &mockS3{getBody: "audio data"}
+	adp := &mockAdapter{result: []byte(`{"text":"hello","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)}
+	pub := &mockPublisher{}
+
+	p := newTestProcessor(s3, adp, pub)
+	if err := p.process(context.Background(), testJob()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pub.calls) != 1 {
+		t.Fatalf("expected 1 published result, got %d", len(pub.calls))
+	}
+	if pub.calls[0].promptTokens != 10 {
+		t.Errorf("promptTokens: got %d, want 10", pub.calls[0].promptTokens)
+	}
+	if pub.calls[0].completionTokens != 5 {
+		t.Errorf("completionTokens: got %d, want 5", pub.calls[0].completionTokens)
 	}
 }
 
