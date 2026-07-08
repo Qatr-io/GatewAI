@@ -912,6 +912,149 @@ func (m *mockProcessingLimiter) AddProcessingTime(_ context.Context, _, _, _ str
 	return nil
 }
 
+// mockUsageTrackerSync is a test double for usage.UsageTracker that records
+// TrackTokens calls; the other methods are no-ops.
+type mockUsageTrackerSync struct {
+	tokenCalls []struct {
+		consumer, serviceType string
+		prompt, completion    int64
+	}
+}
+
+func (m *mockUsageTrackerSync) TrackRequest(_ context.Context, _, _ string)                   {}
+func (m *mockUsageTrackerSync) TrackJob(_ context.Context, _, _ string)                       {}
+func (m *mockUsageTrackerSync) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
+func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string)                       {}
+func (m *mockUsageTrackerSync) UpdateRetention(_ time.Duration)                               {}
+func (m *mockUsageTrackerSync) TrackTokens(_ context.Context, consumer, serviceType string, prompt, completion int64) {
+	m.tokenCalls = append(m.tokenCalls, struct {
+		consumer, serviceType string
+		prompt, completion    int64
+	}{consumer, serviceType, prompt, completion})
+}
+
+// TestProxyToInference_TokenLimit_DeniedBeforeBackendCall verifies a 429 is
+// returned before any backend HTTP call when the token budget is exhausted.
+func TestProxyToInference_TokenLimit_DeniedBeforeBackendCall(t *testing.T) {
+	backendCalled := false
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		backendCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	cfgs := []config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "faster-whisper",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		InferenceURL: backend.URL,
+	}}
+	reg := service.NewRegistry(cfgs)
+	tLimiter := &mockTokenLimiter{result: ratelimit.CheckResult{Allowed: false, Limit: 10000, Remaining: 0, ResetAfter: time.Hour}}
+
+	sh := handler.NewSyncHandler(reg, "X-Consumer-Username", nil, nil).WithTokenLimiter(tLimiter)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(`{"model":"faster-whisper"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	sh.ServeHTTP(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429, got %d: %s", w.Code, w.Body.String())
+	}
+	if backendCalled {
+		t.Error("backend must not be called when token budget is exceeded")
+	}
+}
+
+// TestProxyToInference_TokenLimit_SuccessTracksTokens verifies a successful
+// response triggers AddTokens with the parsed usage total and TrackTokens on
+// the usage tracker.
+func TestProxyToInference_TokenLimit_SuccessTracksTokens(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"text":"hello","usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}`)
+	}))
+	defer backend.Close()
+
+	cfgs := []config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "faster-whisper",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		InferenceURL: backend.URL,
+	}}
+	reg := service.NewRegistry(cfgs)
+	tLimiter := &mockTokenLimiter{result: ratelimit.CheckResult{Allowed: true}}
+	tracker := &mockUsageTrackerSync{}
+
+	sh := handler.NewSyncHandler(reg, "X-Consumer-Username", nil, nil).
+		WithTokenLimiter(tLimiter).
+		WithUsageTracker(tracker)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", strings.NewReader(`{"model":"faster-whisper"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Consumer-Username", "alice")
+	w := httptest.NewRecorder()
+	sh.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(tLimiter.addCalls) != 1 {
+		t.Fatalf("expected 1 AddTokens call, got %d", len(tLimiter.addCalls))
+	}
+	if tLimiter.addCalls[0].total != 120 {
+		t.Errorf("total: got %d, want 120", tLimiter.addCalls[0].total)
+	}
+	if len(tracker.tokenCalls) != 1 {
+		t.Fatalf("expected 1 TrackTokens call, got %d", len(tracker.tokenCalls))
+	}
+	if tracker.tokenCalls[0].prompt != 100 || tracker.tokenCalls[0].completion != 20 {
+		t.Errorf("TrackTokens: got prompt=%d completion=%d, want 100/20", tracker.tokenCalls[0].prompt, tracker.tokenCalls[0].completion)
+	}
+}
+
+// TestProxyToInference_IsLLMService_SkipsTokenLogic is a regression guard:
+// proxyToInference must not run token check/capture logic for LLM-provider
+// services, even when reached via the multipart path (which has no IsLLM
+// gate), to avoid double-counting against the independent llmproxy tracking.
+func TestProxyToInference_IsLLMService_SkipsTokenLogic(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"usage":{"prompt_tokens":100,"completion_tokens":20}}`)
+	}))
+	defer backend.Close()
+
+	cfgs := []config.ServiceConfig{{
+		Type:     "llm",
+		Model:    "some-llm-model",
+		Provider: "openai",
+		Operations: map[string][]string{
+			"chat": {"/v1/chat/completions"},
+		},
+		InferenceURL: backend.URL,
+		AcceptedExts: []string{".wav"},
+	}}
+	reg := service.NewRegistry(cfgs)
+	tLimiter := &mockTokenLimiter{result: ratelimit.CheckResult{Allowed: true}}
+
+	sh := handler.NewSyncHandler(reg, "X-Consumer-Username", nil, nil).WithTokenLimiter(tLimiter)
+
+	req := multipartRequest(t, "/v1/chat/completions", "some-llm-model", []byte("data"))
+	w := httptest.NewRecorder()
+	sh.ServeHTTP(w, req)
+
+	if len(tLimiter.addCalls) != 0 {
+		t.Errorf("expected no AddTokens call for an IsLLM() service, got %d calls (double-counting risk)", len(tLimiter.addCalls))
+	}
+}
+
 // TestSyncHandler_ProcessingTimeLimitDenied verifies that a 429 is returned when
 // the processing time budget is exhausted.
 func TestSyncHandler_ProcessingTimeLimitDenied(t *testing.T) {
