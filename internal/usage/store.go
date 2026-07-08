@@ -80,6 +80,17 @@ func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userTyp
 		}
 	}
 
+	// Generic (non-LLM-proxy) tokens come from the UsageTracker.TrackTokens sorted
+	// sets. Only consulted when the "llm" branch above found nothing, so the two
+	// key formats never both contribute to the same response.
+	if tokens == nil {
+		promptGeneric, _ := s.zscore(ctx, "usage:consumer:"+svcType+":tokens:prompt", consumer)
+		completionGeneric, _ := s.zscore(ctx, "usage:consumer:"+svcType+":tokens:completion", consumer)
+		if promptGeneric > 0 || completionGeneric > 0 {
+			tokens = &TokenUsage{Prompt: promptGeneric, Completion: completionGeneric}
+		}
+	}
+
 	// Skip service types with no recorded data.
 	if requests == 0 && jobs == 0 && procTime == 0 && tokens == nil {
 		return nil, nil

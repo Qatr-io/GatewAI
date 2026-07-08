@@ -94,6 +94,33 @@ func TestGetConsumerUsage_LLMTokens(t *testing.T) {
 	}
 }
 
+// TestGetConsumerUsage_GenericTokens verifies non-"llm" service types read
+// tokens from the new usage:consumer:{svcType}:tokens:* keys, and that this
+// does not interfere with the existing "llm" svcType code path.
+func TestGetConsumerUsage_GenericTokens(t *testing.T) {
+	store, mr, _ := newStore(t, "")
+	mr.ZAdd("usage:consumer:transcription:tokens:prompt", 500, "alice")
+	mr.ZAdd("usage:consumer:transcription:tokens:completion", 80, "alice")
+
+	usage, err := store.GetConsumerUsage(context.Background(), "alice", "user", []string{"transcription"})
+	if err != nil {
+		t.Fatalf("GetConsumerUsage: %v", err)
+	}
+	if len(usage.Usage) != 1 {
+		t.Fatalf("expected 1 service usage entry, got %d", len(usage.Usage))
+	}
+	svc := usage.Usage[0]
+	if svc.Total.Tokens == nil {
+		t.Fatal("expected Tokens to be populated")
+	}
+	if svc.Total.Tokens.Prompt != 500 {
+		t.Errorf("Prompt: got %d, want 500", svc.Total.Tokens.Prompt)
+	}
+	if svc.Total.Tokens.Completion != 80 {
+		t.Errorf("Completion: got %d, want 80", svc.Total.Tokens.Completion)
+	}
+}
+
 func TestGetConsumerUsage_WindowIncluded(t *testing.T) {
 	store, _, rdb := newStore(t, "")
 	ctx := context.Background()
