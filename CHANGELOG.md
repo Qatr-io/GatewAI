@@ -16,6 +16,16 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+#### Fixed
+
+- **Helm chart**: numeric fields in `rateLimits` (`rate`, `tokenRate`, `maxConcurrent`, `processingTime`) and per-service `tokenLimits` (`tokenRate`) now render as plain integers via `int64`. Previously values ≥ 1,000,000 were emitted in scientific notation (e.g. `5e+06`), a fragile representation for a downstream `int` field.
+
+#### Documentation
+
+- **Helm chart README**: documented `rateLimits` token windows (`tokenRate`/`tokenPeriod`) and per-model `tokenLimits`, including combining a per-minute cap with a per-day budget across the two independent windows.
+
 ### [v0.18.0] — 2026-06-24
 
 #### Added

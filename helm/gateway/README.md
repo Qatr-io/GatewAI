@@ -207,24 +207,47 @@ All lifecycle parameters are hot-reload safe.
 
 ### Rate limits
 
-Per-consumer, per-service fixed-window rate limiting backed by Redis. Configure in `config.existingConfigMap` or directly in the service config:
+Per-consumer, per-service fixed-window limiting backed by Redis, keyed by `{consumer}:{service_type}:{user_type}`. Set it via the chart's `rateLimits` value (camelCase keys); the ConfigMap renders it into the gateway's `rate_limits` block:
 
 ```yaml
-# In config.yaml (via existingConfigMap or direct config):
-rate_limits:
+# values.yaml
+rateLimits:
   llm:
-    sa:           # user_type from server.user_type_header
+    sa:                   # user_type from server.userTypeHeader
       rate: 100
       period: 1m
+      tokenRate: 250000   # optional: max cumulative tokens per window (LLM only)
+      tokenPeriod: 1m
     user:
       rate: 20
       period: 1m
-    "*":           # fallback when user_type is absent or not listed
+    "*":                  # fallback when user_type is absent or unmatched
       rate: 10
       period: 1m
 ```
 
-Returns `429 Too Many Requests` with `Retry-After` when exceeded.
+Each entry may also carry `maxConcurrent` (async jobs in flight) and `processingTime`/`processingPeriod` (cumulative inference seconds per window). Returns `429 Too Many Requests` with `Retry-After` when exceeded.
+
+#### Per-model token budgets (`tokenLimits`)
+
+A service (model) can carry its own token budget, enforced independently of `rateLimits` — both must pass. Because it uses a **separate window**, you can combine a real-time cap in `rateLimits` (e.g. tokens/minute) with a longer budget here (e.g. tokens/day):
+
+```yaml
+# values.yaml
+services:
+  - type: llm
+    model: chat-pro
+    # ...
+    tokenLimits:
+      sa:
+        tokenRate: 30000000   # tokens per day for this model
+        tokenPeriod: 24h
+      user:
+        tokenRate: 500000
+        tokenPeriod: 24h
+```
+
+`"*"` acts as the fallback user type; only `tokenRate`/`tokenPeriod` are used. Since it is per-service, the budget applies per model.
 
 ### Authentication (optional)
 
