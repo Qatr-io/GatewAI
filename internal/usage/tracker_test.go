@@ -65,6 +65,45 @@ func TestTrackProcessingTime_AccumulatesSeconds(t *testing.T) {
 	}
 }
 
+func TestTrackTokens_AccumulatesPromptAndCompletion(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	tracker.TrackTokens(context.Background(), "alice", "transcription", 100, 20)
+	tracker.TrackTokens(context.Background(), "alice", "transcription", 50, 10)
+
+	prompt, err := mr.ZScore("usage:consumer:transcription:tokens:prompt", "alice")
+	if err != nil {
+		t.Fatalf("ZScore prompt: %v", err)
+	}
+	if prompt != 150 {
+		t.Errorf("prompt: got %v, want 150", prompt)
+	}
+	completion, err := mr.ZScore("usage:consumer:transcription:tokens:completion", "alice")
+	if err != nil {
+		t.Fatalf("ZScore completion: %v", err)
+	}
+	if completion != 30 {
+		t.Errorf("completion: got %v, want 30", completion)
+	}
+}
+
+func TestTrackTokens_ZeroTokens_DoesNothing(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	tracker.TrackTokens(context.Background(), "alice", "transcription", 0, 0)
+
+	if mr.Exists("usage:consumer:transcription:tokens:prompt") {
+		t.Error("expected no key created for zero tokens")
+	}
+}
+
+func TestTrackTokens_AnonymousConsumer_DoesNothing(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	tracker.TrackTokens(context.Background(), "", "transcription", 100, 20)
+
+	if mr.Exists("usage:consumer:transcription:tokens:prompt") {
+		t.Error("expected no key created for empty consumer")
+	}
+}
+
 func TestTrackActive_UpdatesGlobalIndex(t *testing.T) {
 	tracker, mr := newTracker(t, 0)
 	ctx := context.Background()
@@ -130,6 +169,7 @@ func TestNoopUsageTracker_DoesNothing(t *testing.T) {
 	usage.NoopUsageTracker.TrackRequest(context.Background(), "alice", "audio")
 	usage.NoopUsageTracker.TrackJob(context.Background(), "alice", "audio")
 	usage.NoopUsageTracker.TrackProcessingTime(context.Background(), "alice", "audio", 5)
+	usage.NoopUsageTracker.TrackTokens(context.Background(), "alice", "audio", 100, 20)
 	usage.NoopUsageTracker.TrackActive(context.Background(), "alice")
 	usage.NoopUsageTracker.UpdateRetention(time.Hour)
 }
