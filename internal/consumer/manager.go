@@ -108,12 +108,6 @@ func (m *Manager) WithTokenLimiter(l ratelimit.TokenChecker) *Manager {
 	return m
 }
 
-// WithEventEmitter attaches a PostgreSQL event emitter. Call before Start.
-func (m *Manager) WithEventEmitter(e pgstore.EventEmitter) *Manager {
-	m.emitter = e
-	return m
-}
-
 // WithUsageTracker attaches a usage tracker for processing-time recording.
 func (m *Manager) WithUsageTracker(t usage.UsageTracker) *Manager {
 	m.usageTracker = t
