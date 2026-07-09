@@ -16,6 +16,7 @@ type UsageTracker interface {
 	TrackRequest(ctx context.Context, consumer, serviceType string)
 	TrackJob(ctx context.Context, consumer, serviceType string)
 	TrackProcessingTime(ctx context.Context, consumer, serviceType string, seconds float64)
+	TrackTokens(ctx context.Context, consumer, serviceType string, prompt, completion int64)
 	TrackActive(ctx context.Context, consumer string)
 	UpdateRetention(d time.Duration)
 }
@@ -90,6 +91,18 @@ func (t *redisUsageTracker) TrackProcessingTime(ctx context.Context, consumer, s
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":processing_time", seconds, consumer)
 }
 
+func (t *redisUsageTracker) TrackTokens(ctx context.Context, consumer, serviceType string, prompt, completion int64) {
+	if consumer == "" || (prompt <= 0 && completion <= 0) {
+		return
+	}
+	if prompt > 0 {
+		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:prompt", float64(prompt), consumer)
+	}
+	if completion > 0 {
+		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:completion", float64(completion), consumer)
+	}
+}
+
 func (t *redisUsageTracker) TrackActive(ctx context.Context, consumer string) {
 	if consumer == "" {
 		return
@@ -111,6 +124,7 @@ type noopUsageTracker struct{}
 func (noopUsageTracker) TrackRequest(_ context.Context, _, _ string)                   {}
 func (noopUsageTracker) TrackJob(_ context.Context, _, _ string)                       {}
 func (noopUsageTracker) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
+func (noopUsageTracker) TrackTokens(_ context.Context, _, _ string, _, _ int64)        {}
 func (noopUsageTracker) TrackActive(_ context.Context, _ string)                       {}
 func (noopUsageTracker) UpdateRetention(_ time.Duration)                               {}
 

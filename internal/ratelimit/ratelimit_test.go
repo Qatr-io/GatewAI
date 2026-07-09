@@ -265,6 +265,70 @@ func TestAddTokens_SetsWindowTTL(t *testing.T) {
 	}
 }
 
+// TestAddTokensFor_SameEffectAsAddTokens verifies AddTokensFor produces the
+// same Redis-key effect as an equivalent AddTokens call for matching
+// consumer/serviceType/userType/total inputs. This is a functional-equivalence
+// guard, not a code-sharing guard: AddTokensFor is a self-contained method
+// mirroring AddProcessingTime, not an extraction from AddTokens.
+func TestAddTokensFor_SameEffectAsAddTokens(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"transcription": {"user": {TokenRate: 1000, TokenPeriod: "1h"}},
+	}
+	l, _ := newLimiter(t, limits, "X-Consumer-Username", "X-User-Type")
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	req.Header.Set("X-Consumer-Username", "alice")
+	req.Header.Set("X-User-Type", "user")
+	if err := l.AddTokens(context.Background(), req, "transcription", 42); err != nil {
+		t.Fatalf("AddTokens: %v", err)
+	}
+	cr1, err := l.CheckTokens(context.Background(), req, "transcription")
+	if err != nil {
+		t.Fatalf("CheckTokens: %v", err)
+	}
+
+	l2, _ := newLimiter(t, limits, "X-Consumer-Username", "X-User-Type")
+	if err := l2.AddTokensFor(context.Background(), "alice", "user", "transcription", 42); err != nil {
+		t.Fatalf("AddTokensFor: %v", err)
+	}
+	req2 := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions", nil)
+	req2.Header.Set("X-Consumer-Username", "alice")
+	req2.Header.Set("X-User-Type", "user")
+	cr2, err := l2.CheckTokens(context.Background(), req2, "transcription")
+	if err != nil {
+		t.Fatalf("CheckTokens: %v", err)
+	}
+	if cr1.Remaining != cr2.Remaining {
+		t.Errorf("remaining mismatch: AddTokens path=%d, AddTokensFor path=%d", cr1.Remaining, cr2.Remaining)
+	}
+}
+
+// TestAddTokensFor_ZeroTotal_NoOp verifies total <= 0 does nothing.
+func TestAddTokensFor_ZeroTotal_NoOp(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"transcription": {"user": {TokenRate: 1000, TokenPeriod: "1h"}},
+	}
+	l, mr := newLimiter(t, limits, "X-Consumer-Username", "X-User-Type")
+	if err := l.AddTokensFor(context.Background(), "alice", "user", "transcription", 0); err != nil {
+		t.Fatalf("AddTokensFor: %v", err)
+	}
+	if mr.Exists("trl:alice:transcription:user") {
+		t.Error("expected no Redis key to be created for zero total")
+	}
+}
+
+// TestAddTokensFor_NoLimitConfigured_NoOp verifies a service type with no
+// token_rate configured is a no-op (mirrors AddProcessingTime's behaviour).
+func TestAddTokensFor_NoLimitConfigured_NoOp(t *testing.T) {
+	l, mr := newLimiter(t, nil, "X-Consumer-Username", "X-User-Type")
+	if err := l.AddTokensFor(context.Background(), "alice", "user", "transcription", 42); err != nil {
+		t.Fatalf("AddTokensFor: %v", err)
+	}
+	if mr.Exists("trl:alice:transcription:user") {
+		t.Error("expected no Redis key to be created when no limit is configured")
+	}
+}
+
 func TestCheckTokens_UserTypeMatchAndFallback(t *testing.T) {
 	l, _ := newLimiter(t, map[string]map[string]config.RateLimitConfig{
 		"llm": {

@@ -22,4 +22,8 @@ type Job struct {
 	// TraceContext carries the W3C traceparent injected by the gateway at
 	// submit time, enabling the relay to create a child span in the same trace.
 	TraceContext string `json:"trace_context,omitempty"`
+	// PromptTokens and CompletionTokens are written back by UpdateJobResult
+	// after being extracted from the inference result JSON's usage object.
+	PromptTokens     int64 `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64 `json:"completion_tokens,omitempty"`
 }

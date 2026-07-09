@@ -23,12 +23,13 @@ type Manager struct {
 	emitter       pgstore.EventEmitter // nil = disabled
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
-	usageTracker          usage.UsageTracker              // nil = no usage tracking
+	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
+	usageTracker          usage.UsageTracker               // nil = no usage tracking
 
 	mu        sync.Mutex
 	parentCtx context.Context
 	cancels   map[string]context.CancelFunc // keyed by model name
-	wg        sync.WaitGroup               // tracks in-flight webhook goroutines
+	wg        sync.WaitGroup                // tracks in-flight webhook goroutines
 }
 
 // NewManager creates a Manager that subscribes to Redis pub/sub job completion
@@ -104,6 +105,12 @@ func (m *Manager) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *
 	return m
 }
 
+// WithTokenLimiter attaches a token budget limiter. Call before Start.
+func (m *Manager) WithTokenLimiter(l ratelimit.TokenChecker) *Manager {
+	m.tokenLimiter = l
+	return m
+}
+
 // WithEventEmitter attaches a PostgreSQL event emitter. Call before Start.
 func (m *Manager) WithEventEmitter(e pgstore.EventEmitter) *Manager {
 	m.emitter = e
@@ -151,23 +158,36 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		}
 	}
 
+	totalTokens := job.PromptTokens + job.CompletionTokens
+	if m.tokenLimiter != nil && totalTokens > 0 {
+		if err := m.tokenLimiter.AddTokensFor(ctx, job.ConsumerName, job.UserType, job.ServiceType, int(totalTokens)); err != nil {
+			slog.Error("manager: failed to add tokens", "job_id", jobID, "error", err)
+		}
+	}
+
 	if m.emitter != nil {
 		m.emitter.EmitAsyncJob(context.WithoutCancel(ctx), pgstore.AsyncJobEvent{
-			OccurredAt:      time.Now().UTC(),
-			EventType:       "async_job_completed",
-			Consumer:        job.ConsumerName,
-			UserType:        job.UserType,
-			ServiceType:     job.ServiceType,
-			Model:           job.Model,
-			JobID:           job.ID,
-			JobStatus:       string(job.Status),
-			ProcessingTimeS: job.ProcessingTime,
+			OccurredAt:       time.Now().UTC(),
+			EventType:        "async_job_completed",
+			Consumer:         job.ConsumerName,
+			UserType:         job.UserType,
+			ServiceType:      job.ServiceType,
+			Model:            job.Model,
+			JobID:            job.ID,
+			JobStatus:        string(job.Status),
+			ProcessingTimeS:  job.ProcessingTime,
+			PromptTokens:     int(job.PromptTokens),
+			CompletionTokens: int(job.CompletionTokens),
 		})
 	}
 
 	if m.usageTracker != nil && job.ConsumerName != "" && job.ProcessingTime > 0 {
 		m.usageTracker.TrackProcessingTime(ctx, job.ConsumerName, job.ServiceType, job.ProcessingTime)
 		m.usageTracker.TrackActive(ctx, job.ConsumerName)
+	}
+
+	if m.usageTracker != nil && job.ConsumerName != "" && totalTokens > 0 {
+		m.usageTracker.TrackTokens(ctx, job.ConsumerName, job.ServiceType, job.PromptTokens, job.CompletionTokens)
 	}
 
 	if job.CallbackURL != "" {

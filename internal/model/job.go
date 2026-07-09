@@ -34,6 +34,10 @@ type Job struct {
 	// ProcessingTime is the inference processing duration in seconds, extracted
 	// from the result JSON by the relay and written back into the job record.
 	ProcessingTime float64          `json:"processing_time,omitempty"`
+	// PromptTokens and CompletionTokens are extracted from the inference result
+	// JSON's OpenAI-compatible usage object and written back by the relay.
+	PromptTokens     int64          `json:"prompt_tokens,omitempty"`
+	CompletionTokens int64          `json:"completion_tokens,omitempty"`
 	CreatedAt     time.Time         `json:"created_at"`
 	UpdatedAt     time.Time         `json:"updated_at"`
 	// QueuePosition is not persisted — populated transiently by the storage layer for pending jobs.

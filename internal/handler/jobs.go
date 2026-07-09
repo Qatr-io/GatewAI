@@ -66,6 +66,7 @@ type JobHandler struct {
 	lifecycle             config.LifecycleConfig
 	concurrentLimiter     ratelimit.ConcurrentChecker     // nil = no concurrent limit
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
+	tokenLimiter          ratelimit.TokenChecker          // nil = no token limit
 	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 	authz                 *authz.Engine                   // nil = no enforcement
 	emitter               pgstore.EventEmitter            // nil = event writes disabled
@@ -102,6 +103,12 @@ func (h *JobHandler) WithConcurrentLimiter(l ratelimit.ConcurrentChecker, userTy
 // WithProcessingTimeLimiter sets the processing time budget limiter.
 func (h *JobHandler) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *JobHandler {
 	h.processingTimeLimiter = l
+	return h
+}
+
+// WithTokenLimiter sets the token budget limiter.
+func (h *JobHandler) WithTokenLimiter(l ratelimit.TokenChecker) *JobHandler {
+	h.tokenLimiter = l
 	return h
 }
 
@@ -295,6 +302,24 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			metrics.ProcessingTimeChecksTotal.WithLabelValues(serviceType, r.Header.Get(h.userTypeHeader), "allowed").Inc()
+		}
+	}
+
+	if h.tokenLimiter != nil {
+		tr, err := h.tokenLimiter.CheckTokens(r.Context(), r, serviceType)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "token limit check failed", "error", err)
+			// fail open
+		} else {
+			if tr.Limit > 0 {
+				w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(tr.Limit))
+				w.Header().Set("X-TokenRateLimit-Remaining", strconv.Itoa(tr.Remaining))
+			}
+			if !tr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(tr.ResetAfter.Seconds())))
+				writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+				return
+			}
 		}
 	}
 
