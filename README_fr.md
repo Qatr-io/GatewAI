@@ -30,6 +30,7 @@ API Gateway pour les services d'inférence KServe sur Kubernetes — file async 
 - Chiffrement AES-256-GCM at-rest pour les objets S3
 - Autoscaling KEDA — le relay scale sur la profondeur de la file Redis, scale-to-zero
 - Métriques Prometheus — requêtes, latence, tokens, cache, rate limits, top-N consommateurs
+- Suivi d'usage par consommateur — `GET /usage` / `GET /-/usage`, compteurs cumulés et par fenêtre pour tous les types de service
 
 ## Documentation
 

@@ -16,15 +16,24 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [Unreleased]
+### [v0.19.0] — 2026-07-09
+
+#### Added
+
+- **Generic per-service usage tracking**: request, activity, and token counters are now recorded per consumer for *every* service type, not just LLM. Exposed via `GET /usage` (self-service, current consumer) and `GET /-/usage` (admin, all consumers, filterable), both returning cumulative totals plus the current rate-limit window. Retention is configurable via the new `usage.retention` config field (default: no TTL).
+- **Token budget enforcement extended to async jobs**: `token_limits` now applies pre-flight on `POST /jobs/{service_type}` submission (in addition to the existing sync LLM path) and is recorded on async job completion, using the prompt/completion token counts the relay now extracts from the inference result (see Relay `v0.10.0`).
+- **`GET /v1/models?model=<name>`**: proxies to the underlying backend to return its native model info (context size, capabilities) instead of only the gateway's OpenAI-compatible model list.
 
 #### Fixed
 
+- **Swagger overlay**: `GET /swagger/{type}/{model}` now removes paths not declared in the service's `operations` map instead of leaving them in unmodified — backends that expose extra undocumented paths (e.g. `/v1/models`) no longer leak them into the per-service spec.
+- **OpenAPI security scheme**: the generated spec now declares `BearerAuth` (`Authorization: Bearer <token>`) instead of the incorrect legacy `apikey` header scheme, matching actual gateway auth behavior.
 - **Helm chart**: numeric fields in `rateLimits` (`rate`, `tokenRate`, `maxConcurrent`, `processingTime`) and per-service `tokenLimits` (`tokenRate`) now render as plain integers via `int64`. Previously values ≥ 1,000,000 were emitted in scientific notation (e.g. `5e+06`), a fragile representation for a downstream `int` field.
 
 #### Documentation
 
-- **Helm chart README**: documented `rateLimits` token windows (`tokenRate`/`tokenPeriod`) and per-model `tokenLimits`, including combining a per-minute cap with a per-day budget across the two independent windows.
+- Documented the OpenAI-compatible `usage` object requirement for token tracking/budgets (`llm-proxy.md`, `rate-limiting.md`, `configuration.md`), the `GET /usage`/`GET /-/usage` endpoints and `usage.retention` config, and `ignore_paths` for OpenTelemetry.
+- **Helm chart README**: documented `rateLimits` token windows (`tokenRate`/`tokenPeriod`) and per-model `tokenLimits`, including combining a per-minute cap with a per-day budget across the two independent windows; documented the new `usage.*` value block.
 
 ### [v0.18.0] — 2026-06-24
 
@@ -663,6 +672,12 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
+### [v0.10.0] — 2026-07-09
+
+#### Added
+
+- **Prompt/completion token extraction**: the relay now extracts `prompt_tokens`/`completion_tokens` from the inference backend's result JSON (when present) and plumbs them through the result-publishing pipeline (`PublishResult`, Redis job record) so the gateway can account for async job token usage against `token_limits` and the new per-service usage tracking (see Gateway `v0.19.0`).
+
 ### [v0.9.0] — 2026-06-24
 
 #### Added
@@ -913,6 +928,16 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.19.0] — 2026-07-09
+
+#### Added
+- `usage.retention` config field — usage-tracking sorted-set TTL.
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.19.0`
+
+---
 
 ### [0.15.2] — 2026-06-09
 

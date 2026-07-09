@@ -51,7 +51,7 @@ Gateway (:8080)
 | Parameter | Description | Default |
 |---|---|---|
 | `image.repository` | Gateway image | `ghcr.io/qatr-io/gatewai/gateway` |
-| `image.tag` | Image tag | `v0.9.0` |
+| `image.tag` | Image tag | `v0.19.0` |
 | `image.pullPolicy` | Pull policy | `IfNotPresent` |
 
 ### Config
@@ -204,6 +204,14 @@ All lifecycle parameters are hot-reload safe.
 |---|---|---|
 | `metricsConfig.topConsumers` | Expose top-N LLM consumers in Prometheus via Redis sorted sets; `0` = disabled | `0` |
 | `metricsConfig.consumerLabels` | Direct per-consumer Prometheus labels — only for deployments with < 50 consumers | `false` |
+
+### Usage tracking
+
+Per-consumer, per-service-type request/activity/token counters, exposed via `GET /usage` (self-service) and `GET /-/usage` (admin, all consumers). Requires no extra setup beyond Redis; enabled by default.
+
+| Parameter | Description | Default |
+|---|---|---|
+| `usage.retention` | Duration usage sorted-set keys are kept before expiry (Go duration string, e.g. `"720h"`). Empty or `"0"` = no TTL (all-time accumulation) | `""` |
 
 ### Rate limits
 
@@ -554,3 +562,14 @@ No breaking changes.
 - `opentelemetry` — OTel tracing/metrics/logs export (see [OpenTelemetry](#opentelemetry))
 - `otlp` — bundled OTel Collector sub-chart
 - `otlpOperator` — OTel Operator CRD option
+
+### 0.18.0 → 0.19.0
+
+No breaking changes.
+
+**New features:**
+- **Generic per-service usage tracking** — request/activity/token counters per consumer, for every service type (not just LLM). Exposed via `GET /usage` (self-service) and `GET /-/usage` (admin). See [Usage tracking](#usage-tracking).
+- **Token budget enforcement extended to async jobs** — `token_limits` now also applies pre-flight to `POST /jobs/{service_type}` and is recorded on async job completion, not just the sync LLM path.
+
+**New optional parameters:**
+- `usage.retention`
