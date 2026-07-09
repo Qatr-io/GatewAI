@@ -43,6 +43,8 @@ Streaming requests (`"stream": true`) bypass cache and response translation. The
 
 Use `passthrough` for vLLM, LiteLLM, or any backend that speaks the OpenAI API natively.
 
+> **Token usage requirement:** whichever provider is used, the response the gateway ends up with (after translation, for `anthropic`) must be an OpenAI-compatible JSON body with a top-level `usage.prompt_tokens` / `usage.completion_tokens` object. The gateway parses these two fields to emit token metrics, feed `token_limits`, and populate consumer usage counters ([`GET /usage`](../reference/api)). `provider: passthrough` forwards the backend response unmodified — if that backend does not return an OpenAI-style `usage` object (e.g. a bare completion API), token counting, token-budget limiting, and usage reporting are silently skipped for that response (the request itself is not blocked). Streaming responses need `stream_options.include_usage` support on the backend; the gateway injects this automatically when missing.
+
 ### Anthropic translation
 
 When `provider: anthropic` is set, the gateway translates bidirectionally:

@@ -89,9 +89,11 @@ rl:{consumer}:{service_type}:{user_type}
 
 ### How it works
 
-After each successful LLM response, the gateway reads the `usage.total_tokens` field from the response body and increments a Redis counter. If the counter exceeds the configured budget for the current window, the **next** request from that consumer is rejected with `429`.
+After each successful LLM response, the gateway reads the `usage.prompt_tokens` / `usage.completion_tokens` fields from the response body and increments a Redis counter. If the counter exceeds the configured budget for the current window, the **next** request from that consumer is rejected with `429`.
 
 Because token counts are only known after the response, enforcement is **optimistic**: the request that pushes a consumer over their budget is allowed through; subsequent requests within the same window are blocked.
+
+> **The backend response must be OpenAI-compatible.** This only works if the response body the gateway receives (after provider translation) contains a top-level `usage` object shaped like OpenAI's. With `provider: passthrough`, the backend's raw response is used as-is — if it doesn't include an OpenAI-style `usage` object, no tokens are counted and this request never counts against the budget (it also isn't blocked). See [LLM proxy](./llm-proxy) for provider details.
 
 Streaming responses (`stream: true`) and requests with `Cache-Control: no-cache` are excluded from token counting.
 
@@ -290,4 +292,4 @@ Two alerting rules are shipped with the Helm chart:
 | `KeventGatewayRateLimitHighRejectionRate` | > 20% rejections over 5 min | warning |
 | `KeventGatewayRateLimitErrors` | any Redis error | warning |
 
-See the runbooks: [KeventGatewayRateLimitHighRejectionRate](../runbooks/KeventGatewayRateLimitHighRejectionRate.md) and [KeventGatewayRateLimitErrors](../runbooks/KeventGatewayRateLimitErrors.md).
+See the runbooks: [GatewayRateLimitHighRejectionRate](../manage/runbooks#gatewayratelimithighrejectionrate) and [GatewayRateLimitErrors](../manage/runbooks#gatewayratelimiterrors).
