@@ -167,7 +167,7 @@ func TestServeJSON_CacheMiss_ThenHit(t *testing.T) {
 
 	mc, filled := newMemCacheWithNotify()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -213,7 +213,7 @@ func TestServeJSON_NoCacheHeader_BypassesCache(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -239,7 +239,7 @@ func TestServeJSON_Non200NotCached(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -264,7 +264,7 @@ func TestServeJSON_CacheDisabled_WhenTTLZero(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 0) // TTL=0 → no cache
 	setBackend(def, backend.URL)
@@ -291,7 +291,7 @@ func TestServeJSON_BackendModel_RewrittenInRequest(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "meta-llama/Meta-Llama-3-8B-Instruct", 0)
 	setBackend(def, backend.URL)
@@ -318,7 +318,7 @@ func TestServeJSON_BackendModel_NotRewritten_WhenEmpty(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 0) // no backend_model
 	setBackend(def, backend.URL)
@@ -346,7 +346,7 @@ func TestServeJSON_CacheHit_ReturnsCachedBody(t *testing.T) {
 	}, 60*time.Second)
 
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 
@@ -364,7 +364,7 @@ func TestServeJSON_CacheHit_ReturnsCachedBody(t *testing.T) {
 
 func TestServeJSON_UnknownProvider_Returns500(t *testing.T) {
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := &service.Def{
 		Type:     "llm",
@@ -447,7 +447,7 @@ func TestServeJSON_ConsumerMetrics_EmittedOnBackendResponse(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil, nil)
+	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -470,7 +470,7 @@ func TestServeJSON_ConsumerMetrics_EmittedOnCacheHit(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 
@@ -495,7 +495,7 @@ func TestServeJSON_Streaming_PipedToClient(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -533,7 +533,7 @@ func TestServeJSON_Streaming_OutputFlag_DetectsSplitPII(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 	def := llmDefWithOutput("redact", []string{"pii"}) // redact degrades to flag for streams
 	setBackend(def, backend.URL)
 
@@ -565,7 +565,7 @@ func TestServeJSON_Streaming_SkipsCache(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 60*time.Second)
 	setBackend(def, backend.URL)
@@ -596,7 +596,7 @@ func TestServeJSON_Streaming_BackendModel_Rewritten(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "real-model-id", 0)
 	setBackend(def, backend.URL)
@@ -665,7 +665,7 @@ func TestAuditLog_Disabled_NoLog(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: false}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: false}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSON(h, def, chatBody)
@@ -692,7 +692,7 @@ func TestAuditLog_Enabled_LogsFields(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSONAs(h, def, chatBody, "alice")
@@ -724,7 +724,7 @@ func TestAuditLog_Prompt_IncludesBody(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true, Prompt: true}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true, Prompt: true}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSON(h, def, chatBody)
@@ -748,7 +748,7 @@ func TestAuditLog_NoPrompt_BodyOmitted(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true, Prompt: false}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true, Prompt: false}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSON(h, def, chatBody)
@@ -768,7 +768,7 @@ func TestServeJSON_ConsumerMetrics_SkippedWhenNoConsumer(t *testing.T) {
 
 	tracker := &testTracker{}
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", tracker, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -800,7 +800,7 @@ func TestAuditLog_Streaming_LogsStreamTrue(t *testing.T) {
 	streamBody := `{"model":"my-alias","messages":[{"role":"user","content":"Hello"}],"stream":true}`
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSON(h, def, streamBody)
@@ -831,7 +831,7 @@ func TestAuditLog_Enabled_BackendError_StillLogged(t *testing.T) {
 	defer slog.SetDefault(old)
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", &noopTracker{}, AuditConfig{Enabled: true}, nil)
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
 	doServeJSON(h, def, chatBody)
@@ -859,7 +859,7 @@ func TestServeJSON_Streaming_TokensCountedFromUsageChunk(t *testing.T) {
 
 	tracker := &trackingTokenLimiter{}
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -892,7 +892,7 @@ func TestServeJSON_Streaming_InjectsStreamOptions_WhenLimiterSet(t *testing.T) {
 
 	tracker := &trackingTokenLimiter{}
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, tracker)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -923,7 +923,7 @@ func TestServeJSON_Streaming_NoStreamOptions_WhenNoLimiter(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -958,7 +958,7 @@ func TestServeJSON_ModelTokenLimit_Rejected(t *testing.T) {
 
 	mc := newMemCache()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, limiter, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, limiter)
 
 	def := llmDef("passthrough", "", 0)
 	setBackend(def, backend.URL)
@@ -1002,7 +1002,7 @@ func TestOutputGuardrails_Redact_RemovesPIIFromBody(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDefWithOutput("redact", []string{"pii"})
 	setBackend(def, backend.URL)
@@ -1033,7 +1033,7 @@ func TestOutputGuardrails_Block_Returns422_AndSkipsCache(t *testing.T) {
 
 	mc, filled := newMemCacheWithNotify()
 	reg := provider.NewRegistry()
-	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDefWithOutput("block", []string{"pii"})
 	setBackend(def, backend.URL)
@@ -1069,7 +1069,7 @@ func TestOutputGuardrails_Flag_LeavesBodyUnchanged(t *testing.T) {
 	defer backend.Close()
 
 	reg := provider.NewRegistry()
-	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil, nil)
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
 
 	def := llmDefWithOutput("flag", []string{"pii"})
 	setBackend(def, backend.URL)

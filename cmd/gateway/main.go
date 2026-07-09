@@ -29,7 +29,6 @@ import (
 	"gatewai/gateway/internal/llmproxy"
 	"gatewai/gateway/internal/llmproxy/provider"
 	gmetrics "gatewai/gateway/internal/metrics"
-	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
@@ -112,7 +111,6 @@ func buildRouter(
 	authenticator auth.Authenticator,
 	authzEngine *authz.Engine,
 	healthChecker    *health.Checker,
-	emitter          pgstore.EventEmitter,
 	usageTracker     usage.UsageTracker,
 	usageHTTPHandler *usage.UsageHandler,
 ) *chi.Mux {
@@ -124,9 +122,6 @@ func buildRouter(
 	}
 	if authzEngine != nil {
 		jobHandler.WithAuthz(authzEngine)
-	}
-	if emitter != nil {
-		jobHandler.WithEventEmitter(emitter)
 	}
 	if usageTracker != nil {
 		jobHandler.WithUsageTracker(usageTracker)
@@ -261,29 +256,11 @@ func main() {
 		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
-	// ── PostgreSQL event emitter (optional) ──────────────────────────────────
-	var emitter pgstore.EventEmitter = pgstore.NoopEmitter{}
-	if cfg.Postgres.DSN != "" {
-		pgStore, pgErr := pgstore.New(context.Background(), cfg.Postgres.DSN, cfg.Postgres.MaxConns, cfg.Postgres.ConnectTimeout)
-		if pgErr != nil {
-			slog.Warn("postgres unavailable; event writes disabled", "error", pgErr)
-		} else if pgStore != nil {
-			asyncEmitter := pgstore.NewAsyncEmitter(context.Background(), pgStore)
-			emitter = asyncEmitter
-			defer func() {
-				asyncEmitter.Shutdown()
-				pgStore.Close()
-			}()
-			slog.Info("postgres event store enabled")
-		}
-	}
-
 	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
 	if limiter != nil {
 		manager.WithProcessingTimeLimiter(limiter)
 		manager.WithTokenLimiter(limiter)
 	}
-	manager.WithEventEmitter(emitter)
 
 	// ── LLM proxy ─────────────────────────────────────────────────────────────
 	providerRegistry := provider.NewRegistry()
@@ -311,7 +288,7 @@ func main() {
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
-		tokenChecker(limiter), emitter)
+		tokenChecker(limiter))
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -387,7 +364,7 @@ func main() {
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
-			tokenChecker(limiter), emitter)
+			tokenChecker(limiter))
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine
@@ -400,7 +377,7 @@ func main() {
 		if usageHTTPHandler != nil {
 			usageHTTPHandler.UpdateRegistry(newReg)
 		}
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, emitter, usageTracker, usageHTTPHandler)
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, usageTracker, usageHTTPHandler)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
@@ -411,7 +388,7 @@ func main() {
 	if cfg.Policies != nil {
 		authzEngine = authz.New(*cfg.Policies)
 	}
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, emitter, usageTracker, usageHTTPHandler)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, usageTracker, usageHTTPHandler)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────

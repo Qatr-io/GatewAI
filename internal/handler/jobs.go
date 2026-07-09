@@ -24,7 +24,6 @@ import (
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
-	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/usage"
@@ -69,7 +68,6 @@ type JobHandler struct {
 	tokenLimiter          ratelimit.TokenChecker          // nil = no token limit
 	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 	authz                 *authz.Engine                   // nil = no enforcement
-	emitter               pgstore.EventEmitter            // nil = event writes disabled
 	usageTracker          usage.UsageTracker              // nil = no usage tracking
 }
 
@@ -115,12 +113,6 @@ func (h *JobHandler) WithTokenLimiter(l ratelimit.TokenChecker) *JobHandler {
 // WithAuthz sets the authorization engine. nil disables enforcement (default).
 func (h *JobHandler) WithAuthz(e *authz.Engine) *JobHandler {
 	h.authz = e
-	return h
-}
-
-// WithEventEmitter sets the PostgreSQL event emitter. nil disables event writes (default).
-func (h *JobHandler) WithEventEmitter(e pgstore.EventEmitter) *JobHandler {
-	h.emitter = e
 	return h
 }
 
@@ -412,24 +404,6 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		slog.ErrorContext(ctx, "redis save failed", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save job")
 		return
-	}
-
-	if h.emitter != nil {
-		subject := ""
-		if p, ok := auth.FromContext(ctx); ok && p != nil {
-			subject = p.Subject
-		}
-		h.emitter.EmitAsyncJob(context.WithoutCancel(ctx), pgstore.AsyncJobEvent{
-			OccurredAt:  now,
-			EventType:   "async_job_submitted",
-			Consumer:    consumerName,
-			UserType:    userType,
-			Subject:     subject,
-			ServiceType: serviceType,
-			Model:       def.Model,
-			JobID:       jobID,
-			JobStatus:   string(model.JobStatusPending),
-		})
 	}
 
 	slog.InfoContext(ctx, "job submitted",
