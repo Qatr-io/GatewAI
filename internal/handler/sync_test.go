@@ -15,6 +15,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
+	"gatewai/gateway/internal/auth"
 	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/config"
