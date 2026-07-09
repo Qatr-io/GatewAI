@@ -63,6 +63,10 @@ Only suitable when `server.consumer_header` is configured. Requires `server.user
 Do **not** use `consumer_labels: true` with more than ~50 consumers. Each consumer creates a new Prometheus time series; at 100 k+ consumers this causes OOM. Use `top_consumers` instead.
 :::
 
+:::note
+Token metrics (and `top_consumers`) are only populated when the LLM backend's response is OpenAI-compatible — i.e. it (or its translation, for `provider: anthropic`) contains a top-level `usage.prompt_tokens` / `usage.completion_tokens` object. With `provider: passthrough`, a backend that omits this `usage` shape is silently skipped: no error, but no tokens counted. See [LLM proxy](./llm-proxy).
+:::
+
 ## Rate limits
 
 ```yaml
@@ -71,11 +75,17 @@ rate_limits:
     sa:
       rate: 100
       period: 1m
+      max_concurrent: 20         # optional: pending+processing async jobs at once
+      processing_time: 36000     # optional: cumulative inference seconds per window
+      processing_period: 24h
     user:
       rate: 20
       period: 1m
-      token_rate: 500000     # optional: token budget per window
+      token_rate: 500000     # optional: token budget per window (sync LLM only)
       token_period: 24h
+      max_concurrent: 5
+      processing_time: 3600
+      processing_period: 24h
     "*":             # fallback: user_type absent or not listed
       rate: 10
       period: 1m
@@ -100,6 +110,10 @@ Per-consumer, per-service fixed-window rate limiting backed by Redis. Returns `4
 | `processing_period` | Window duration for the processing-time budget: `1h`, `24h` |
 
 Leave `rate_limits` empty to disable. See [Rate limiting](../configure/rate-limiting) for details.
+
+:::note
+`token_rate` / `token_period` are enforced from the LLM response's `usage.prompt_tokens` / `usage.completion_tokens` fields, so they require an OpenAI-compatible response body (see the note under [Metrics](#metrics) above). `max_concurrent` and `processing_time` are unaffected — they don't depend on response content.
+:::
 
 ## Token limits per model
 

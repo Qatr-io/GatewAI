@@ -10,7 +10,7 @@ API Gateway for KServe inference services on Kubernetes — async job queue, Ope
 
 ## Architecture
 
-![Architecture overview](docs/architecture/overview.png)
+![Architecture overview](docs/schema/overview.png)
 
 ## Features
 

@@ -10,7 +10,7 @@ API Gateway pour les services d'inférence KServe sur Kubernetes — file async 
 
 ## Architecture
 
-![Architecture overview](docs/architecture/overview.png)
+![Architecture overview](docs/schema/overview.png)
 
 ## Fonctionnalités
 
