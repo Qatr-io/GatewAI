@@ -15,7 +15,6 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"gatewai/gateway/internal/auth"
 	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/cache"
 	"gatewai/gateway/internal/config"
@@ -545,7 +544,7 @@ func TestSyncHandler_Retry_NoRetryOn4xx(t *testing.T) {
 
 // buildLLMHandler returns a minimal llmproxy.Handler wired to the given backend URL.
 func buildLLMHandler(backendURL string) *llmproxy.Handler {
-	return llmproxy.New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, llmproxy.AuditConfig{}, nil, nil)
+	return llmproxy.New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, llmproxy.AuditConfig{}, nil)
 }
 
 // buildLLMRegistryDisabled returns a registry with a single openai LLM service

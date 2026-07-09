@@ -90,15 +90,3 @@ Utilise le Secret existant si spécifié, sinon celui créé par ce chart.
 {{- printf "%s-encryption" (include "gatewai-gateway.fullname" .) -}}
 {{- end -}}
 {{- end }}
-
-{{/*
-Nom du Secret contenant le DSN PostgreSQL.
-Utilise le Secret existant si spécifié, sinon celui créé par ce chart.
-*/}}
-{{- define "gatewai-gateway.postgresSecretName" -}}
-{{- if .Values.postgres.existingSecret -}}
-{{- .Values.postgres.existingSecret -}}
-{{- else -}}
-{{- printf "%s-postgres" (include "gatewai-gateway.fullname" .) -}}
-{{- end -}}
-{{- end }}

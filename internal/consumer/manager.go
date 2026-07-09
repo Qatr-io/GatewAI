@@ -4,9 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
-	"time"
 
-	"gatewai/gateway/internal/pgstore"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
@@ -20,7 +18,6 @@ type Manager struct {
 	redis         *storage.RedisClient
 	webhookSender *WebhookSender
 	sub           *Subscriber
-	emitter       pgstore.EventEmitter // nil = disabled
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
@@ -163,22 +160,6 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		if err := m.tokenLimiter.AddTokensFor(ctx, job.ConsumerName, job.UserType, job.ServiceType, int(totalTokens)); err != nil {
 			slog.Error("manager: failed to add tokens", "job_id", jobID, "error", err)
 		}
-	}
-
-	if m.emitter != nil {
-		m.emitter.EmitAsyncJob(context.WithoutCancel(ctx), pgstore.AsyncJobEvent{
-			OccurredAt:       time.Now().UTC(),
-			EventType:        "async_job_completed",
-			Consumer:         job.ConsumerName,
-			UserType:         job.UserType,
-			ServiceType:      job.ServiceType,
-			Model:            job.Model,
-			JobID:            job.ID,
-			JobStatus:        string(job.Status),
-			ProcessingTimeS:  job.ProcessingTime,
-			PromptTokens:     int(job.PromptTokens),
-			CompletionTokens: int(job.CompletionTokens),
-		})
 	}
 
 	if m.usageTracker != nil && job.ConsumerName != "" && job.ProcessingTime > 0 {
