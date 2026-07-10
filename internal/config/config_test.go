@@ -1260,3 +1260,40 @@ func TestLoad_OAuth2_JWT_NoIntrospectionNeeded_OK(t *testing.T) {
 		t.Error("expected Introspection to be nil when validation=jwt and no introspection block")
 	}
 }
+
+func TestUsageConfig_RetentionDuration(t *testing.T) {
+	cases := []struct {
+		input string
+		want  time.Duration
+	}{
+		{"", 0},
+		{"24h", 24 * time.Hour},
+		{"365d", 0},    // "d" suffix not supported by Go — must use "8760h"
+		{"8760h", 8760 * time.Hour},
+		{"30d", 0},     // invalid Go duration → 0
+		{"720h", 720 * time.Hour},
+	}
+	for _, tc := range cases {
+		cfg := config.UsageConfig{Retention: tc.input}
+		if got := cfg.RetentionDuration(); got != tc.want {
+			t.Errorf("RetentionDuration(%q) = %v, want %v", tc.input, got, tc.want)
+		}
+	}
+}
+
+func TestConfig_UsageField_Parsed(t *testing.T) {
+	raw := minimalValid + `
+usage:
+  retention: "720h"
+`
+	cfg, err := config.LoadFromBytes([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Usage.Retention != "720h" {
+		t.Errorf("got retention %q, want %q", cfg.Usage.Retention, "720h")
+	}
+	if cfg.Usage.RetentionDuration() != 720*time.Hour {
+		t.Errorf("got duration %v, want 720h", cfg.Usage.RetentionDuration())
+	}
+}

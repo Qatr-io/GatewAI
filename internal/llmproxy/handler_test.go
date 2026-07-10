@@ -78,6 +78,9 @@ func (s *stubTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, 
 func (s *stubTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
 	return nil
 }
+func (s *stubTokenLimiter) AddTokensFor(_ context.Context, _, _, _ string, _ int) error {
+	return nil
+}
 
 // trackingTokenLimiter records AddTokens/AddModelTokens calls for assertions.
 type trackingTokenLimiter struct {
@@ -106,6 +109,9 @@ func (t *trackingTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request
 	t.addedModel += n
 	t.addedModelName = model
 	t.mu.Unlock()
+	return nil
+}
+func (t *trackingTokenLimiter) AddTokensFor(_ context.Context, _, _, _ string, _ int) error {
 	return nil
 }
 

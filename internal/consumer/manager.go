@@ -8,6 +8,7 @@ import (
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
+	"gatewai/gateway/internal/usage"
 )
 
 // Manager subscribes to job completion events for all async models.
@@ -19,11 +20,13 @@ type Manager struct {
 	sub           *Subscriber
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
+	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
+	usageTracker          usage.UsageTracker               // nil = no usage tracking
 
 	mu        sync.Mutex
 	parentCtx context.Context
 	cancels   map[string]context.CancelFunc // keyed by model name
-	wg        sync.WaitGroup               // tracks in-flight webhook goroutines
+	wg        sync.WaitGroup                // tracks in-flight webhook goroutines
 }
 
 // NewManager creates a Manager that subscribes to Redis pub/sub job completion
@@ -99,6 +102,18 @@ func (m *Manager) WithProcessingTimeLimiter(l ratelimit.ProcessingTimeChecker) *
 	return m
 }
 
+// WithTokenLimiter attaches a token budget limiter. Call before Start.
+func (m *Manager) WithTokenLimiter(l ratelimit.TokenChecker) *Manager {
+	m.tokenLimiter = l
+	return m
+}
+
+// WithUsageTracker attaches a usage tracker for processing-time recording.
+func (m *Manager) WithUsageTracker(t usage.UsageTracker) *Manager {
+	m.usageTracker = t
+	return m
+}
+
 // UpdatePersistsResult updates S3 result retention policy.
 // Safe to call concurrently with in-flight webhook goroutines.
 func (m *Manager) UpdatePersistsResult(v bool) {
@@ -132,6 +147,22 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		if err := m.processingTimeLimiter.AddProcessingTime(ctx, job.ConsumerName, job.UserType, job.ServiceType, job.ProcessingTime); err != nil {
 			slog.Error("manager: failed to add processing time", "job_id", jobID, "error", err)
 		}
+	}
+
+	totalTokens := job.PromptTokens + job.CompletionTokens
+	if m.tokenLimiter != nil && totalTokens > 0 {
+		if err := m.tokenLimiter.AddTokensFor(ctx, job.ConsumerName, job.UserType, job.ServiceType, int(totalTokens)); err != nil {
+			slog.Error("manager: failed to add tokens", "job_id", jobID, "error", err)
+		}
+	}
+
+	if m.usageTracker != nil && job.ConsumerName != "" && job.ProcessingTime > 0 {
+		m.usageTracker.TrackProcessingTime(ctx, job.ConsumerName, job.ServiceType, job.ProcessingTime)
+		m.usageTracker.TrackActive(ctx, job.ConsumerName)
+	}
+
+	if m.usageTracker != nil && job.ConsumerName != "" && totalTokens > 0 {
+		m.usageTracker.TrackTokens(ctx, job.ConsumerName, job.ServiceType, job.PromptTokens, job.CompletionTokens)
 	}
 
 	if job.CallbackURL != "" {

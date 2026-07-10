@@ -79,6 +79,11 @@ opentelemetry:
     endpoint: ""            # override exporter.endpoint for traces only (optional)
     headers: {}             # merged with exporter.headers
     sample_ratio: 1.0       # 1.0 = always sample; 0.1 = 10% TraceID-ratio sampling
+    ignore_paths:           # path prefixes excluded from tracing (prefix-based)
+      - /health             # default list when unset
+      - /metrics
+      - /docs
+      - /openapi.yaml
 
   # OTLP metrics push — additive to Prometheus scraping.
   # Required for the relay (k8s Job pods cannot be scraped).
@@ -127,6 +132,34 @@ opentelemetry:
 
 For production with high request volumes, start with `sample_ratio: 0.1` (10%) and adjust based on storage cost.
 
+### Ignoring paths
+
+`ignore_paths` lists path prefixes that are excluded from tracing. A request is skipped when its path equals an entry or starts with `entry + "/"`.
+
+Default (applied when `ignore_paths` is absent from config):
+
+```
+/health  /metrics  /docs  /openapi.yaml
+```
+
+Override to add or remove entries — the default list is replaced entirely when you set this key:
+
+```yaml
+opentelemetry:
+  traces:
+    enabled: true
+    ignore_paths:
+      - /health
+      - /metrics
+      - /docs
+      - /openapi.yaml
+      - /internal    # add any extra prefix
+```
+
+:::tip
+The match is prefix-based: listing `/docs` skips `/docs`, `/docs/spec/audio/whisper`, etc.
+:::
+
 ## Helm
 
 ```yaml
@@ -138,6 +171,7 @@ opentelemetry:
   traces:
     enabled: true
     sampleRatio: 1.0
+    # ignorePaths: []   # overrides the default [/health, /metrics, /docs, /openapi.yaml]
   metrics:
     enabled: false
   logs:

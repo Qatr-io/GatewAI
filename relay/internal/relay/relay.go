@@ -31,7 +31,7 @@ type objectStore interface {
 
 // eventPublisher wraps the Redis result pipeline: UpdateJobResult + Publish + Done.
 type eventPublisher interface {
-	PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64) error
+	PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64, promptTokens, completionTokens int64) error
 }
 
 // Processor runs the full processing pipeline for a single Job pulled from the Redis queue.
@@ -104,7 +104,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 		if storage.IsNotFound(err) {
 			log.Error("input file not found, publishing permanent failure", "input_ref", job.InputRef)
 			metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-			if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found: "+job.InputRef, 0); perr != nil {
+			if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found: "+job.InputRef, 0, 0, 0); perr != nil {
 				return fmt.Errorf("publishing not-found failure: %w", perr)
 			}
 			return nil
@@ -141,7 +141,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 			if storage.IsNotFound(getErr) {
 				log.Error("input file not found on inference retry, publishing permanent failure", "input_ref", job.InputRef)
 				metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-				if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found on retry: "+job.InputRef, 0); perr != nil {
+				if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", "input file not found on retry: "+job.InputRef, 0, 0, 0); perr != nil {
 					return fmt.Errorf("publishing not-found failure: %w", perr)
 				}
 				return nil
@@ -155,7 +155,7 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	if inferErr != nil {
 		log.Error("inference failed", "error", inferErr)
 		metrics.JobsTotal.WithLabelValues(job.ServiceType, "failed").Inc()
-		if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", fmt.Sprintf("inference: %v", inferErr), 0); perr != nil {
+		if perr := p.publisher.PublishResult(context.Background(), job.ID, model.JobStatusFailed, "", fmt.Sprintf("inference: %v", inferErr), 0, 0, 0); perr != nil {
 			return fmt.Errorf("publishing failure: %w", perr)
 		}
 		delCtx := context.WithoutCancel(ctx)
@@ -190,15 +190,16 @@ func (p *Processor) process(ctx context.Context, job *model.Job) error {
 	putSpan.End()
 
 	processingTime := extractProcessingTime(result)
+	promptTokens, completionTokens := extractTokens(result)
 	pubCtx, pubSpan := p.tracer.Start(ctx, "relay.redis.publish_result",
 		trace.WithAttributes(
 			attribute.String("job_id", job.ID),
 			attribute.String("status", string(model.JobStatusCompleted)),
 		))
-	if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+	if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime, promptTokens, completionTokens); err != nil {
 		pubSpan.RecordError(err)
 		log.Warn("publish result attempt failed, retrying immediately", "error", err)
-		if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime); err != nil {
+		if err := p.publisher.PublishResult(pubCtx, job.ID, model.JobStatusCompleted, resultKey, "", processingTime, promptTokens, completionTokens); err != nil {
 			pubSpan.RecordError(err)
 			log.Error("failed to publish result after retry", "error", err)
 		}
@@ -266,4 +267,27 @@ func extractProcessingTime(result []byte) float64 {
 		return 0
 	}
 	return v.ProcessingTime
+}
+
+// extractTokens parses the OpenAI-compatible usage.prompt_tokens /
+// usage.completion_tokens fields from the inference result JSON. If both are
+// absent but usage.total_tokens is present, the total is attributed to prompt
+// tokens. Returns (0, 0) if the usage object is absent or unparseable.
+func extractTokens(result []byte) (prompt, completion int64) {
+	var v struct {
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(result, &v); err != nil {
+		return 0, 0
+	}
+	prompt = v.Usage.PromptTokens
+	completion = v.Usage.CompletionTokens
+	if prompt == 0 && completion == 0 && v.Usage.TotalTokens > 0 {
+		prompt = v.Usage.TotalTokens
+	}
+	return prompt, completion
 }

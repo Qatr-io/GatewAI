@@ -51,7 +51,7 @@ Gateway (:8080)
 | Parameter | Description | Default |
 |---|---|---|
 | `image.repository` | Gateway image | `ghcr.io/qatr-io/gatewai/gateway` |
-| `image.tag` | Image tag | `v0.9.0` |
+| `image.tag` | Image tag | `v0.19.0` |
 | `image.pullPolicy` | Pull policy | `IfNotPresent` |
 
 ### Config
@@ -205,26 +205,57 @@ All lifecycle parameters are hot-reload safe.
 | `metricsConfig.topConsumers` | Expose top-N LLM consumers in Prometheus via Redis sorted sets; `0` = disabled | `0` |
 | `metricsConfig.consumerLabels` | Direct per-consumer Prometheus labels — only for deployments with < 50 consumers | `false` |
 
+### Usage tracking
+
+Per-consumer, per-service-type request/activity/token counters, exposed via `GET /usage` (self-service) and `GET /-/usage` (admin, all consumers). Requires no extra setup beyond Redis; enabled by default.
+
+| Parameter | Description | Default |
+|---|---|---|
+| `usage.retention` | Duration usage sorted-set keys are kept before expiry (Go duration string, e.g. `"720h"`). Empty or `"0"` = no TTL (all-time accumulation) | `""` |
+
 ### Rate limits
 
-Per-consumer, per-service fixed-window rate limiting backed by Redis. Configure in `config.existingConfigMap` or directly in the service config:
+Per-consumer, per-service fixed-window limiting backed by Redis, keyed by `{consumer}:{service_type}:{user_type}`. Set it via the chart's `rateLimits` value (camelCase keys); the ConfigMap renders it into the gateway's `rate_limits` block:
 
 ```yaml
-# In config.yaml (via existingConfigMap or direct config):
-rate_limits:
+# values.yaml
+rateLimits:
   llm:
-    sa:           # user_type from server.user_type_header
+    sa:                   # user_type from server.userTypeHeader
       rate: 100
       period: 1m
+      tokenRate: 250000   # optional: max cumulative tokens per window (LLM only)
+      tokenPeriod: 1m
     user:
       rate: 20
       period: 1m
-    "*":           # fallback when user_type is absent or not listed
+    "*":                  # fallback when user_type is absent or unmatched
       rate: 10
       period: 1m
 ```
 
-Returns `429 Too Many Requests` with `Retry-After` when exceeded.
+Each entry may also carry `maxConcurrent` (async jobs in flight) and `processingTime`/`processingPeriod` (cumulative inference seconds per window). Returns `429 Too Many Requests` with `Retry-After` when exceeded.
+
+#### Per-model token budgets (`tokenLimits`)
+
+A service (model) can carry its own token budget, enforced independently of `rateLimits` — both must pass. Because it uses a **separate window**, you can combine a real-time cap in `rateLimits` (e.g. tokens/minute) with a longer budget here (e.g. tokens/day):
+
+```yaml
+# values.yaml
+services:
+  - type: llm
+    model: chat-pro
+    # ...
+    tokenLimits:
+      sa:
+        tokenRate: 30000000   # tokens per day for this model
+        tokenPeriod: 24h
+      user:
+        tokenRate: 500000
+        tokenPeriod: 24h
+```
+
+`"*"` acts as the fallback user type; only `tokenRate`/`tokenPeriod` are used. Since it is per-service, the budget applies per model.
 
 ### Authentication (optional)
 
@@ -531,3 +562,14 @@ No breaking changes.
 - `opentelemetry` — OTel tracing/metrics/logs export (see [OpenTelemetry](#opentelemetry))
 - `otlp` — bundled OTel Collector sub-chart
 - `otlpOperator` — OTel Operator CRD option
+
+### 0.18.0 → 0.19.0
+
+No breaking changes.
+
+**New features:**
+- **Generic per-service usage tracking** — request/activity/token counters per consumer, for every service type (not just LLM). Exposed via `GET /usage` (self-service) and `GET /-/usage` (admin). See [Usage tracking](#usage-tracking).
+- **Token budget enforcement extended to async jobs** — `token_limits` now also applies pre-flight to `POST /jobs/{service_type}` and is recorded on async job completion, not just the sync LLM path.
+
+**New optional parameters:**
+- `usage.retention`

@@ -174,6 +174,14 @@ var (
 		Help: "Token usage for top consumers (refreshed from Redis sorted set).",
 	}, []string{"consumer", "user_type", "type"})
 
+	// UsageTokensTop exposes the top-N consumers by token usage for non-LLM-proxy
+	// service types, refreshed periodically from a Redis sorted set. Only
+	// populated when metrics.top_consumers > 0.
+	UsageTokensTop = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gatewai_usage_tokens_top",
+		Help: "Token usage for top consumers on non-LLM-proxy services (refreshed from Redis sorted set).",
+	}, []string{"consumer", "service_type", "token_type"})
+
 	// GuardrailsPiiBlockedTotal counts requests rejected by the PII guardrail,
 	// before they reach the LLM backend.
 	GuardrailsPiiBlockedTotal = promauto.NewCounterVec(prometheus.CounterOpts{

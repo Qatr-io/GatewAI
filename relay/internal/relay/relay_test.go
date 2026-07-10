@@ -51,10 +51,12 @@ func (a *mockAdapter) Call(_ context.Context, _ adapter.CallInput) ([]byte, erro
 }
 
 type publishCall struct {
-	jobID     string
-	status    model.JobStatus
-	resultRef string
-	errMsg    string
+	jobID            string
+	status           model.JobStatus
+	resultRef        string
+	errMsg           string
+	promptTokens     int64
+	completionTokens int64
 }
 
 type mockPublisher struct {
@@ -62,8 +64,8 @@ type mockPublisher struct {
 	err   error
 }
 
-func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64) error {
-	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg})
+func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64, promptTokens, completionTokens int64) error {
+	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg, promptTokens, completionTokens})
 	return p.err
 }
 
@@ -226,6 +228,28 @@ func TestProcess_Success_PublishesCompletedResult(t *testing.T) {
 	}
 }
 
+// TestProcess_Success_ExtractsAndPublishesTokens verifies that prompt/completion
+// tokens parsed from the inference result are forwarded to PublishResult.
+func TestProcess_Success_ExtractsAndPublishesTokens(t *testing.T) {
+	s3 := &mockS3{getBody: "audio data"}
+	adp := &mockAdapter{result: []byte(`{"text":"hello","usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}`)}
+	pub := &mockPublisher{}
+
+	p := newTestProcessor(s3, adp, pub)
+	if err := p.process(context.Background(), testJob()); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(pub.calls) != 1 {
+		t.Fatalf("expected 1 published result, got %d", len(pub.calls))
+	}
+	if pub.calls[0].promptTokens != 10 {
+		t.Errorf("promptTokens: got %d, want 10", pub.calls[0].promptTokens)
+	}
+	if pub.calls[0].completionTokens != 5 {
+		t.Errorf("completionTokens: got %d, want 5", pub.calls[0].completionTokens)
+	}
+}
+
 // TestProcess_S3NotFound_PublishFails_ReturnsError verifies that if publishing
 // the permanent-failure result itself fails (Redis down), process() returns an
 // error so the job can be retried later.
@@ -341,6 +365,57 @@ func TestExtractProcessingTime(t *testing.T) {
 			got := extractProcessingTime(tc.input)
 			if got != tc.expected {
 				t.Errorf("got %v, want %v", got, tc.expected)
+			}
+		})
+	}
+}
+
+func TestExtractTokens(t *testing.T) {
+	tests := []struct {
+		name               string
+		input              []byte
+		expectedPrompt     int64
+		expectedCompletion int64
+	}{
+		{
+			name:               "chat-style prompt and completion",
+			input:              []byte(`{"text":"hello","usage":{"prompt_tokens":120,"completion_tokens":45,"total_tokens":165}}`),
+			expectedPrompt:     120,
+			expectedCompletion: 45,
+		},
+		{
+			name:               "embeddings-style prompt only",
+			input:              []byte(`{"usage":{"prompt_tokens":30,"total_tokens":30}}`),
+			expectedPrompt:     30,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "total_tokens fallback when prompt and completion absent",
+			input:              []byte(`{"usage":{"total_tokens":50}}`),
+			expectedPrompt:     50,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "missing usage object",
+			input:              []byte(`{"text":"hello"}`),
+			expectedPrompt:     0,
+			expectedCompletion: 0,
+		},
+		{
+			name:               "malformed JSON",
+			input:              []byte(`not json`),
+			expectedPrompt:     0,
+			expectedCompletion: 0,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotPrompt, gotCompletion := extractTokens(tc.input)
+			if gotPrompt != tc.expectedPrompt {
+				t.Errorf("prompt: got %d, want %d", gotPrompt, tc.expectedPrompt)
+			}
+			if gotCompletion != tc.expectedCompletion {
+				t.Errorf("completion: got %d, want %d", gotCompletion, tc.expectedCompletion)
 			}
 		})
 	}

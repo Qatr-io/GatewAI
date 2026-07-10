@@ -49,11 +49,14 @@ func (s *Store) GetJob(ctx context.Context, id string) (*model.Job, error) {
 
 // updateJobScript atomically reads a job JSON, skips already-terminal jobs
 // (completed/failed/cancelled), patches status/result_ref/error/updated_at and
-// optionally processing_time, and re-writes with the same TTL (fallback 72 h).
+// optionally processing_time/prompt_tokens/completion_tokens, and re-writes
+// with the same TTL (fallback 72 h).
 //
 // KEYS[1] = job:{id}
 // ARGV[1] = status, ARGV[2] = result_ref, ARGV[3] = error,
 // ARGV[4] = updated_at, ARGV[5] = processing_time (float string, "" to skip)
+// ARGV[6] = prompt_tokens (int string, "" to skip)
+// ARGV[7] = completion_tokens (int string, "" to skip)
 var updateJobScript = redis.NewScript(`
 local data = redis.call('GET', KEYS[1])
 if not data then
@@ -70,6 +73,12 @@ job['updated_at'] = ARGV[4]
 if ARGV[5] ~= '' then
     job['processing_time'] = tonumber(ARGV[5])
 end
+if ARGV[6] ~= '' then
+    job['prompt_tokens'] = tonumber(ARGV[6])
+end
+if ARGV[7] ~= '' then
+    job['completion_tokens'] = tonumber(ARGV[7])
+end
 local ttl = tonumber(redis.call('TTL', KEYS[1]))
 if ttl <= 0 then
     ttl = ` + fmt.Sprintf("%d", defaultTTLSecs) + `
@@ -78,16 +87,25 @@ redis.call('SET', KEYS[1], cjson.encode(job), 'EX', ttl)
 return redis.status_reply('OK')
 `)
 
-// UpdateJobResult atomically patches the job record. processingTime 0 means absent.
-func (s *Store) UpdateJobResult(ctx context.Context, id string, status model.JobStatus, resultRef, errMsg string, processingTime float64) error {
+// UpdateJobResult atomically patches the job record. processingTime 0 means
+// absent; promptTokens/completionTokens 0 means absent (no usage data reported).
+func (s *Store) UpdateJobResult(ctx context.Context, id string, status model.JobStatus, resultRef, errMsg string, processingTime float64, promptTokens, completionTokens int64) error {
 	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	ptArg := ""
 	if processingTime > 0 {
 		ptArg = strconv.FormatFloat(processingTime, 'f', -1, 64)
 	}
+	promptArg := ""
+	if promptTokens > 0 {
+		promptArg = strconv.FormatInt(promptTokens, 10)
+	}
+	completionArg := ""
+	if completionTokens > 0 {
+		completionArg = strconv.FormatInt(completionTokens, 10)
+	}
 	err := updateJobScript.Run(ctx, s.rdb,
 		[]string{jobKey(id)},
-		string(status), resultRef, errMsg, updatedAt, ptArg,
+		string(status), resultRef, errMsg, updatedAt, ptArg, promptArg, completionArg,
 	).Err()
 	if err != nil {
 		return fmt.Errorf("updating job %q: %w", id, err)

@@ -42,9 +42,9 @@ func GenerateSpec(reg *service.Registry, appVersion string) []byte {
 		},
 		"servers": []any{map[string]any{"url": "/"}},
 		"tags":    specTags(reg),
-		// Global security: all endpoints require the API key unless overridden.
+		// Global security: all endpoints require a bearer token unless overridden.
 		"security": []any{
-			map[string]any{"ApiKeyAuth": []any{}},
+			map[string]any{"BearerAuth": []any{}},
 		},
 		"paths":      paths,
 		"components": specComponents(),
@@ -409,19 +409,32 @@ func purgeJobsPathItem() map[string]any {
 func listModelsPathItem() map[string]any {
 	return map[string]any{
 		"get": map[string]any{
-			"tags":        []string{"Inference"},
-			"summary":     "List available models",
-			"description": "Returns all configured models in OpenAI-compatible format.",
+			"tags":    []string{"Inference"},
+			"summary": "List available models",
+			"description": "Without query params, returns all configured models in OpenAI-compatible format.\n\n" +
+				"With `?model=<name>`, proxies to the underlying model backend to retrieve its native information " +
+				"(context size, capabilities, etc.).",
 			"operationId": "listModels",
+			"parameters": []any{
+				map[string]any{
+					"name":        "model",
+					"in":          "query",
+					"required":    false,
+					"description": "When provided, proxies the request to the underlying model backend and returns its native model information.",
+					"schema":      map[string]any{"type": "string"},
+				},
+			},
 			"responses": map[string]any{
 				"200": map[string]any{
-					"description": "List of models",
+					"description": "Model list or native model information",
 					"content": map[string]any{
 						"application/json": map[string]any{
 							"schema": map[string]any{"$ref": "#/components/schemas/ModelList"},
 						},
 					},
 				},
+				"404": map[string]any{"$ref": "#/components/responses/NotFound"},
+				"502": map[string]any{"$ref": "#/components/responses/BadGateway"},
 			},
 		},
 	}
@@ -565,10 +578,10 @@ func syncPathItems(reg *service.Registry) map[string]any {
 func specComponents() map[string]any {
 	return map[string]any{
 		"securitySchemes": map[string]any{
-			"ApiKeyAuth": map[string]any{
-				"type": "apiKey",
-				"in":   "header",
-				"name": "apikey",
+			"BearerAuth": map[string]any{
+				"type":         "http",
+				"scheme":       "bearer",
+				"bearerFormat": "JWT",
 			},
 		},
 		"schemas": map[string]any{

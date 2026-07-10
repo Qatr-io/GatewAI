@@ -135,18 +135,18 @@ data:
         {{- range $userType, $cfg := $userLimits }}
         {{ $userType | quote }}:
           {{- if $cfg.rate }}
-          rate:   {{ $cfg.rate }}
+          rate:   {{ $cfg.rate | int64 }}
           period: {{ $cfg.period | quote }}
           {{- end }}
           {{- if $cfg.tokenRate }}
-          token_rate:   {{ $cfg.tokenRate }}
+          token_rate:   {{ $cfg.tokenRate | int64 }}
           token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
           {{- if $cfg.maxConcurrent }}
-          max_concurrent: {{ $cfg.maxConcurrent }}
+          max_concurrent: {{ $cfg.maxConcurrent | int64 }}
           {{- end }}
           {{- if $cfg.processingTime }}
-          processing_time:   {{ $cfg.processingTime }}
+          processing_time:   {{ $cfg.processingTime | int64 }}
           processing_period: {{ $cfg.processingPeriod | quote }}
           {{- end }}
         {{- end }}
@@ -165,6 +165,12 @@ data:
       traces:
         enabled: {{ .Values.opentelemetry.traces.enabled | default true }}
         sample_ratio: {{ .Values.opentelemetry.traces.sampleRatio | default 1.0 }}
+        {{- if .Values.opentelemetry.traces.ignorePaths }}
+        ignore_paths:
+          {{- range .Values.opentelemetry.traces.ignorePaths }}
+          - {{ . | quote }}
+          {{- end }}
+        {{- end }}
       metrics:
         enabled: {{ .Values.opentelemetry.metrics.enabled | default false }}
         interval: {{ .Values.opentelemetry.metrics.interval | default "60s" | quote }}
@@ -258,7 +264,7 @@ data:
         token_limits:
           {{- range $userType, $cfg := .tokenLimits }}
           {{ $userType | quote }}:
-            token_rate:   {{ $cfg.tokenRate }}
+            token_rate:   {{ $cfg.tokenRate | int64 }}
             token_period: {{ $cfg.tokenPeriod | quote }}
           {{- end }}
         {{- end }}

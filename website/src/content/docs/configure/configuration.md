@@ -63,6 +63,10 @@ Only suitable when `server.consumer_header` is configured. Requires `server.user
 Do **not** use `consumer_labels: true` with more than ~50 consumers. Each consumer creates a new Prometheus time series; at 100 k+ consumers this causes OOM. Use `top_consumers` instead.
 :::
 
+:::note
+Token metrics (and `top_consumers`) are only populated when the LLM backend's response is OpenAI-compatible — i.e. it (or its translation, for `provider: anthropic`) contains a top-level `usage.prompt_tokens` / `usage.completion_tokens` object. With `provider: passthrough`, a backend that omits this `usage` shape is silently skipped: no error, but no tokens counted. See [LLM proxy](./llm-proxy).
+:::
+
 ## Rate limits
 
 ```yaml
@@ -71,9 +75,17 @@ rate_limits:
     sa:
       rate: 100
       period: 1m
+      max_concurrent: 20         # optional: pending+processing async jobs at once
+      processing_time: 36000     # optional: cumulative inference seconds per window
+      processing_period: 24h
     user:
       rate: 20
       period: 1m
+      token_rate: 500000     # optional: token budget per window (sync LLM only)
+      token_period: 24h
+      max_concurrent: 5
+      processing_time: 3600
+      processing_period: 24h
     "*":             # fallback: user_type absent or not listed
       rate: 10
       period: 1m
@@ -91,8 +103,41 @@ Per-consumer, per-service fixed-window rate limiting backed by Redis. Returns `4
 | Sub-key (e.g. `sa`) | User type from `server.user_type_header`; `"*"` is the catch-all fallback |
 | `rate` | Maximum requests allowed in the `period` |
 | `period` | Window duration: `30s`, `1m`, `1h`, `24h` |
+| `token_rate` | Optional: maximum total LLM tokens per `token_period`; applies on sync LLM requests only |
+| `token_period` | Window duration for the token budget: `1h`, `24h` |
+| `max_concurrent` | Optional: maximum pending+processing async jobs at the same time per consumer; `0` = disabled |
+| `processing_time` | Optional: maximum cumulative inference seconds per `processing_period`; async only; `0` = disabled |
+| `processing_period` | Window duration for the processing-time budget: `1h`, `24h` |
 
-Leave `rate_limits` empty to disable. See [Rate limiting](../architecture/rate-limiting.md) for details.
+Leave `rate_limits` empty to disable. See [Rate limiting](../configure/rate-limiting) for details.
+
+:::note
+`token_rate` / `token_period` are enforced from the LLM response's `usage.prompt_tokens` / `usage.completion_tokens` fields, so they require an OpenAI-compatible response body (see the note under [Metrics](#metrics) above). `max_concurrent` and `processing_time` are unaffected — they don't depend on response content.
+:::
+
+## Token limits per model
+
+For finer-grained control, token budgets can be set **per model** under `services[].token_limits`. This is the recommended approach when several models share the same `type` but should have independent quotas.
+
+```yaml
+services:
+  - type: llm
+    model: gpt-4o
+    provider: openai
+    inference_url: "https://api.openai.com"
+    token_limits:
+      user:
+        token_rate: 100000
+        token_period: 24h
+      sa:
+        token_rate: 1000000
+        token_period: 1h
+      "*":
+        token_rate: 50000
+        token_period: 24h
+```
+
+When both `rate_limits[type][user_type].token_rate` and `services[].token_limits[user_type].token_rate` are configured, **both** checks must pass. The model-level limit is enforced first.
 
 ## S3
 
@@ -257,6 +302,8 @@ services:
 | `provider` | no | `""` | LLM provider: `openai`, `anthropic`, `ollama`, `passthrough` |
 | `backend_model` | no | `""` | Backend model name — gateway rewrites the `model` field in the request |
 | `response_cache_ttl` | no | `0` | Redis response cache TTL in seconds; `0` = disabled |
+| `max_concurrent_sync` | no | `0` | Max simultaneous sync requests for this model across all replicas; `0` = unlimited. Returns `503` when full. |
+| `token_limits` | no | `{}` | Per-user-type token budgets for LLM requests — see [Rate limiting](../configure/rate-limiting#token-budget-limiting) |
 | `swagger_url` | no | `""` | URL to fetch an OpenAPI spec from |
 | `swagger_headers` | no | `{}` | HTTP headers for `swagger_url` fetch |
 
@@ -305,6 +352,47 @@ inference_headers:
   X-Api-Key: "${BACKEND_KEY}"
 ```
 
+## OpenTelemetry
+
+```yaml
+opentelemetry:
+  enabled: false
+  service_name: ""          # overrides the default "gatewai/gateway" resource attribute
+  exporter:
+    endpoint: "http://otel-collector:4318"
+    insecure: false
+    headers:
+      Authorization: "Bearer ${OTEL_TOKEN}"
+  traces:
+    enabled: true
+    sample_ratio: 1.0
+    ignore_paths:           # path prefixes excluded from tracing (prefix-based)
+      - /health             # default list — applied when ignore_paths is absent
+      - /metrics
+      - /docs
+      - /openapi.yaml
+  metrics:
+    enabled: false
+    interval: "60s"
+  logs:
+    enabled: false
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Master switch — `false` = no-op providers, zero overhead |
+| `service_name` | `"gatewai/gateway"` | OTel resource `service.name` attribute |
+| `exporter.endpoint` | — | Base OTLP/HTTP endpoint for all signals |
+| `exporter.insecure` | `false` | Skip TLS verification (dev only) |
+| `traces.enabled` | `true` | Enable distributed tracing |
+| `traces.sample_ratio` | `1.0` | Sampling rate: `1.0` = always, `0.1` = 10% |
+| `traces.ignore_paths` | `[/health, /metrics, /docs, /openapi.yaml]` | Path prefixes excluded from tracing; overrides the default list entirely when set |
+| `metrics.enabled` | `false` | Enable OTLP metrics push |
+| `metrics.interval` | `"60s"` | Push interval |
+| `logs.enabled` | `false` | Enable OTLP log export via slog bridge |
+
+See [OpenTelemetry](../observe/opentelemetry.md) for the full guide (per-signal endpoint overrides, sampling, Helm sub-chart, backend examples).
+
 ## Hot reload
 
 `POST /-/reload` re-reads the config file and atomically swaps the router. S3 and Redis connections are not re-initialised.
@@ -323,3 +411,20 @@ Parameters updated at runtime without pod restart:
 | `server.user_type_header` | Applied to new requests |
 
 Not hot-reloadable (restart required): `redis.addr`, `s3.*`, `server.addr`, `server.*_timeout`, `metrics.top_consumers`.
+
+## Usage tracking
+
+```yaml
+usage:
+  retention: ""      # Go duration string; empty = all-time (no TTL)
+```
+
+Controls how long per-consumer cumulative usage data is kept in Redis sorted sets.
+
+| Field | Description |
+|---|---|
+| `retention` | Duration before usage sorted sets expire. Empty or absent = no expiry (all-time accumulation). Accepts Go duration strings: `"720h"` (30 days), `"8760h"` (365 days). Note: `"d"` suffix is not a valid Go duration — use `"h"`. |
+
+When `server.consumer_header` is not configured, a no-op tracker is used and no data is written. `retention` is hot-reloadable and affects new sorted-set keys only (existing keys keep their original TTL).
+
+See [API reference](../reference/api) for the `GET /usage` and `GET /-/usage` endpoints that expose this data.

@@ -25,6 +25,7 @@ import (
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/usage"
 )
 
 // SyncHandler handles OpenAI-compatible POST /v1/* requests.
@@ -42,8 +43,10 @@ type SyncHandler struct {
 	piiChecker        *guardrails.Checker             // nil = PII scanning disabled globally
 	retryBackoff      time.Duration                   // initial backoff between retry cycles; default 500ms
 	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
+	tokenLimiter      ratelimit.TokenChecker          // nil = no token limit
 	userTypeHeader    string
-	authz             *authz.Engine // nil = no enforcement
+	authz             *authz.Engine      // nil = no enforcement
+	usageTracker      usage.UsageTracker // nil = no usage tracking
 }
 
 func NewSyncHandler(
@@ -77,6 +80,12 @@ func (h *SyncHandler) WithProcessingLimiter(l ratelimit.ProcessingTimeChecker, u
 	return h
 }
 
+// WithTokenLimiter sets the token budget limiter.
+func (h *SyncHandler) WithTokenLimiter(tc ratelimit.TokenChecker) *SyncHandler {
+	h.tokenLimiter = tc
+	return h
+}
+
 // WithRetryBackoff overrides the initial backoff between retry cycles.
 // Intended for tests to avoid sleeping the full 500ms.
 func (h *SyncHandler) WithRetryBackoff(d time.Duration) *SyncHandler {
@@ -87,6 +96,12 @@ func (h *SyncHandler) WithRetryBackoff(d time.Duration) *SyncHandler {
 // WithAuthz sets the authorization engine. nil disables enforcement (default).
 func (h *SyncHandler) WithAuthz(e *authz.Engine) *SyncHandler {
 	h.authz = e
+	return h
+}
+
+// WithUsageTracker attaches a usage tracker. Call before serving requests.
+func (h *SyncHandler) WithUsageTracker(t usage.UsageTracker) *SyncHandler {
+	h.usageTracker = t
 	return h
 }
 
@@ -331,6 +346,10 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
 		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("llm", def.Type, def.Model), time.Since(start).Seconds())
+		if h.usageTracker != nil && consumer != "" && sw.Status() < 500 {
+			h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
+			h.usageTracker.TrackActive(r.Context(), consumer)
+		}
 		return
 	}
 
@@ -346,7 +365,26 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 		metrics.ObserveWithExemplar(r.Context(), metrics.RequestDuration.WithLabelValues("sync-direct", def.Type, def.Model), time.Since(start).Seconds())
 	}()
 
-	captureForPT := h.processingLimiter != nil
+	captureBody := h.processingLimiter != nil || (h.tokenLimiter != nil && !def.IsLLM())
+
+	if h.tokenLimiter != nil && !def.IsLLM() {
+		tr, err := h.tokenLimiter.CheckTokens(r.Context(), r, def.Type)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "token limit check failed", "error", err)
+			// fail open
+		} else {
+			if tr.Limit > 0 {
+				w.Header().Set("X-TokenRateLimit-Limit", strconv.Itoa(tr.Limit))
+				w.Header().Set("X-TokenRateLimit-Remaining", strconv.Itoa(tr.Remaining))
+			}
+			if !tr.Allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(int(tr.ResetAfter.Seconds())))
+				metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, "429").Inc()
+				writeError(w, http.StatusTooManyRequests, "token rate limit exceeded")
+				return
+			}
+		}
+	}
 
 	if len(def.Backends) == 0 {
 		metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, "500").Inc()
@@ -428,23 +466,44 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 			// Success or 4xx: forward immediately, do not retry.
 			defer resp.Body.Close()
 			metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, strconv.Itoa(resp.StatusCode)).Inc()
+			if h.usageTracker != nil && resp.StatusCode < 500 {
+				consumer, _ := h.resolveConsumerAndType(r)
+				if consumer != "" {
+					h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
+					h.usageTracker.TrackActive(r.Context(), consumer)
+				}
+			}
 			for key, values := range resp.Header {
 				for _, v := range values {
 					w.Header().Add(key, v)
 				}
 			}
 			w.WriteHeader(resp.StatusCode)
-			if captureForPT && resp.StatusCode < 400 {
+			if captureBody && resp.StatusCode < 400 {
 				respBody, _ := io.ReadAll(resp.Body)
 				_, _ = w.Write(respBody)
-				pt := extractProcessingTimeFromResponse(respBody)
-				if pt == 0 {
-					pt = time.Since(start).Seconds()
-				}
 				consumer, userType := h.resolveConsumerAndType(r)
-				if consumer != "" {
-					if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
-						slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+				if h.processingLimiter != nil {
+					pt := extractProcessingTimeFromResponse(respBody)
+					if pt == 0 {
+						pt = time.Since(start).Seconds()
+					}
+					if consumer != "" {
+						if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
+							slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+						}
+					}
+				}
+				if h.tokenLimiter != nil && !def.IsLLM() {
+					prompt, tcompletion := extractTokensFromResponse(respBody)
+					total := prompt + tcompletion
+					if total > 0 {
+						if err := h.tokenLimiter.AddTokens(r.Context(), r, def.Type, int(total)); err != nil {
+							slog.ErrorContext(r.Context(), "failed to add tokens", "error", err)
+						}
+						if h.usageTracker != nil && consumer != "" {
+							h.usageTracker.TrackTokens(r.Context(), consumer, def.Type, prompt, tcompletion)
+						}
 					}
 				}
 			} else {
@@ -499,6 +558,32 @@ func extractProcessingTimeFromResponse(body []byte) float64 {
 		return 0
 	}
 	return v.ProcessingTime
+}
+
+// extractTokensFromResponse parses OpenAI-compatible usage.prompt_tokens /
+// usage.completion_tokens from a JSON response body. If both are absent but
+// usage.total_tokens is present, the total is attributed to prompt tokens.
+// Returns (0, 0) if absent or not parseable.
+func extractTokensFromResponse(body []byte) (prompt, completion int64) {
+	if len(body) == 0 {
+		return 0, 0
+	}
+	var v struct {
+		Usage struct {
+			PromptTokens     int64 `json:"prompt_tokens"`
+			CompletionTokens int64 `json:"completion_tokens"`
+			TotalTokens      int64 `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(body, &v); err != nil {
+		return 0, 0
+	}
+	prompt = v.Usage.PromptTokens
+	completion = v.Usage.CompletionTokens
+	if prompt == 0 && completion == 0 && v.Usage.TotalTokens > 0 {
+		prompt = v.Usage.TotalTokens
+	}
+	return prompt, completion
 }
 
 // resolveConsumerAndType reads consumer name and user type from request headers.

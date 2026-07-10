@@ -824,6 +824,41 @@ func (m *mockProcessingTimeLimiter) AddProcessingTime(_ context.Context, _, _, _
 	return nil
 }
 
+// mockTokenLimiter is a test double for ratelimit.TokenChecker, shared by
+// jobs_test.go and sync_test.go (both package handler_test).
+type mockTokenLimiter struct {
+	result   ratelimit.CheckResult
+	checkErr error
+	addCalls []struct {
+		serviceType string
+		total       int
+	}
+}
+
+func (m *mockTokenLimiter) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return m.result, m.checkErr
+}
+
+func (m *mockTokenLimiter) AddTokens(_ context.Context, _ *http.Request, serviceType string, total int) error {
+	m.addCalls = append(m.addCalls, struct {
+		serviceType string
+		total       int
+	}{serviceType, total})
+	return nil
+}
+
+func (m *mockTokenLimiter) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+
+func (m *mockTokenLimiter) AddModelTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+
+func (m *mockTokenLimiter) AddTokensFor(_ context.Context, _, _, _ string, _ int) error {
+	return nil
+}
+
 // TestSubmit_ConcurrentLimit_ReleaseOnSaveFailure verifies that ReleaseSlot is
 // called to free the in-flight slot when Redis save fails after a successful check.
 func TestSubmit_ConcurrentLimit_ReleaseOnSaveFailure(t *testing.T) {
@@ -1092,6 +1127,76 @@ func TestSubmit_ProcessingTimeLimit_Allowed(t *testing.T) {
 	w := httptest.NewRecorder()
 	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
 		WithProcessingTimeLimiter(ptLimiter).
+		Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202 when budget available, got %d: %s", w.Code, w.Body.String())
+	}
+	if !s3.uploaded {
+		t.Error("S3 upload should have been called")
+	}
+	if !store.saved {
+		t.Error("Redis SaveJob should have been called")
+	}
+}
+
+// TestSubmit_TokenLimit_Denied verifies that a 429 is returned when the
+// token budget is exhausted, with no S3/Redis side effects.
+func TestSubmit_TokenLimit_Denied(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	tLimiter := &mockTokenLimiter{
+		result: ratelimit.CheckResult{Allowed: false, Limit: 10000, Remaining: 0, ResetAfter: time.Hour},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithTokenLimiter(tLimiter).
+		Submit(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Errorf("expected 429 when token budget exceeded, got %d: %s", w.Code, w.Body.String())
+	}
+	if s3.uploaded {
+		t.Error("S3 upload must not be called when token budget is exceeded")
+	}
+	if store.saved {
+		t.Error("Redis SaveJob must not be called when token budget is exceeded")
+	}
+}
+
+// TestSubmit_TokenLimit_FailOpen verifies that a check error is treated as
+// allowed (fail-open) so transient Redis errors don't block jobs.
+func TestSubmit_TokenLimit_FailOpen(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	tLimiter := &mockTokenLimiter{checkErr: fmt.Errorf("redis unavailable")}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithTokenLimiter(tLimiter).
+		Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Errorf("expected 202 on check error (fail-open), got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestSubmit_TokenLimit_Allowed verifies that a request within budget
+// proceeds to S3 and Redis normally.
+func TestSubmit_TokenLimit_Allowed(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+	tLimiter := &mockTokenLimiter{
+		result: ratelimit.CheckResult{Allowed: true, Limit: 10000, Remaining: 9000},
+	}
+
+	req := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	handler.NewJobHandler(singleOpRegistry(), s3, store, "", "", nil, config.LifecycleConfig{}).
+		WithTokenLimiter(tLimiter).
 		Submit(w, req)
 
 	if w.Code != http.StatusAccepted {

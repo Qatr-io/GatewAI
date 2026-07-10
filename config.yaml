@@ -407,6 +407,13 @@ services:
 #   traces:
 #     enabled: true
 #     sample_ratio: 1.0   # 1.0 = always sample, 0.1 = 10 %
+#     # ignore_paths: path prefixes excluded from tracing (prefix-based).
+#     # Defaults: ["/health", "/metrics", "/docs", "/openapi.yaml"]
+#     # ignore_paths:
+#     #   - /health
+#     #   - /metrics
+#     #   - /docs
+#     #   - /openapi.yaml
 #
 #   # OTLP metrics push (useful for short-lived processes or when Prometheus
 #   # scrape is not available, e.g. relay running as a Kubernetes Job).

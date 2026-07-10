@@ -47,12 +47,12 @@ See [Request flows](request-flows.md) for detailed sequence diagrams for each mo
 
 ## Service registry
 
-The gateway is entirely config-driven. See [Service registry](service-registry.md).
+The gateway is entirely config-driven. See [Service registry](../configure/service-registry.md).
 
 ## LLM proxy
 
-JSON requests to services with `provider` set go through a built-in LLM proxy with provider translation (OpenAI ↔ Anthropic), response caching, and consumer metrics. See [LLM proxy](llm-proxy.md).
+JSON requests to services with `provider` set go through a built-in LLM proxy with provider translation (OpenAI ↔ Anthropic), response caching, and consumer metrics. See [LLM proxy](../configure/llm-proxy.md).
 
 ## Rate limiting
 
-Per-consumer fixed-window rate limiting across all request modes. See [Rate limiting](rate-limiting.md).
+Per-consumer fixed-window rate limiting across all request modes. See [Rate limiting](../configure/rate-limiting.md).

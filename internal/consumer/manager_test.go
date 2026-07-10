@@ -35,6 +35,33 @@ func (m *mockPTLimiter) AddProcessingTime(_ context.Context, consumer, userType,
 	return nil
 }
 
+type mockTokenLimiterForManager struct {
+	calls []struct {
+		consumer, userType, serviceType string
+		total                            int
+	}
+}
+
+func (m *mockTokenLimiterForManager) CheckTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (m *mockTokenLimiterForManager) AddTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+func (m *mockTokenLimiterForManager) CheckModelTokens(_ context.Context, _ *http.Request, _ string) (ratelimit.CheckResult, error) {
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+func (m *mockTokenLimiterForManager) AddModelTokens(_ context.Context, _ *http.Request, _ string, _ int) error {
+	return nil
+}
+func (m *mockTokenLimiterForManager) AddTokensFor(_ context.Context, consumer, userType, serviceType string, total int) error {
+	m.calls = append(m.calls, struct {
+		consumer, userType, serviceType string
+		total                            int
+	}{consumer, userType, serviceType, total})
+	return nil
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 func newTestRedis(t *testing.T) (*storage.RedisClient, *miniredis.Miniredis) {
@@ -105,5 +132,51 @@ func TestOnComplete_SkipsAddProcessingTime_WhenZero(t *testing.T) {
 
 	if len(pt.addCalls) != 0 {
 		t.Errorf("expected no AddProcessingTime call for zero processing_time, got %d", len(pt.addCalls))
+	}
+}
+
+// TestOnComplete_CallsAddTokensFor verifies AddTokensFor is called with the
+// job's combined prompt+completion tokens when non-zero.
+func TestOnComplete_CallsAddTokensFor(t *testing.T) {
+	rc, mr := newTestRedis(t)
+
+	job := &model.Job{
+		ID: "job-1", ServiceType: "transcription", ConsumerName: "alice", UserType: "user",
+		Status: model.JobStatusCompleted, PromptTokens: 100, CompletionTokens: 20,
+	}
+	seedJob(t, mr, job)
+
+	tl := &mockTokenLimiterForManager{}
+	mgr := NewManager(rc, nil, false).WithTokenLimiter(tl)
+	mgr.onComplete(context.Background(), "job-1")
+
+	if len(tl.calls) != 1 {
+		t.Fatalf("expected 1 AddTokensFor call, got %d", len(tl.calls))
+	}
+	if tl.calls[0].total != 120 {
+		t.Errorf("total: got %d, want 120", tl.calls[0].total)
+	}
+	if tl.calls[0].consumer != "alice" {
+		t.Errorf("consumer: got %q, want alice", tl.calls[0].consumer)
+	}
+}
+
+// TestOnComplete_SkipsAddTokensFor_WhenZero verifies AddTokensFor is not
+// called when the job has no token data (not reported by the relay).
+func TestOnComplete_SkipsAddTokensFor_WhenZero(t *testing.T) {
+	rc, mr := newTestRedis(t)
+
+	job := &model.Job{
+		ID: "job-2", ServiceType: "transcription", ConsumerName: "alice", UserType: "user",
+		Status: model.JobStatusCompleted,
+	}
+	seedJob(t, mr, job)
+
+	tl := &mockTokenLimiterForManager{}
+	mgr := NewManager(rc, nil, false).WithTokenLimiter(tl)
+	mgr.onComplete(context.Background(), "job-2")
+
+	if len(tl.calls) != 0 {
+		t.Errorf("expected no AddTokensFor call for zero tokens, got %d", len(tl.calls))
 	}
 }

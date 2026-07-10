@@ -113,6 +113,10 @@ type TokenChecker interface {
 	CheckModelTokens(ctx context.Context, r *http.Request, model string) (CheckResult, error)
 	// AddModelTokens records total tokens consumed for the given model into the window counter.
 	AddModelTokens(ctx context.Context, r *http.Request, model string, total int) error
+	// AddTokensFor records total tokens consumed for a known consumer/userType,
+	// bypassing the *http.Request-based resolution AddTokens uses. Used by the
+	// async job completion path where no request is available.
+	AddTokensFor(ctx context.Context, consumer, userType, serviceType string, total int) error
 }
 
 // Limiter checks rate limits using Redis fixed-window counters.
@@ -747,6 +751,42 @@ func (l *Limiter) AddProcessingTime(ctx context.Context, consumer, userType, ser
 		delta,
 	).Err(); err != nil {
 		metrics.TokenRatelimitErrorsTotal.WithLabelValues("pt:" + serviceType).Inc()
+	}
+	return nil
+}
+
+// AddTokensFor implements TokenChecker. It mirrors AddProcessingTime: a
+// self-contained, request-less method (not extracted from AddTokens) since
+// the async completion path has no *http.Request to resolve consumer/userType
+// from. Writes to the same trl:{consumer}:{serviceType}:{userType} key AddTokens
+// and CheckTokens use, so budgets recorded here are visible to both.
+func (l *Limiter) AddTokensFor(ctx context.Context, consumer, userType, serviceType string, total int) error {
+	if total <= 0 {
+		return nil
+	}
+	keyLimits, ok := l.limits[serviceType]
+	if !ok {
+		return nil
+	}
+	cfg, ok := keyLimits[userType]
+	if !ok {
+		cfg, ok = keyLimits["*"]
+	}
+	if !ok || cfg.TokenRate == 0 {
+		return nil
+	}
+
+	period, err := time.ParseDuration(cfg.TokenPeriod)
+	if err != nil {
+		return fmt.Errorf("parse token_period %q: %w", cfg.TokenPeriod, err)
+	}
+
+	key := fmt.Sprintf("trl:%s:%s:%s", consumer, serviceType, userType)
+	if err := tokenAddScript.Run(ctx, l.rdb, []string{key},
+		int(period.Seconds()),
+		total,
+	).Err(); err != nil {
+		metrics.TokenRatelimitErrorsTotal.WithLabelValues(serviceType).Inc()
 	}
 	return nil
 }

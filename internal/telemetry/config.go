@@ -30,7 +30,7 @@ type TracesConfig struct {
 	SampleRatio float64           `yaml:"sample_ratio"` // 0.0–1.0; default 1.0
 	// IgnorePaths lists path prefixes that are excluded from tracing.
 	// A request is skipped when its path equals an entry or starts with entry + "/".
-	// Defaults to ["/health", "/metrics"] when unset.
+	// Defaults to ["/health", "/metrics", "/docs", "/openapi.yaml"] when unset.
 	IgnorePaths []string `yaml:"ignore_paths"`
 }
 
