@@ -226,4 +226,15 @@ var (
 		Name: "gatewai_authz_decisions_total",
 		Help: "Authorization decisions by result and service type.",
 	}, []string{"service_type", "model", "decision"}) // decision = allow | deny
+
+	// JobsTotal counts async jobs reaching a terminal outcome, by service type,
+	// model and status (completed|failed). Incremented on the gateway side
+	// (Manager.onComplete) rather than the relay so it stays reliable
+	// regardless of relay deployment shape — an ephemeral per-event Kubernetes
+	// Job may exit before Prometheus scrapes it, but the gateway is always a
+	// stable, long-running scrape target.
+	JobsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_jobs_total",
+		Help: "Total number of async jobs reaching a terminal outcome, by service type, model and status (completed|failed).",
+	}, []string{"service_type", "model", "status"})
 )
