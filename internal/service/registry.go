@@ -514,6 +514,19 @@ func (r *Registry) ValidateFileDef(def *Def, filename string) error {
 	return nil
 }
 
+// ModelsForType returns the model names registered for the given service type
+// (excluding services with no model alias). Used to enumerate per-model
+// token-quota breakdowns in usage reporting.
+func (r *Registry) ModelsForType(serviceType string) []string {
+	models := make([]string, 0, len(r.byTypeModel[serviceType]))
+	for m := range r.byTypeModel[serviceType] {
+		if m != "" {
+			models = append(models, m)
+		}
+	}
+	return models
+}
+
 // Types returns all registered service type names (unique).
 func (r *Registry) Types() []string {
 	types := make([]string, 0, len(r.byTypeModel))

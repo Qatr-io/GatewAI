@@ -51,7 +51,7 @@ func (h *UsageHandler) GetMyUsage(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	result, err := h.store.GetConsumerUsage(r.Context(), consumer, userType, h.serviceTypes())
+	result, err := h.store.GetConsumerUsage(r.Context(), consumer, userType, h.serviceTypes(), h.modelsByType())
 	if err != nil {
 		writeJSONError(w, http.StatusInternalServerError, "failed to retrieve usage")
 		return
@@ -123,8 +123,9 @@ func (h *UsageHandler) AdminListUsage(w http.ResponseWriter, r *http.Request) {
 		Offset:    offset,
 		Consumers: make([]ConsumerUsage, 0, len(consumers)),
 	}
+	modelsByType := h.modelsByType()
 	for _, consumer := range consumers {
-		cu, err := h.store.GetConsumerUsage(r.Context(), consumer, userType, serviceTypes)
+		cu, err := h.store.GetConsumerUsage(r.Context(), consumer, userType, serviceTypes, modelsByType)
 		if err != nil {
 			continue
 		}
@@ -139,6 +140,21 @@ func (h *UsageHandler) serviceTypes() []string {
 		return nil
 	}
 	return h.reg.Types()
+}
+
+// modelsByType builds a service_type → model names map from the registry,
+// used to surface a per-model token-quota breakdown in usage responses.
+func (h *UsageHandler) modelsByType() map[string][]string {
+	if h.reg == nil {
+		return nil
+	}
+	out := make(map[string][]string)
+	for _, t := range h.reg.Types() {
+		if models := h.reg.ModelsForType(t); len(models) > 0 {
+			out[t] = models
+		}
+	}
+	return out
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

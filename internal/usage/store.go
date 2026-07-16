@@ -5,27 +5,86 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"gatewai/gateway/internal/config"
 )
 
 // UsageStore reads per-consumer usage from Redis.
 type UsageStore interface {
-	GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string) (*ConsumerUsage, error)
+	// GetConsumerUsage returns usage for consumer across the given service
+	// types. modelsByType optionally lists the models registered for each
+	// service type, used to surface a per-model token-quota breakdown
+	// (services[].token_limits) nested under the service entry; pass nil to
+	// skip model-level reporting.
+	GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string, modelsByType map[string][]string) (*ConsumerUsage, error)
 	ListConsumers(ctx context.Context, limit, offset int64) (consumers []string, total int64, err error)
 	ListConsumersByType(ctx context.Context, serviceType string, limit, offset int64) (consumers []string, total int64, err error)
+	// UpdateRateLimits swaps the rate_limits/model token_limits config consulted
+	// when resolving the configured quota surfaced alongside window usage.
+	// Called on config hot-reload.
+	UpdateRateLimits(rateLimits, modelLimits map[string]map[string]config.RateLimitConfig)
 }
 
 type redisUsageStore struct {
 	rdb       *redis.Client
 	retention string // display label only ("all-time" when empty)
+
+	mu          sync.RWMutex
+	rateLimits  map[string]map[string]config.RateLimitConfig
+	modelLimits map[string]map[string]config.RateLimitConfig
 }
 
 // NewRedisUsageStore returns a UsageStore backed by Redis.
 // retention is the human-readable retention string surfaced in API responses ("" = "all-time").
-func NewRedisUsageStore(rdb *redis.Client, retention string) UsageStore {
-	return &redisUsageStore{rdb: rdb, retention: retention}
+// rateLimits and modelLimits are the configured rate_limits and per-model
+// token_limits maps, used to surface quotas alongside current usage; pass nil
+// for either when not configured.
+func NewRedisUsageStore(rdb *redis.Client, retention string, rateLimits, modelLimits map[string]map[string]config.RateLimitConfig) UsageStore {
+	return &redisUsageStore{rdb: rdb, retention: retention, rateLimits: rateLimits, modelLimits: modelLimits}
+}
+
+// UpdateRateLimits swaps the rate_limits/modelLimits maps consulted by
+// getWindowUsage/getModelUsage.
+func (s *redisUsageStore) UpdateRateLimits(rateLimits, modelLimits map[string]map[string]config.RateLimitConfig) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rateLimits = rateLimits
+	s.modelLimits = modelLimits
+}
+
+// resolveConfig looks up the RateLimitConfig for key/userType in limitsMap,
+// falling back to the "*" wildcard user type when the specific type has no
+// entry — mirrors ratelimit.Limiter.resolveFromMap's fallback behaviour.
+func resolveConfig(limitsMap map[string]map[string]config.RateLimitConfig, key, userType string) (config.RateLimitConfig, bool) {
+	keyLimits, ok := limitsMap[key]
+	if !ok {
+		return config.RateLimitConfig{}, false
+	}
+	if c, ok := keyLimits[userType]; ok {
+		return c, true
+	}
+	if c, ok := keyLimits["*"]; ok {
+		return c, true
+	}
+	return config.RateLimitConfig{}, false
+}
+
+// resolveRateLimitConfig looks up the service-level RateLimitConfig for svcType/userType.
+func (s *redisUsageStore) resolveRateLimitConfig(svcType, userType string) (config.RateLimitConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return resolveConfig(s.rateLimits, svcType, userType)
+}
+
+// resolveModelLimitConfig looks up the per-model token RateLimitConfig for model/userType.
+func (s *redisUsageStore) resolveModelLimitConfig(model, userType string) (config.RateLimitConfig, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return resolveConfig(s.modelLimits, model, userType)
 }
 
 func (s *redisUsageStore) retentionLabel() string {
@@ -37,7 +96,7 @@ func (s *redisUsageStore) retentionLabel() string {
 
 // GetConsumerUsage returns cumulative + window usage for consumer across the
 // given service types. Service types with zero data are omitted.
-func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string) (*ConsumerUsage, error) {
+func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string, modelsByType map[string][]string) (*ConsumerUsage, error) {
 	out := &ConsumerUsage{
 		Consumer:  consumer,
 		Retention: s.retentionLabel(),
@@ -51,7 +110,7 @@ func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userTy
 	}
 
 	for _, svcType := range serviceTypes {
-		svc, err := s.getServiceUsage(ctx, consumer, userType, svcType)
+		svc, err := s.getServiceUsage(ctx, consumer, userType, svcType, modelsByType[svcType])
 		if err != nil {
 			slog.WarnContext(ctx, "usage store: failed to read service usage",
 				"consumer", consumer, "service_type", svcType, "error", err)
@@ -65,7 +124,7 @@ func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userTy
 	return out, nil
 }
 
-func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userType, svcType string) (*ServiceUsage, error) {
+func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userType, svcType string, models []string) (*ServiceUsage, error) {
 	requests, _ := s.zscore(ctx, "usage:consumer:"+svcType+":requests", consumer)
 	jobs, _ := s.zscore(ctx, "usage:consumer:"+svcType+":jobs", consumer)
 	procTime, _ := s.zscoref(ctx, "usage:consumer:"+svcType+":processing_time", consumer)
@@ -105,15 +164,24 @@ func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userTyp
 
 	window := s.getWindowUsage(ctx, consumer, userType, svcType)
 
+	var modelUsages []ModelUsage
+	for _, model := range models {
+		if mu := s.getModelUsage(ctx, consumer, userType, model); mu != nil {
+			modelUsages = append(modelUsages, *mu)
+		}
+	}
+
 	return &ServiceUsage{
 		ServiceType: svcType,
 		Total:       total,
 		Window:      window,
+		Models:      modelUsages,
 	}, nil
 }
 
-// getWindowUsage reads rate-limit window counters for this consumer+service.
-// Returns nil when no window data exists.
+// getWindowUsage reads rate-limit window counters for this consumer+service,
+// alongside the configured quota (from rate_limits) it's measured against.
+// Returns nil when there's neither window data nor a configured quota to show.
 func (s *redisUsageStore) getWindowUsage(ctx context.Context, consumer, userType, svcType string) *WindowUsage {
 	rlKey := fmt.Sprintf("rl:%s:%s:%s", consumer, svcType, userType)
 	trlKey := fmt.Sprintf("trl:%s:%s:%s", consumer, svcType, userType)
@@ -123,7 +191,9 @@ func (s *redisUsageStore) getWindowUsage(ctx context.Context, consumer, userType
 	trlVal, _ := s.getIntWithTTL(ctx, trlKey)
 	ptrlVal, _ := s.getIntWithTTL(ctx, ptrlKey)
 
-	if rlVal == 0 && trlVal == 0 && ptrlVal == 0 {
+	rlCfg, hasQuota := s.resolveRateLimitConfig(svcType, userType)
+
+	if rlVal == 0 && trlVal == 0 && ptrlVal == 0 && !hasQuota {
 		return nil
 	}
 
@@ -136,7 +206,43 @@ func (s *redisUsageStore) getWindowUsage(ctx context.Context, consumer, userType
 		resetAt := time.Now().Add(rlTTL).UTC()
 		w.ResetAt = &resetAt
 	}
+	if hasQuota {
+		w.RequestLimit = int64(rlCfg.Rate)
+		w.RequestPeriod = rlCfg.Period
+		w.TokenLimit = int64(rlCfg.TokenRate)
+		w.TokenPeriod = rlCfg.TokenPeriod
+		w.ProcessingTimeLimit = int64(rlCfg.ProcessingTime)
+		w.ProcessingTimePeriod = rlCfg.ProcessingPeriod
+	}
 	return w
+}
+
+// getModelUsage reads the per-model token window counter (trl:{consumer}:model:{model}:{userType},
+// written by ratelimit.Limiter.AddModelTokens) alongside the configured
+// per-model quota (services[].token_limits). Returns nil when there's neither
+// window data nor a configured quota for this model.
+func (s *redisUsageStore) getModelUsage(ctx context.Context, consumer, userType, model string) *ModelUsage {
+	key := fmt.Sprintf("trl:%s:model:%s:%s", consumer, model, userType)
+	tokens, ttl := s.getIntWithTTL(ctx, key)
+
+	cfg, hasQuota := s.resolveModelLimitConfig(model, userType)
+	if tokens == 0 && !hasQuota {
+		return nil
+	}
+
+	mu := &ModelUsage{
+		Model:  model,
+		Tokens: tokens,
+	}
+	if ttl > 0 {
+		resetAt := time.Now().Add(ttl).UTC()
+		mu.ResetAt = &resetAt
+	}
+	if hasQuota {
+		mu.TokenLimit = int64(cfg.TokenRate)
+		mu.TokenPeriod = cfg.TokenPeriod
+	}
+	return mu
 }
 
 // ListConsumers returns consumers sorted by most-recently-active (desc),

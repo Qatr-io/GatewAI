@@ -137,7 +137,8 @@ func buildRouter(
 		r.Use(auth.Middleware(authenticator, cfg.Auth.Mode, authExemptPrefixes, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader))
 	}
 
-	spec := handler.GenerateSpec(reg, version)
+	spec := handler.GenerateSpec(reg, version, usageHTTPHandler != nil)
+	adminSpec := handler.GenerateAdminSpec(version, usageHTTPHandler != nil)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
 	r.Get("/health", handler.NewHealthHandler(healthChecker.Snapshot))
@@ -145,6 +146,8 @@ func buildRouter(
 	r.Get("/docs", handler.DocsUI(swaggerSpecs))
 	r.Get("/openapi.yaml", handler.NewDocsSpec(spec))
 	r.Get("/docs/spec/{type}/{model}", handler.NewSwaggerHandler(swaggerSpecs))
+	r.Get("/-/docs", handler.AdminDocsUI())
+	r.Get("/-/openapi.yaml", handler.NewDocsSpec(adminSpec))
 	r.Get("/jobs", jobHandler.ListJobs)
 	r.Post("/jobs/{service_type}", jobHandler.Submit)
 	r.Get("/jobs/{service_type}/{id}", jobHandler.GetStatus)
@@ -275,10 +278,11 @@ func main() {
 	// ── Usage tracker ─────────────────────────────────────────────────────────
 	var usageTracker usage.UsageTracker
 	var usageHTTPHandler *usage.UsageHandler
+	var usageStore usage.UsageStore
 	if cfg.Server.ConsumerHeader != "" {
 		ut := usage.NewRedisUsageTracker(redisClient.Raw(), cfg.Usage.RetentionDuration())
 		usageTracker = ut
-		usageStore := usage.NewRedisUsageStore(redisClient.Raw(), cfg.Usage.Retention)
+		usageStore = usage.NewRedisUsageStore(redisClient.Raw(), cfg.Usage.Retention, cfg.RateLimits, modelLimits)
 		usageHTTPHandler = usage.NewUsageHandler(usageStore, initialRegistry, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
 		manager.WithUsageTracker(usageTracker)
 		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
@@ -373,6 +377,9 @@ func main() {
 		}
 		if usageTracker != nil {
 			usageTracker.UpdateRetention(newCfg.Usage.RetentionDuration())
+		}
+		if usageStore != nil {
+			usageStore.UpdateRateLimits(newCfg.RateLimits, newModelLimits)
 		}
 		if usageHTTPHandler != nil {
 			usageHTTPHandler.UpdateRegistry(newReg)

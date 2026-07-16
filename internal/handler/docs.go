@@ -14,7 +14,8 @@ import (
 
 // GenerateSpec builds an OpenAPI 3.0.3 spec dynamically from the service registry.
 // Call once at startup after the registry is initialised; serve the result statically.
-func GenerateSpec(reg *service.Registry, appVersion string) []byte {
+// Admin-only endpoints (the `/-/` namespace) are NOT included here — see GenerateAdminSpec.
+func GenerateSpec(reg *service.Registry, appVersion string, usageEnabled bool) []byte {
 	paths := map[string]any{}
 
 	// ── Fixed endpoints ────────────────────────────────────────────────────────
@@ -25,7 +26,10 @@ func GenerateSpec(reg *service.Registry, appVersion string) []byte {
 
 	paths["/jobs/{service_type}"] = submitJobPathItem(serviceTypes, reg)
 	paths["/jobs/{service_type}/{id}"] = jobByIDPathItem(serviceTypes)
-	paths["/-/jobs/purge"] = purgeJobsPathItem()
+
+	if usageEnabled {
+		paths["/usage"] = usagePathItem()
+	}
 
 	if reg.HasSyncServices() {
 		paths["/v1/models"] = listModelsPathItem()
@@ -38,10 +42,11 @@ func GenerateSpec(reg *service.Registry, appVersion string) []byte {
 			"version": appVersion,
 			"description": "Gateway for asynchronous and synchronous inference jobs.\n\n" +
 				"**Async mode** — submit a file, get a `job_id`, poll for result or receive a webhook.\n\n" +
-				"**Sync mode** — OpenAI-compatible endpoints, response held open until inference is done.",
+				"**Sync mode** — OpenAI-compatible endpoints, response held open until inference is done.\n\n" +
+				"Operator-only endpoints (the `/-/` namespace) are documented separately at `/-/openapi.yaml` / `/-/docs`.",
 		},
 		"servers": []any{map[string]any{"url": "/"}},
-		"tags":    specTags(reg),
+		"tags":    specTags(usageEnabled),
 		// Global security: all endpoints require a bearer token unless overridden.
 		"security": []any{
 			map[string]any{"BearerAuth": []any{}},
@@ -54,11 +59,50 @@ func GenerateSpec(reg *service.Registry, appVersion string) []byte {
 	return out
 }
 
-// specTags builds the OpenAPI tags array for the gateway spec.
-func specTags(_ *service.Registry) []any {
-	return []any{
+// GenerateAdminSpec builds a separate OpenAPI 3.0.3 spec for the `/-/` admin
+// namespace (config reload, job purge, usage listing). Kept apart from
+// GenerateSpec so operator-only endpoints aren't mixed into the consumer-facing
+// API docs served at /docs.
+func GenerateAdminSpec(appVersion string, usageEnabled bool) []byte {
+	paths := map[string]any{
+		"/-/reload":     reloadPathItem(),
+		"/-/jobs/purge": purgeJobsPathItem(),
+	}
+	if usageEnabled {
+		paths["/-/usage"] = adminUsagePathItem()
+	}
+
+	spec := map[string]any{
+		"openapi": "3.0.3",
+		"info": map[string]any{
+			"title":       "Kevent Inference Gateway — Admin",
+			"version":     appVersion,
+			"description": "Operator-only endpoints under the `/-/` namespace. Not intended for end consumers — protect with upstream auth/network policy.",
+		},
+		"servers": []any{map[string]any{"url": "/"}},
+		"tags": []any{
+			map[string]any{"name": "Admin", "description": "Operator-only endpoints"},
+		},
+		"security": []any{
+			map[string]any{"BearerAuth": []any{}},
+		},
+		"paths":      paths,
+		"components": specComponents(),
+	}
+
+	out, _ := yaml.Marshal(spec)
+	return out
+}
+
+// specTags builds the OpenAPI tags array for the public gateway spec.
+func specTags(usageEnabled bool) []any {
+	tags := []any{
 		map[string]any{"name": "Jobs", "description": "Async job submission and status"},
 	}
+	if usageEnabled {
+		tags = append(tags, map[string]any{"name": "Usage", "description": "Per-consumer usage reporting"})
+	}
+	return tags
 }
 
 // NewDocsSpec returns a handler that serves the pre-generated OpenAPI spec.
@@ -104,6 +148,38 @@ func DocsUI(specs []SwaggerSpec) http.HandlerFunc {
     SwaggerUIBundle({
       urls: ` + string(urlsJSON) + `,
       "urls.primaryName": "Gateway (jobs async + sync)",
+      dom_id: "#swagger-ui",
+      presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
+      layout: "StandaloneLayout",
+      deepLinking: true,
+    });
+  </script>
+</body>
+</html>`
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte(html))
+	}
+}
+
+// AdminDocsUI serves the Swagger UI for the admin (`/-/`) spec at GET /-/docs.
+func AdminDocsUI() http.HandlerFunc {
+	html := `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Kevent API — Admin</title>
+  <link rel="stylesheet" href="https://unpkg.com/swagger-ui-dist/swagger-ui.css" />
+</head>
+<body>
+  <div id="swagger-ui"></div>
+  <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-bundle.js"></script>
+  <script src="https://unpkg.com/swagger-ui-dist/swagger-ui-standalone-preset.js"></script>
+  <script>
+    SwaggerUIBundle({
+      url: "/-/openapi.yaml",
       dom_id: "#swagger-ui",
       presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
       layout: "StandaloneLayout",
@@ -275,7 +351,7 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 			"parameters": []any{
 				map[string]any{
 					"name": "service_type", "in": "path", "required": true,
-					"schema": map[string]any{"type": "string", "enum": serviceTypes},
+					"schema":  map[string]any{"type": "string", "enum": serviceTypes},
 					"example": serviceTypes[0],
 				},
 			},
@@ -360,10 +436,86 @@ func jobByIDPathItem(serviceTypes []string) map[string]any {
 	}
 }
 
+// reloadPathItem documents POST /-/reload (admin spec only).
+func reloadPathItem() map[string]any {
+	return map[string]any{
+		"post": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: hot-reload configuration",
+			"operationId": "reloadConfig",
+			"description": "Re-reads config.yaml and atomically swaps the active router, service registry, rate limits, and access-control policies. Auth configuration changes still require a process restart. Restricted to the `/-/` admin namespace — protect with upstream auth.",
+			"responses": map[string]any{
+				"200": map[string]any{"description": "Reload succeeded"},
+				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
+			},
+		},
+	}
+}
+
+// usagePathItem documents GET /usage (public spec).
+func usagePathItem() map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"tags":        []string{"Usage"},
+			"summary":     "Get my usage",
+			"operationId": "getMyUsage",
+			"description": "Returns cumulative and current-window usage for the calling consumer (identified by the configured consumer header), across all configured service types.\n\n" +
+				"Each service's `window` reports both the usage counted so far in the current window AND the configured quota it is measured against (`request_limit`/`token_limit`/`processing_time_limit_seconds` plus their periods, sourced from `rate_limits` in config.yaml) — so a caller can see how much of their allocated quota remains, not just what they've consumed.",
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Consumer usage",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/ConsumerUsage"},
+						},
+					},
+				},
+				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
+				"501": map[string]any{
+					"description": "Usage tracking is not configured (no consumer_header set)",
+					"content": map[string]any{
+						"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/Error"}},
+					},
+				},
+			},
+		},
+	}
+}
+
+// adminUsagePathItem documents GET /-/usage (admin spec only).
+func adminUsagePathItem() map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: list usage across consumers",
+			"operationId": "adminListUsage",
+			"description": "Paginated usage listing across all consumers, each including the configured quota alongside counted usage (see GET /usage). Restricted to the `/-/` admin namespace — protect with upstream auth.\n\n" +
+				"Filter with `consumer` (exact match) or `type` (service type); otherwise returns consumers ordered by most-recently-active.",
+			"parameters": []any{
+				map[string]any{"name": "consumer", "in": "query", "required": false, "description": "Filter to a single consumer", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "type", "in": "query", "required": false, "description": "Filter to consumers active on this service type", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "limit", "in": "query", "required": false, "description": "Page size (default 20, max 100)", "schema": map[string]any{"type": "integer", "default": 20, "maximum": 100}},
+				map[string]any{"name": "offset", "in": "query", "required": false, "description": "Page offset", "schema": map[string]any{"type": "integer", "default": 0, "minimum": 0}},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Paginated usage listing",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/AdminUsageResponse"},
+						},
+					},
+				},
+			},
+		},
+	}
+}
+
+// purgeJobsPathItem documents POST /-/jobs/purge (admin spec only).
 func purgeJobsPathItem() map[string]any {
 	return map[string]any{
 		"post": map[string]any{
-			"tags":        []string{"Jobs"},
+			"tags":        []string{"Admin"},
 			"summary":     "Admin: purge stale pending jobs",
 			"operationId": "purgeJobs",
 			"description": "Deletes pending jobs older than `older_than`. Also cleans up their S3 input files. Restricted to the `/-/` admin namespace — protect with upstream auth.\n\nIf `truncated=true` in the response, there are more matching jobs — call again until `truncated=false` to fully drain the queue.\n\n**Example:** `POST /-/jobs/purge?older_than=2h&limit=200`",
@@ -632,6 +784,86 @@ func specComponents() map[string]any {
 					"id":       map[string]any{"type": "string", "example": "whisper-large-v3"},
 					"object":   map[string]any{"type": "string", "example": "model"},
 					"owned_by": map[string]any{"type": "string", "example": "gatewai"},
+				},
+			},
+			"TokenUsage": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"prompt":     map[string]any{"type": "integer", "format": "int64"},
+					"completion": map[string]any{"type": "integer", "format": "int64"},
+				},
+			},
+			"TotalUsage": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"requests":                map[string]any{"type": "integer", "format": "int64"},
+					"jobs":                    map[string]any{"type": "integer", "format": "int64"},
+					"processing_time_seconds": map[string]any{"type": "number"},
+					"tokens":                  map[string]any{"$ref": "#/components/schemas/TokenUsage"},
+				},
+			},
+			"WindowUsage": map[string]any{
+				"type":        "object",
+				"description": "Current rate-limit window: usage counted so far, plus the configured quota it is measured against (from `rate_limits` in config.yaml). Limit/period fields are omitted when no quota is configured for that dimension.",
+				"properties": map[string]any{
+					"requests":                      map[string]any{"type": "integer", "format": "int64", "description": "Requests counted in the current window"},
+					"request_limit":                 map[string]any{"type": "integer", "format": "int64", "description": "Configured request quota (rate_limits.<type>.<user_type>.rate)"},
+					"request_period":                map[string]any{"type": "string", "example": "1m", "description": "Configured window period (rate_limits.<type>.<user_type>.period)"},
+					"tokens":                        map[string]any{"type": "integer", "format": "int64", "description": "Tokens counted in the current window"},
+					"token_limit":                   map[string]any{"type": "integer", "format": "int64", "description": "Configured token quota (rate_limits.<type>.<user_type>.token_rate)"},
+					"token_period":                  map[string]any{"type": "string", "example": "1h", "description": "Configured token window period (token_period)"},
+					"processing_time_seconds":       map[string]any{"type": "number", "description": "Processing seconds counted in the current window"},
+					"processing_time_limit_seconds": map[string]any{"type": "integer", "format": "int64", "description": "Configured processing-time quota (processing_time)"},
+					"processing_time_period":        map[string]any{"type": "string", "example": "1h", "description": "Configured processing-time window period (processing_period)"},
+					"reset_at":                      map[string]any{"type": "string", "format": "date-time", "description": "When the current window resets"},
+				},
+			},
+			"ModelUsage": map[string]any{
+				"type":        "object",
+				"description": "Per-model token usage and quota, for models with a token budget configured via `services[].token_limits`. Limit/period fields are omitted when no quota is configured for that model.",
+				"properties": map[string]any{
+					"model":        map[string]any{"type": "string", "example": "gpt-oss"},
+					"tokens":       map[string]any{"type": "integer", "format": "int64", "description": "Tokens counted in the current window for this model"},
+					"token_limit":  map[string]any{"type": "integer", "format": "int64", "description": "Configured token quota (services[].token_limits.<user_type>.token_rate)"},
+					"token_period": map[string]any{"type": "string", "example": "1h", "description": "Configured token window period (token_period)"},
+					"reset_at":     map[string]any{"type": "string", "format": "date-time", "description": "When the current window resets"},
+				},
+			},
+			"ServiceUsage": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"service_type": map[string]any{"type": "string", "example": "audio"},
+					"total":        map[string]any{"$ref": "#/components/schemas/TotalUsage"},
+					"window":       map[string]any{"$ref": "#/components/schemas/WindowUsage"},
+					"models": map[string]any{
+						"type":        "array",
+						"description": "Per-model token quota breakdown (only present for services with model-level token_limits configured)",
+						"items":       map[string]any{"$ref": "#/components/schemas/ModelUsage"},
+					},
+				},
+			},
+			"ConsumerUsage": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"consumer":    map[string]any{"type": "string"},
+					"retention":   map[string]any{"type": "string", "example": "all-time"},
+					"last_active": map[string]any{"type": "string", "format": "date-time"},
+					"usage": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"$ref": "#/components/schemas/ServiceUsage"},
+					},
+				},
+			},
+			"AdminUsageResponse": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"total":  map[string]any{"type": "integer", "format": "int64"},
+					"limit":  map[string]any{"type": "integer", "format": "int64"},
+					"offset": map[string]any{"type": "integer", "format": "int64"},
+					"consumers": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"$ref": "#/components/schemas/ConsumerUsage"},
+					},
 				},
 			},
 			"Error": map[string]any{
