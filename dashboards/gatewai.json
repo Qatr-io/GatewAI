@@ -862,7 +862,38 @@
           },
           "unit": "short"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*OK.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*KO.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
       },
       "gridPos": {
         "h": 8,
@@ -886,8 +917,8 @@
           "sort": "desc"
         }
       },
-      "description": "0=ok, !=0=erreur",
-      "title": "Relay — Exit codes dernière terminaison",
+      "description": "Jobs terminés par 5 min, par type de service (service_type) et statut — OK=completed, KO=failed",
+      "title": "Jobs — OK / KO par type",
       "type": "timeseries",
       "targets": [
         {
@@ -895,9 +926,18 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "kube_pod_container_status_last_terminated_exitcode{container=\"relay\", namespace=\"default\"}",
-          "legendFormat": "{{pod}}",
+          "expr": "sum by (service_type) (increase(gatewai_jobs_total{status=\"completed\"}[5m]))",
+          "legendFormat": "{{service_type}} — OK",
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (service_type) (increase(gatewai_jobs_total{status=\"failed\"}[5m]))",
+          "legendFormat": "{{service_type}} — KO",
+          "refId": "B"
         }
       ]
     },
@@ -961,7 +1001,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "redis_list_length{key=~\"relay:.*:pending\"}",
+          "expr": "redis_list_length{key=~\"relay:.*:(pending|processing)$\"}",
           "legendFormat": "{{key}}",
           "refId": "A"
         }
