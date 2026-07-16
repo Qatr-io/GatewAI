@@ -423,6 +423,7 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 			h.usageTracker.TrackRequest(ctx, consumerName, serviceType)
 			h.usageTracker.TrackJob(ctx, consumerName, serviceType)
 			h.usageTracker.TrackActive(ctx, consumerName)
+			h.usageTracker.TrackUserType(ctx, consumerName, serviceType, userType)
 		}
 	}
 

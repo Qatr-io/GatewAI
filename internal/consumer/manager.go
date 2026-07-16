@@ -165,6 +165,10 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		m.usageTracker.TrackTokens(ctx, job.ConsumerName, job.ServiceType, job.PromptTokens, job.CompletionTokens)
 	}
 
+	if m.usageTracker != nil && job.ConsumerName != "" {
+		m.usageTracker.TrackUserType(ctx, job.ConsumerName, job.ServiceType, job.UserType)
+	}
+
 	if job.CallbackURL != "" {
 		m.wg.Add(1)
 		go func() {

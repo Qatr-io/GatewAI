@@ -925,6 +925,7 @@ func (m *mockUsageTrackerSync) TrackRequest(_ context.Context, _, _ string)     
 func (m *mockUsageTrackerSync) TrackJob(_ context.Context, _, _ string)                       {}
 func (m *mockUsageTrackerSync) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
 func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string)                       {}
+func (m *mockUsageTrackerSync) TrackUserType(_ context.Context, _, _, _ string)               {}
 func (m *mockUsageTrackerSync) UpdateRetention(_ time.Duration)                               {}
 func (m *mockUsageTrackerSync) TrackTokens(_ context.Context, consumer, serviceType string, prompt, completion int64) {
 	m.tokenCalls = append(m.tokenCalls, struct {

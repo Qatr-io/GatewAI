@@ -49,6 +49,15 @@ type ServiceUsage struct {
 	Total       TotalUsage   `json:"total"`
 	Window      *WindowUsage `json:"window,omitempty"`
 	Models      []ModelUsage `json:"models,omitempty"`
+
+	// UserType is the tier this consumer was actually rate-limited under for
+	// this service type, recorded from the requests themselves (see
+	// UsageTracker.TrackUserType) rather than resolved from the current
+	// /usage request's own identity: a single consumer can hold a different
+	// role/tier per service (e.g. "audio-limited" but "embedding-unlimited"),
+	// so the caller's own resolved tier does not necessarily apply to every
+	// service type being reported on.
+	UserType string `json:"user_type,omitempty"`
 }
 
 // ConsumerUsage is the full usage response for one consumer.
@@ -57,12 +66,6 @@ type ConsumerUsage struct {
 	Retention  string         `json:"retention"`
 	LastActive *time.Time     `json:"last_active,omitempty"`
 	Usage      []ServiceUsage `json:"usage"`
-
-	// UserType is the value resolved from server.user_type_header for this
-	// request (or "*" when unset/absent), i.e. the tier used to look up
-	// rate_limits/token_limits quotas above. Surfaced so callers can verify
-	// which tier they were actually evaluated against.
-	UserType string `json:"user_type"`
 }
 
 // AdminUsageResponse is the paginated admin response.

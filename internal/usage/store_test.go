@@ -39,9 +39,6 @@ func TestGetConsumerUsage_Empty(t *testing.T) {
 	if result.Consumer != "alice" {
 		t.Errorf("consumer = %q", result.Consumer)
 	}
-	if result.UserType != "*" {
-		t.Errorf("user_type = %q, want *", result.UserType)
-	}
 	if result.Retention != "all-time" {
 		t.Errorf("retention = %q, want all-time", result.Retention)
 	}
@@ -78,6 +75,57 @@ func TestGetConsumerUsage_WithData(t *testing.T) {
 	if svc.Total.ProcessingTime != 3600 {
 		// float stored as sorted set score rounds to int in zscore
 		t.Logf("processing_time = %v (raw float from ZScore may be ~3600)", svc.Total.ProcessingTime)
+	}
+}
+
+// TestGetConsumerUsage_TrackedUserTypeOverridesRequestIdentity verifies that
+// a consumer's per-service tracked tier (recorded from real requests via
+// UsageTracker.TrackUserType) is what's surfaced in ServiceUsage.UserType,
+// even when the current /usage request's own resolved identity (e.g. from a
+// different service's role) disagrees — a consumer can hold a different
+// role/tier per service, so the caller's own tier must not be assumed to
+// apply to every service type being reported on.
+func TestGetConsumerUsage_TrackedUserTypeOverridesRequestIdentity(t *testing.T) {
+	store, _, rdb := newStore(t, "")
+	ctx := context.Background()
+
+	rdb.ZIncrBy(ctx, "usage:consumer:audio:requests", 10, "alice")
+	// alice was actually rate-limited as "limited" on audio requests...
+	rdb.HSet(ctx, "usage:consumer:audio:usertype", "alice", "limited")
+
+	// ...but this /usage call's own resolved identity (e.g. via a different
+	// service's role) is "unlimited".
+	result, err := store.GetConsumerUsage(ctx, "alice", "unlimited", []string{"audio"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Usage) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(result.Usage))
+	}
+	if got := result.Usage[0].UserType; got != "limited" {
+		t.Errorf("user_type = %q, want %q (tracked value should win over request identity)", got, "limited")
+	}
+}
+
+// TestGetConsumerUsage_UntrackedUserTypeFallsBackToRequestIdentity verifies
+// that when no tracked tier has been recorded yet for consumer+service (no
+// prior request via that service type), the userType resolved from the
+// current request is used as a fallback.
+func TestGetConsumerUsage_UntrackedUserTypeFallsBackToRequestIdentity(t *testing.T) {
+	store, _, rdb := newStore(t, "")
+	ctx := context.Background()
+
+	rdb.ZIncrBy(ctx, "usage:consumer:audio:requests", 10, "alice")
+
+	result, err := store.GetConsumerUsage(ctx, "alice", "unlimited", []string{"audio"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Usage) != 1 {
+		t.Fatalf("expected 1 service, got %d", len(result.Usage))
+	}
+	if got := result.Usage[0].UserType; got != "unlimited" {
+		t.Errorf("user_type = %q, want %q (fallback to request identity)", got, "unlimited")
 	}
 }
 

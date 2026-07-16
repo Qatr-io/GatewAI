@@ -99,7 +99,6 @@ func (s *redisUsageStore) retentionLabel() string {
 func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string, modelsByType map[string][]string) (*ConsumerUsage, error) {
 	out := &ConsumerUsage{
 		Consumer:  consumer,
-		UserType:  userType,
 		Retention: s.retentionLabel(),
 	}
 
@@ -126,6 +125,17 @@ func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userTy
 }
 
 func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userType, svcType string, models []string) (*ServiceUsage, error) {
+	// The tier actually recorded for this consumer+service (from real requests,
+	// via UsageTracker.TrackUserType) takes precedence over the userType
+	// resolved from the current /usage request's own identity: a consumer can
+	// hold a different role/tier per service, so the caller's own tier does not
+	// necessarily apply to every service type being reported on.
+	effectiveUserType := userType
+	if tracked, ok := s.resolveTrackedUserType(ctx, consumer, svcType); ok {
+		effectiveUserType = tracked
+	}
+	userType = effectiveUserType
+
 	requests, _ := s.zscore(ctx, "usage:consumer:"+svcType+":requests", consumer)
 	jobs, _ := s.zscore(ctx, "usage:consumer:"+svcType+":jobs", consumer)
 	procTime, _ := s.zscoref(ctx, "usage:consumer:"+svcType+":processing_time", consumer)
@@ -177,7 +187,21 @@ func (s *redisUsageStore) getServiceUsage(ctx context.Context, consumer, userTyp
 		Total:       total,
 		Window:      window,
 		Models:      modelUsages,
+		UserType:    userType,
 	}, nil
+}
+
+// resolveTrackedUserType reads back the tier consumer was actually evaluated
+// under for svcType, recorded by UsageTracker.TrackUserType at real-request
+// time. Returns ok=false when no such record exists yet (e.g. no request to
+// this service has ever been made), in which case callers should fall back to
+// the userType resolved from the current request's own identity.
+func (s *redisUsageStore) resolveTrackedUserType(ctx context.Context, consumer, svcType string) (string, bool) {
+	val, err := s.rdb.HGet(ctx, "usage:consumer:"+svcType+":usertype", consumer).Result()
+	if err != nil || val == "" {
+		return "", false
+	}
+	return val, true
 }
 
 // getWindowUsage reads rate-limit window counters for this consumer+service,
