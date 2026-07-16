@@ -34,6 +34,32 @@ func TestRegistry_NotIndexedWithoutInferenceURL(t *testing.T) {
 	}
 }
 
+// TestRegistry_ModelsForType verifies models are grouped by service type and
+// that an unknown type returns an empty (not nil-panicking) slice.
+func TestRegistry_ModelsForType(t *testing.T) {
+	cfg1 := baseServiceConfig()
+	cfg2 := baseServiceConfig()
+	cfg2.Model = "whisper-tiny"
+
+	reg := service.NewRegistry([]config.ServiceConfig{cfg1, cfg2})
+
+	models := reg.ModelsForType("transcription")
+	if len(models) != 2 {
+		t.Fatalf("expected 2 models, got %v", models)
+	}
+	seen := map[string]bool{}
+	for _, m := range models {
+		seen[m] = true
+	}
+	if !seen["whisper-large-v3"] || !seen["whisper-tiny"] {
+		t.Errorf("expected both models present, got %v", models)
+	}
+
+	if got := reg.ModelsForType("unknown"); len(got) != 0 {
+		t.Errorf("expected no models for unknown type, got %v", got)
+	}
+}
+
 // TestRegistry_NotIndexedWithoutModelOrTopic verifies that a service without a
 // model is not indexed for sync routing.
 func TestRegistry_NotIndexedWithoutModel(t *testing.T) {
