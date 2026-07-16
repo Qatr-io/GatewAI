@@ -39,6 +39,9 @@ func TestGetConsumerUsage_Empty(t *testing.T) {
 	if result.Consumer != "alice" {
 		t.Errorf("consumer = %q", result.Consumer)
 	}
+	if result.UserType != "*" {
+		t.Errorf("user_type = %q, want *", result.UserType)
+	}
 	if result.Retention != "all-time" {
 		t.Errorf("retention = %q, want all-time", result.Retention)
 	}

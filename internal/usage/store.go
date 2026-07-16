@@ -99,6 +99,7 @@ func (s *redisUsageStore) retentionLabel() string {
 func (s *redisUsageStore) GetConsumerUsage(ctx context.Context, consumer, userType string, serviceTypes []string, modelsByType map[string][]string) (*ConsumerUsage, error) {
 	out := &ConsumerUsage{
 		Consumer:  consumer,
+		UserType:  userType,
 		Retention: s.retentionLabel(),
 	}
 

@@ -846,6 +846,7 @@ func specComponents() map[string]any {
 				"type": "object",
 				"properties": map[string]any{
 					"consumer":    map[string]any{"type": "string"},
+					"user_type":   map[string]any{"type": "string", "description": "Tier resolved from server.user_type_header for this request (or \"*\" when unset/absent) — the tier used to look up rate_limits/token_limits quotas in `usage`.", "example": "premium"},
 					"retention":   map[string]any{"type": "string", "example": "all-time"},
 					"last_active": map[string]any{"type": "string", "format": "date-time"},
 					"usage": map[string]any{
