@@ -194,6 +194,35 @@ func TestGetConsumerUsage_QuotaIncludedEvenWhenUsageZero(t *testing.T) {
 	}
 }
 
+func TestGetConsumerUsage_UnlimitedRateSentinel_NoPartialQuotaDisplay(t *testing.T) {
+	// rate: 0 is the documented sentinel for "no limit" (ratelimit.Check skips
+	// the rl: counter entirely in that case). A leftover period alongside it
+	// must not be surfaced as if a real request quota were enforced.
+	rateLimits := map[string]map[string]config.RateLimitConfig{
+		"audio": {
+			"*": {Rate: 0, Period: "1m", TokenRate: 5000, TokenPeriod: "1h"},
+		},
+	}
+	store, _, rdb := newStoreWithLimits(t, "", rateLimits)
+	ctx := context.Background()
+	rdb.ZIncrBy(ctx, "usage:consumer:audio:requests", 5, "alice")
+
+	result, err := store.GetConsumerUsage(ctx, "alice", "user", []string{"audio"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := result.Usage[0].Window
+	if w == nil {
+		t.Fatal("expected window to be non-nil (token quota is still configured)")
+	}
+	if w.RequestLimit != 0 || w.RequestPeriod != "" {
+		t.Errorf("request quota = %d/%q, want 0/\"\" since rate:0 means unlimited", w.RequestLimit, w.RequestPeriod)
+	}
+	if w.TokenLimit != 5000 || w.TokenPeriod != "1h" {
+		t.Errorf("token quota = %d/%q, want 5000/1h", w.TokenLimit, w.TokenPeriod)
+	}
+}
+
 func TestGetConsumerUsage_QuotaExactUserTypeOverridesWildcard(t *testing.T) {
 	rateLimits := map[string]map[string]config.RateLimitConfig{
 		"audio": {

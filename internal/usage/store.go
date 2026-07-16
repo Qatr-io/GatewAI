@@ -192,8 +192,17 @@ func (s *redisUsageStore) getWindowUsage(ctx context.Context, consumer, userType
 	ptrlVal, _ := s.getIntWithTTL(ctx, ptrlKey)
 
 	rlCfg, hasQuota := s.resolveRateLimitConfig(svcType, userType)
+	// rate/token_rate/processing_time of 0 is the documented sentinel for "no
+	// limit" (see ratelimit.Check/CheckTokens/CheckProcessingTime), under which
+	// the matching Redis counter is never written. Track per-dimension whether
+	// a limit is actually enforced, rather than just "does a RateLimitConfig
+	// entry exist at all", so an unlimited dimension neither counts toward
+	// "is there anything to show" nor gets a *_period with no matching *_limit.
+	hasRequestQuota := hasQuota && rlCfg.Rate > 0
+	hasTokenQuota := hasQuota && rlCfg.TokenRate > 0
+	hasProcTimeQuota := hasQuota && rlCfg.ProcessingTime > 0
 
-	if rlVal == 0 && trlVal == 0 && ptrlVal == 0 && !hasQuota {
+	if rlVal == 0 && trlVal == 0 && ptrlVal == 0 && !hasRequestQuota && !hasTokenQuota && !hasProcTimeQuota {
 		return nil
 	}
 
@@ -206,11 +215,15 @@ func (s *redisUsageStore) getWindowUsage(ctx context.Context, consumer, userType
 		resetAt := time.Now().Add(rlTTL).UTC()
 		w.ResetAt = &resetAt
 	}
-	if hasQuota {
+	if hasRequestQuota {
 		w.RequestLimit = int64(rlCfg.Rate)
 		w.RequestPeriod = rlCfg.Period
+	}
+	if hasTokenQuota {
 		w.TokenLimit = int64(rlCfg.TokenRate)
 		w.TokenPeriod = rlCfg.TokenPeriod
+	}
+	if hasProcTimeQuota {
 		w.ProcessingTimeLimit = int64(rlCfg.ProcessingTime)
 		w.ProcessingTimePeriod = rlCfg.ProcessingPeriod
 	}
@@ -226,7 +239,8 @@ func (s *redisUsageStore) getModelUsage(ctx context.Context, consumer, userType,
 	tokens, ttl := s.getIntWithTTL(ctx, key)
 
 	cfg, hasQuota := s.resolveModelLimitConfig(model, userType)
-	if tokens == 0 && !hasQuota {
+	hasTokenQuota := hasQuota && cfg.TokenRate > 0
+	if tokens == 0 && !hasTokenQuota {
 		return nil
 	}
 
@@ -238,7 +252,7 @@ func (s *redisUsageStore) getModelUsage(ctx context.Context, consumer, userType,
 		resetAt := time.Now().Add(ttl).UTC()
 		mu.ResetAt = &resetAt
 	}
-	if hasQuota {
+	if hasTokenQuota {
 		mu.TokenLimit = int64(cfg.TokenRate)
 		mu.TokenPeriod = cfg.TokenPeriod
 	}
