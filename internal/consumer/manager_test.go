@@ -7,8 +7,10 @@ import (
 	"testing"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/storage"
@@ -178,5 +180,40 @@ func TestOnComplete_SkipsAddTokensFor_WhenZero(t *testing.T) {
 
 	if len(tl.calls) != 0 {
 		t.Errorf("expected no AddTokensFor call for zero tokens, got %d", len(tl.calls))
+	}
+}
+
+// TestOnComplete_IncrementsJobsTotal verifies the gatewai_jobs_total counter
+// is incremented with the job's service_type, model and status labels for
+// both a completed and a failed terminal outcome.
+func TestOnComplete_IncrementsJobsTotal(t *testing.T) {
+	rc, mr := newTestRedis(t)
+
+	completedJob := &model.Job{
+		ID: "job-completed", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusCompleted,
+	}
+	seedJob(t, mr, completedJob)
+
+	failedJob := &model.Job{
+		ID: "job-failed", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusFailed,
+	}
+	seedJob(t, mr, failedJob)
+
+	completedCounter := metrics.JobsTotal.WithLabelValues("transcription", "whisper-large-v3", "completed")
+	failedCounter := metrics.JobsTotal.WithLabelValues("transcription", "whisper-large-v3", "failed")
+	beforeCompleted := testutil.ToFloat64(completedCounter)
+	beforeFailed := testutil.ToFloat64(failedCounter)
+
+	mgr := NewManager(rc, nil, false)
+	mgr.onComplete(context.Background(), "job-completed")
+	mgr.onComplete(context.Background(), "job-failed")
+
+	if got := testutil.ToFloat64(completedCounter); got != beforeCompleted+1 {
+		t.Errorf("completed counter: got %v, want %v", got, beforeCompleted+1)
+	}
+	if got := testutil.ToFloat64(failedCounter); got != beforeFailed+1 {
+		t.Errorf("failed counter: got %v, want %v", got, beforeFailed+1)
 	}
 }

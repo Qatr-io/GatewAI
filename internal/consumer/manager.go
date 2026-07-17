@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"sync"
 
+	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
@@ -140,6 +141,8 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 		slog.Error("manager: failed to fetch job", "job_id", jobID, "error", err)
 		return
 	}
+
+	metrics.JobsTotal.WithLabelValues(job.ServiceType, job.Model, string(job.Status)).Inc()
 
 	m.redis.NotifyJobDone(ctx, jobID)
 
