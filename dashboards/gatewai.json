@@ -917,7 +917,7 @@
           "sort": "desc"
         }
       },
-      "description": "Jobs terminés par 5 min, par type de service (service_type) et statut — OK=completed, KO=failed",
+      "description": "Jobs terminés par 5 min, par type de service (service_type) et statut — OK=completed, KO=failed. max() et non sum() par service_type : chaque replica gateway reçoit chaque complétion via Redis pub/sub broadcast, donc chaque instance porte déjà le total complet — sum() les additionnerait à tort.",
       "title": "Jobs — OK / KO par type",
       "type": "timeseries",
       "targets": [
@@ -926,7 +926,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (service_type) (increase(gatewai_jobs_total{status=\"completed\"}[5m]))",
+          "expr": "max by (service_type) (increase(gatewai_jobs_total{status=\"completed\"}[5m]))",
           "legendFormat": "{{service_type}} — OK",
           "refId": "A"
         },
@@ -935,7 +935,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (service_type) (increase(gatewai_jobs_total{status=\"failed\"}[5m]))",
+          "expr": "max by (service_type) (increase(gatewai_jobs_total{status=\"failed\"}[5m]))",
           "legendFormat": "{{service_type}} — KO",
           "refId": "B"
         }
