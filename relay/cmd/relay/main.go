@@ -19,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/relay/internal/accounting"
 	"gatewai/relay/internal/adapter"
 	"gatewai/relay/internal/config"
 	"gatewai/relay/internal/metrics"
@@ -28,19 +29,26 @@ import (
 	"gatewai/relay/internal/store"
 	"gatewai/relay/internal/storage"
 	"gatewai/relay/internal/telemetry"
+	"gatewai/relay/internal/webhook"
 )
 
 // version is set at build time via -ldflags "-X main.version=v0.x.y".
 var version = "dev"
 
-// redisPublisher implements relay.eventPublisher via the Redis store and queue.
-// For every completed or failed job it:
-//  1. Atomically updates the job record in Redis (UpdateJobResult).
-//  2. Publishes a completion notification on jobs:{model}:completed.
-//  3. Removes the job from the processing list (Done).
+// redisPublisher implements relay.eventPublisher via the Redis store and queue,
+// plus the exactly-once accounting (rate-limit debit, usage tracking) and
+// webhook delivery side effects — safe here because the relay processes
+// exactly one job per pod invocation (unlike the gateway's broadcast
+// onComplete, which every replica receives).
 type redisPublisher struct {
-	st *store.Store
-	q  *queue.Queue
+	st             *store.Store
+	q              *queue.Queue
+	rdb            *redis.Client
+	limiter        *accounting.Limiter
+	tracker        *accounting.Tracker
+	s3             *storage.S3Client
+	httpClient     *http.Client
+	persistsResult bool
 }
 
 func (p *redisPublisher) PublishResult(ctx context.Context, job *model.Job, status model.JobStatus, resultRef, errMsg string, processingTime float64, promptTokens, completionTokens int64) error {
@@ -56,6 +64,33 @@ func (p *redisPublisher) PublishResult(ctx context.Context, job *model.Job, stat
 		slog.Warn("failed to remove job from processing list", "job_id", jobID, "error", err)
 		metrics.RedisDoneErrorsTotal.Inc()
 	}
+
+	if processingTime > 0 {
+		if err := p.limiter.AddProcessingTime(ctx, p.rdb, job.ConsumerName, job.UserType, job.ServiceType, processingTime); err != nil {
+			slog.Warn("failed to debit processing-time budget", "job_id", job.ID, "error", err)
+		}
+	}
+	totalTokens := promptTokens + completionTokens
+	if totalTokens > 0 {
+		if err := p.limiter.AddTokens(ctx, p.rdb, job.ConsumerName, job.UserType, job.ServiceType, int(totalTokens)); err != nil {
+			slog.Warn("failed to debit token budget", "job_id", job.ID, "error", err)
+		}
+	}
+	if job.ConsumerName != "" {
+		if processingTime > 0 {
+			p.tracker.TrackProcessingTime(ctx, job.ConsumerName, job.ServiceType, processingTime)
+			p.tracker.TrackActive(ctx, job.ConsumerName)
+		}
+		if totalTokens > 0 {
+			p.tracker.TrackTokens(ctx, job.ConsumerName, job.ServiceType, promptTokens, completionTokens)
+		}
+		p.tracker.TrackUserType(ctx, job.ConsumerName, job.ServiceType, job.UserType)
+	}
+
+	if job.CallbackURL != "" {
+		webhook.Send(ctx, job, status, resultRef, errMsg, p.s3, p.httpClient, p.persistsResult)
+	}
+
 	return nil
 }
 
@@ -117,7 +152,16 @@ func main() {
 	q := queue.New(rdb, cfg.Model)
 	s := store.New(rdb)
 
-	pub := &redisPublisher{st: s, q: q}
+	pub := &redisPublisher{
+		st:             s,
+		q:              q,
+		rdb:            rdb,
+		limiter:        accounting.NewLimiter(cfg.RateLimits),
+		tracker:        accounting.NewTracker(rdb, cfg.Usage.RetentionDuration()),
+		s3:             s3Client,
+		httpClient:     &http.Client{Timeout: 10 * time.Second},
+		persistsResult: cfg.PersistsResult,
+	}
 
 	adp, err := adapter.New(cfg)
 	if err != nil {
