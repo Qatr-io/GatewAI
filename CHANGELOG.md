@@ -668,6 +668,12 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
+### [Unreleased]
+
+#### Changed
+
+- **Gateway completion callback**: after persisting a job's result to Redis, the relay now makes a single bounded HTTP call (`POST /-/relay/jobs/{id}/complete`, 5s timeout, no retry) to the gateway instead of debiting rate-limit/usage budgets and delivering the webhook itself. New required config: `gateway.base_url` (env `GATEWAY_BASE_URL`), the gateway's in-cluster Service URL. New metric `gatewai_relay_gateway_callback_errors_total` for callback failures — the job's own result is unaffected, only the debit/usage/webhook side effects are skipped for that job.
+
 ### [v0.9.0] — 2026-06-24
 
 #### Added
