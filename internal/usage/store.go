@@ -27,7 +27,20 @@ type UsageStore interface {
 	// when resolving the configured quota surfaced alongside window usage.
 	// Called on config hot-reload.
 	UpdateRateLimits(rateLimits, modelLimits map[string]map[string]config.RateLimitConfig)
+	// GetUsageReport returns cross-consumer calendar-aligned totals for
+	// serviceType, one bucket per period (daily/weekly/monthly) covering
+	// [from, to] inclusive. Returns ErrTooManyBuckets if the range would
+	// produce more than maxReportBuckets buckets.
+	GetUsageReport(ctx context.Context, serviceType, period string, from, to time.Time) (*UsageReport, error)
 }
+
+// ErrTooManyBuckets is returned by GetUsageReport when [from, to] would
+// produce more buckets than maxReportBuckets allows.
+var ErrTooManyBuckets = fmt.Errorf("usage report: requested range exceeds %d buckets", maxReportBuckets)
+
+// maxReportBuckets bounds a single GetUsageReport call (e.g. ~13 months of
+// daily buckets), so a caller can't force a huge number of Redis round trips.
+const maxReportBuckets = 400
 
 type redisUsageStore struct {
 	rdb       *redis.Client
@@ -299,6 +312,64 @@ func (s *redisUsageStore) ListConsumersByType(ctx context.Context, serviceType s
 	total, _ := s.rdb.ZCard(ctx, key).Result()
 	members, _ := s.rdb.ZRevRange(ctx, key, offset, offset+limit-1).Result()
 	return members, total, nil
+}
+
+// GetUsageReport returns cross-consumer calendar-aligned totals for
+// serviceType, reading the usage:agg:* counters written by
+// UsageTracker.trackPeriodAggregate. Buckets with no data are returned as
+// zeroed entries rather than omitted, so callers get a contiguous series.
+func (s *redisUsageStore) GetUsageReport(ctx context.Context, serviceType, period string, from, to time.Time) (*UsageReport, error) {
+	if !isValidPeriod(period) {
+		return nil, fmt.Errorf("usage report: invalid period %q", period)
+	}
+	if estimatedBucketCount(period, from, to) > maxReportBuckets {
+		return nil, ErrTooManyBuckets
+	}
+	buckets := walkBuckets(period, from, to)
+	if len(buckets) > maxReportBuckets {
+		return nil, ErrTooManyBuckets
+	}
+
+	metrics := []string{"requests", "jobs", "processing_time", "tokens_prompt", "tokens_completion"}
+	pipe := s.rdb.Pipeline()
+	cmds := make([][]*redis.StringCmd, len(buckets))
+	for i, bucket := range buckets {
+		cmds[i] = make([]*redis.StringCmd, len(metrics))
+		for j, metric := range metrics {
+			key := "usage:agg:" + serviceType + ":" + metric + ":" + period + ":" + bucket
+			cmds[i][j] = pipe.Get(ctx, key)
+		}
+	}
+	if _, err := pipe.Exec(ctx); err != nil && err != redis.Nil {
+		return nil, fmt.Errorf("usage report: pipeline exec: %w", err)
+	}
+
+	out := &UsageReport{
+		ServiceType: serviceType,
+		Period:      period,
+		From:        from.UTC().Format("2006-01-02"),
+		To:          to.UTC().Format("2006-01-02"),
+		Buckets:     make([]PeriodUsage, len(buckets)),
+	}
+	for i, bucket := range buckets {
+		requests, _ := strconv.ParseInt(cmds[i][0].Val(), 10, 64)
+		jobs, _ := strconv.ParseInt(cmds[i][1].Val(), 10, 64)
+		procTime, _ := strconv.ParseFloat(cmds[i][2].Val(), 64)
+		prompt, _ := strconv.ParseInt(cmds[i][3].Val(), 10, 64)
+		completion, _ := strconv.ParseInt(cmds[i][4].Val(), 10, 64)
+
+		pu := PeriodUsage{
+			Bucket:         bucket,
+			Requests:       requests,
+			Jobs:           jobs,
+			ProcessingTime: procTime,
+		}
+		if prompt > 0 || completion > 0 {
+			pu.Tokens = &TokenUsage{Prompt: prompt, Completion: completion}
+		}
+		out.Buckets[i] = pu
+	}
+	return out, nil
 }
 
 // helpers

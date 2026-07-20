@@ -70,6 +70,7 @@ func GenerateAdminSpec(appVersion string, usageEnabled bool, quotaResetEnabled b
 	}
 	if usageEnabled {
 		paths["/-/usage"] = adminUsagePathItem()
+		paths["/-/usage/report"] = usageReportPathItem()
 	}
 	if quotaResetEnabled {
 		paths["/-/quota/reset"] = quotaResetPathItem()
@@ -514,6 +515,38 @@ func adminUsagePathItem() map[string]any {
 	}
 }
 
+// usageReportPathItem documents GET /-/usage/report (admin spec only).
+func usageReportPathItem() map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: cross-consumer calendar usage report",
+			"operationId": "adminUsageReport",
+			"description": "Cross-consumer, calendar-aligned usage totals for one service type — for finance/BI reporting (e.g. \"total tokens for service `llm` in March 2026\"), not a per-consumer breakdown. Restricted to the `/-/` admin namespace — protect with upstream auth.\n\n" +
+				"Buckets are UTC calendar-aligned: `daily` (`YYYYMMDD`), `weekly` (ISO `YYYY-Www`), or `monthly` (`YYYYMM`). The `[from, to]` range is capped at 400 buckets per request.\n\n" +
+				"**Example:** `GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31`",
+			"parameters": []any{
+				map[string]any{"name": "type", "in": "query", "required": true, "description": "Service type, e.g. \"audio\", \"llm\"", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "period", "in": "query", "required": true, "description": "Bucket granularity", "schema": map[string]any{"type": "string", "enum": []string{"daily", "weekly", "monthly"}}},
+				map[string]any{"name": "from", "in": "query", "required": true, "description": "Range start (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-01-01"}},
+				map[string]any{"name": "to", "in": "query", "required": true, "description": "Range end (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-03-31"}},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Usage report",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/UsageReport"},
+						},
+					},
+				},
+				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
+				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
+			},
+		},
+	}
+}
+
 // quotaResetPathItem documents POST /-/quota/reset (admin spec only).
 func quotaResetPathItem() map[string]any {
 	return map[string]any{
@@ -903,6 +936,31 @@ func specComponents() map[string]any {
 					"consumers": map[string]any{
 						"type":  "array",
 						"items": map[string]any{"$ref": "#/components/schemas/ConsumerUsage"},
+					},
+				},
+			},
+			"PeriodUsage": map[string]any{
+				"type":        "object",
+				"description": "Cross-consumer aggregate totals for one calendar bucket.",
+				"properties": map[string]any{
+					"bucket":                  map[string]any{"type": "string", "description": "Bucket ID: YYYYMMDD (daily), ISO YYYY-Www (weekly), or YYYYMM (monthly)", "example": "202603"},
+					"requests":                map[string]any{"type": "integer", "format": "int64"},
+					"jobs":                    map[string]any{"type": "integer", "format": "int64"},
+					"processing_time_seconds": map[string]any{"type": "number"},
+					"tokens":                  map[string]any{"$ref": "#/components/schemas/TokenUsage"},
+				},
+			},
+			"UsageReport": map[string]any{
+				"type":        "object",
+				"description": "Cross-consumer, calendar-aligned usage totals for one service type (GET /-/usage/report).",
+				"properties": map[string]any{
+					"service_type": map[string]any{"type": "string", "example": "llm"},
+					"period":       map[string]any{"type": "string", "enum": []string{"daily", "weekly", "monthly"}},
+					"from":         map[string]any{"type": "string", "format": "date"},
+					"to":           map[string]any{"type": "string", "format": "date"},
+					"buckets": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"$ref": "#/components/schemas/PeriodUsage"},
 					},
 				},
 			},

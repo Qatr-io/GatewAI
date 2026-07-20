@@ -2,11 +2,17 @@ package usage
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
+	"time"
 
 	"gatewai/gateway/internal/service"
 )
+
+// reportDateLayout is the accepted format for the from/to query params on
+// GET /-/usage/report ("2006-01-02", interpreted as UTC).
+const reportDateLayout = "2006-01-02"
 
 // UsageHandler serves GET /usage (consumer) and GET /-/usage (admin).
 type UsageHandler struct {
@@ -130,6 +136,53 @@ func (h *UsageHandler) AdminListUsage(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		result.Consumers = append(result.Consumers, *cu)
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+// AdminUsageReport handles GET /-/usage/report: cross-consumer calendar-aligned
+// totals for one service type, for finance/BI reporting.
+// Query params (all required): type, period (daily|weekly|monthly),
+// from, to (YYYY-MM-DD, UTC, inclusive).
+func (h *UsageHandler) AdminUsageReport(w http.ResponseWriter, r *http.Request) {
+	svcType := r.URL.Query().Get("type")
+	if svcType == "" {
+		writeJSONError(w, http.StatusBadRequest, "missing required query param: type")
+		return
+	}
+
+	period := r.URL.Query().Get("period")
+	if !isValidPeriod(period) {
+		writeJSONError(w, http.StatusBadRequest, "invalid period: must be one of daily, weekly, monthly")
+		return
+	}
+
+	fromStr := r.URL.Query().Get("from")
+	toStr := r.URL.Query().Get("to")
+	from, err := time.Parse(reportDateLayout, fromStr)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid from: expected YYYY-MM-DD")
+		return
+	}
+	to, err := time.Parse(reportDateLayout, toStr)
+	if err != nil {
+		writeJSONError(w, http.StatusBadRequest, "invalid to: expected YYYY-MM-DD")
+		return
+	}
+	if to.Before(from) {
+		writeJSONError(w, http.StatusBadRequest, "to must not be before from")
+		return
+	}
+
+	result, err := h.store.GetUsageReport(r.Context(), svcType, period, from, to)
+	if err != nil {
+		if errors.Is(err, ErrTooManyBuckets) {
+			writeJSONError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSONError(w, http.StatusInternalServerError, "failed to retrieve usage report")
+		return
 	}
 
 	writeJSON(w, http.StatusOK, result)

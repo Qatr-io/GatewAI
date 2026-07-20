@@ -246,6 +246,63 @@ GET /-/usage?consumer=alice&type=audio
 
 ---
 
+### Usage report
+
+```
+GET /-/usage/report
+```
+
+Cross-consumer, calendar-aligned usage totals for one service type — for finance/BI reporting (e.g. "total tokens for `llm` in March 2026"). Unlike `GET /-/usage`, this is not a per-consumer breakdown: it sums requests, jobs, processing time, and LLM tokens across **all** consumers into UTC calendar buckets (day/week/month). Caller is responsible for upstream authentication.
+
+Requires `server.consumer_header` to be configured (same gate as `GET /usage` / `GET /-/usage`).
+
+**Query parameters**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `type` | Yes | Service type, e.g. `audio`, `llm` |
+| `period` | Yes | Bucket granularity: `daily`, `weekly`, or `monthly` |
+| `from` | Yes | Range start (inclusive), UTC, `YYYY-MM-DD` |
+| `to` | Yes | Range end (inclusive), UTC, `YYYY-MM-DD` |
+
+The `[from, to]` range is capped at 400 buckets per request (about 400 days, ~7.5 years of weekly buckets, or ~33 years of monthly buckets) — returns `400 Bad Request` beyond that.
+
+**Example**
+
+```bash
+GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31
+```
+
+**Response**
+
+```json
+{
+  "service_type": "llm",
+  "period": "monthly",
+  "from": "2026-01-01",
+  "to": "2026-03-31",
+  "buckets": [
+    { "bucket": "202601", "requests": 12000, "tokens": { "prompt": 450000, "completion": 120000 } },
+    { "bucket": "202602", "requests": 15000, "tokens": { "prompt": 510000, "completion": 138000 } },
+    { "bucket": "202603", "requests": 9000,  "tokens": { "prompt": 300000, "completion": 81000 } }
+  ]
+}
+```
+
+**Response fields**
+
+| Field | Description |
+|---|---|
+| `buckets[].bucket` | Bucket ID: `YYYYMMDD` (daily), ISO `YYYY-Www` (weekly), or `YYYYMM` (monthly) |
+| `buckets[].requests` | Total requests across all consumers in this bucket |
+| `buckets[].jobs` | Async jobs submitted (async service types only) |
+| `buckets[].processing_time_seconds` | Cumulative inference seconds (async only) |
+| `buckets[].tokens` | LLM token counts (`prompt` + `completion`) — omitted when no tokens were tracked in that bucket |
+
+Buckets with no activity are still returned, zero-filled — the response always has one entry per bucket in the requested range.
+
+---
+
 ### Hot reload config
 
 ```

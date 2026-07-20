@@ -163,6 +163,7 @@ func buildRouter(
 	if usageHTTPHandler != nil {
 		r.Get("/usage", usageHTTPHandler.GetMyUsage)
 		r.Get("/-/usage", usageHTTPHandler.AdminListUsage)
+		r.Get("/-/usage/report", usageHTTPHandler.AdminUsageReport)
 	}
 	if limiter != nil {
 		r.Post("/-/quota/reset", handler.NewQuotaHandler(limiter).ResetQuota)
@@ -304,6 +305,9 @@ func main() {
 		cfg.Server.UserTypeHeader, consumerTracker,
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
 		tokenChecker(limiter))
+	if usageTracker != nil {
+		llmHandler.WithUsageTracker(usageTracker)
+	}
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -385,6 +389,9 @@ func main() {
 			newCfg.Server.UserTypeHeader, consumerTracker,
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			tokenChecker(limiter))
+		if usageTracker != nil {
+			llmHandler.WithUsageTracker(usageTracker)
+		}
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine

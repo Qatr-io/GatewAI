@@ -2,6 +2,7 @@ package usage_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -503,6 +504,102 @@ func TestListConsumers_Offset(t *testing.T) {
 	}
 	if consumers[0] != "bob" {
 		t.Errorf("first consumer with offset=1 = %q, want bob", consumers[0])
+	}
+}
+
+func TestGetUsageReport_EmptyRange_ZeroFilledNotError(t *testing.T) {
+	store, _, _ := newStore(t, "")
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 3, 0, 0, 0, 0, time.UTC)
+
+	result, err := store.GetUsageReport(context.Background(), "llm", "daily", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Buckets) != 3 {
+		t.Fatalf("expected 3 daily buckets, got %d", len(result.Buckets))
+	}
+	for _, b := range result.Buckets {
+		if b.Requests != 0 || b.Jobs != 0 || b.ProcessingTime != 0 || b.Tokens != nil {
+			t.Errorf("expected zero-filled bucket, got %+v", b)
+		}
+	}
+}
+
+func TestGetUsageReport_DailySumsAcrossBuckets(t *testing.T) {
+	store, _, rdb := newStore(t, "")
+	ctx := context.Background()
+
+	rdb.Set(ctx, "usage:agg:llm:requests:daily:20260301", "10", 0)
+	rdb.Set(ctx, "usage:agg:llm:requests:daily:20260302", "5", 0)
+	rdb.Set(ctx, "usage:agg:llm:tokens_prompt:daily:20260301", "1000", 0)
+	rdb.Set(ctx, "usage:agg:llm:tokens_completion:daily:20260301", "200", 0)
+
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 2, 0, 0, 0, 0, time.UTC)
+
+	result, err := store.GetUsageReport(ctx, "llm", "daily", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.ServiceType != "llm" || result.Period != "daily" {
+		t.Errorf("unexpected header fields: %+v", result)
+	}
+	if len(result.Buckets) != 2 {
+		t.Fatalf("expected 2 buckets, got %d", len(result.Buckets))
+	}
+	b0 := result.Buckets[0]
+	if b0.Bucket != "20260301" || b0.Requests != 10 {
+		t.Errorf("bucket0 = %+v, want bucket=20260301 requests=10", b0)
+	}
+	if b0.Tokens == nil || b0.Tokens.Prompt != 1000 || b0.Tokens.Completion != 200 {
+		t.Errorf("bucket0 tokens = %+v, want prompt=1000 completion=200", b0.Tokens)
+	}
+	b1 := result.Buckets[1]
+	if b1.Bucket != "20260302" || b1.Requests != 5 {
+		t.Errorf("bucket1 = %+v, want bucket=20260302 requests=5", b1)
+	}
+	if b1.Tokens != nil {
+		t.Errorf("bucket1 tokens = %+v, want nil (no token writes)", b1.Tokens)
+	}
+}
+
+func TestGetUsageReport_MonthlyBucket(t *testing.T) {
+	store, _, rdb := newStore(t, "")
+	ctx := context.Background()
+	rdb.Set(ctx, "usage:agg:llm:requests:monthly:202603", "42", 0)
+
+	from := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 15, 0, 0, 0, 0, time.UTC)
+
+	result, err := store.GetUsageReport(ctx, "llm", "monthly", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Buckets) != 1 || result.Buckets[0].Bucket != "202603" || result.Buckets[0].Requests != 42 {
+		t.Fatalf("unexpected result: %+v", result.Buckets)
+	}
+}
+
+func TestGetUsageReport_InvalidPeriod_Error(t *testing.T) {
+	store, _, _ := newStore(t, "")
+	from := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+
+	_, err := store.GetUsageReport(context.Background(), "llm", "hourly", from, to)
+	if err == nil {
+		t.Fatal("expected error for invalid period")
+	}
+}
+
+func TestGetUsageReport_OverCapRange_ErrTooManyBuckets(t *testing.T) {
+	store, _, _ := newStore(t, "")
+	from := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC) // >400 days
+
+	_, err := store.GetUsageReport(context.Background(), "llm", "daily", from, to)
+	if !errors.Is(err, usage.ErrTooManyBuckets) {
+		t.Fatalf("expected ErrTooManyBuckets, got %v", err)
 	}
 }
 

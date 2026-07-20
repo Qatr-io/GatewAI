@@ -19,6 +19,7 @@ import (
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/usage"
 )
 
 // ── in-memory cache ──────────────────────────────────────────────────────────
@@ -435,6 +436,39 @@ func (t *testTracker) sum(consumer, tokenType string) int {
 	return total
 }
 
+// testUsageTracker records TrackTokens calls for assertion in tests; all
+// other UsageTracker methods are no-ops.
+type testUsageTracker struct {
+	mu    sync.Mutex
+	calls []usageTokensCall
+}
+
+type usageTokensCall struct {
+	consumer, serviceType string
+	prompt, completion    int64
+}
+
+func (t *testUsageTracker) TrackRequest(_ context.Context, _, _ string)                   {}
+func (t *testUsageTracker) TrackJob(_ context.Context, _, _ string)                       {}
+func (t *testUsageTracker) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
+func (t *testUsageTracker) TrackActive(_ context.Context, _ string)                       {}
+func (t *testUsageTracker) TrackUserType(_ context.Context, _, _, _ string)               {}
+func (t *testUsageTracker) UpdateRetention(_ time.Duration)                               {}
+
+func (t *testUsageTracker) TrackTokens(_ context.Context, consumer, serviceType string, prompt, completion int64) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls = append(t.calls, usageTokensCall{consumer, serviceType, prompt, completion})
+}
+
+func (t *testUsageTracker) snapshot() []usageTokensCall {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]usageTokensCall(nil), t.calls...)
+}
+
+var _ usage.UsageTracker = (*testUsageTracker)(nil)
+
 // ── consumer metrics ─────────────────────────────────────────────────────────
 
 func TestServeJSON_ConsumerMetrics_EmittedOnBackendResponse(t *testing.T) {
@@ -479,6 +513,82 @@ func TestServeJSON_ConsumerMetrics_EmittedOnCacheHit(t *testing.T) {
 	if got := tracker.sum("bob", "completion"); got != 2 {
 		t.Errorf("expected 2 completion tokens tracked for bob on cache hit, got %d", got)
 	}
+}
+
+// ── usage report tracker (GET /-/usage/report calendar aggregates) ──────────
+
+func TestServeJSON_UsageTracker_TrackTokensOnBackendResponse(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
+	}))
+	defer backend.Close()
+
+	ut := &testUsageTracker{}
+	reg := provider.NewRegistry()
+	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", &testTracker{}, AuditConfig{}, nil)
+	h.WithUsageTracker(ut)
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSONAs(h, def, chatBody, "alice")
+
+	calls := ut.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 TrackTokens call, got %d: %+v", len(calls), calls)
+	}
+	c := calls[0]
+	if c.consumer != "alice" || c.serviceType != "llm" || c.prompt != 7 || c.completion != 3 {
+		t.Errorf("unexpected TrackTokens call: %+v", c)
+	}
+}
+
+func TestServeJSON_UsageTracker_TrackTokensOnCacheHit(t *testing.T) {
+	mc := newMemCache()
+	cacheKey, _, _ := cache.Key("passthrough", "my-alias", []byte(chatBody))
+	mc.Set(context.Background(), cacheKey, &cache.Entry{
+		Body:        []byte(`{"id":"c2","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":4,"completion_tokens":2}}`),
+		ContentType: "application/json",
+		StatusCode:  200,
+	}, 60*time.Second)
+
+	ut := &testUsageTracker{}
+	reg := provider.NewRegistry()
+	h := New(mc, reg, &http.Client{Timeout: 5 * time.Second}, "", &testTracker{}, AuditConfig{}, nil)
+	h.WithUsageTracker(ut)
+
+	def := llmDef("passthrough", "", 60*time.Second)
+
+	doServeJSONAs(h, def, chatBody, "bob")
+
+	calls := ut.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 TrackTokens call, got %d: %+v", len(calls), calls)
+	}
+	c := calls[0]
+	if c.consumer != "bob" || c.serviceType != "llm" || c.prompt != 4 || c.completion != 2 {
+		t.Errorf("unexpected TrackTokens call: %+v", c)
+	}
+}
+
+func TestServeJSON_UsageTracker_NilTracker_NoPanic(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `{"id":"c1","object":"chat.completion","choices":[{"index":0,"message":{"role":"assistant","content":"Hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":3}}`)
+	}))
+	defer backend.Close()
+
+	reg := provider.NewRegistry()
+	h := New(newMemCache(), reg, &http.Client{Timeout: 5 * time.Second}, "", &testTracker{}, AuditConfig{}, nil)
+	// WithUsageTracker deliberately not called: usageTracker stays nil.
+
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	doServeJSONAs(h, def, chatBody, "alice")
 }
 
 // ── streaming ────────────────────────────────────────────────────────────────

@@ -60,6 +60,18 @@ end
 return 1
 `)
 
+// incrWithTTL atomically increments a plain counter key and sets a TTL on
+// the key only on first creation. Used for cross-consumer period-aggregate
+// counters (usage:agg:*), which are plain counters rather than sorted sets.
+// Keys: KEYS[1]=key; Args: ARGV[1]=increment, ARGV[2]=ttlSeconds (0=no TTL)
+var incrWithTTL = redis.NewScript(`
+local val = redis.call('INCRBYFLOAT', KEYS[1], ARGV[1])
+if tonumber(ARGV[2]) > 0 and redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return val
+`)
+
 type redisUsageTracker struct {
 	rdb       *redis.Client
 	retention atomic.Int64 // nanoseconds; 0 = no TTL
@@ -87,11 +99,28 @@ func (t *redisUsageTracker) zincrBy(ctx context.Context, key string, delta float
 	}
 }
 
+// trackPeriodAggregate increments the cross-consumer calendar-aligned
+// counters (usage:agg:{serviceType}:{metric}:{period}:{bucket}) consumed by
+// GetUsageReport. Unlike the per-consumer sorted sets above, these are plain
+// counters with no consumer dimension, so their cardinality stays bounded
+// regardless of consumer count.
+func (t *redisUsageTracker) trackPeriodAggregate(ctx context.Context, serviceType, metric string, delta float64) {
+	buckets := periodBuckets(time.Now())
+	for period, bucket := range buckets {
+		key := "usage:agg:" + serviceType + ":" + metric + ":" + period + ":" + bucket
+		ttl := int64(periodTTL(period).Seconds())
+		if err := incrWithTTL.Run(ctx, t.rdb, []string{key}, delta, ttl).Err(); err != nil {
+			slog.WarnContext(ctx, "usage tracker: trackPeriodAggregate failed", "key", key, "error", err)
+		}
+	}
+}
+
 func (t *redisUsageTracker) TrackRequest(ctx context.Context, consumer, serviceType string) {
 	if consumer == "" {
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":requests", 1, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "requests", 1)
 }
 
 func (t *redisUsageTracker) TrackJob(ctx context.Context, consumer, serviceType string) {
@@ -99,6 +128,7 @@ func (t *redisUsageTracker) TrackJob(ctx context.Context, consumer, serviceType 
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":jobs", 1, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "jobs", 1)
 }
 
 func (t *redisUsageTracker) TrackProcessingTime(ctx context.Context, consumer, serviceType string, seconds float64) {
@@ -106,6 +136,7 @@ func (t *redisUsageTracker) TrackProcessingTime(ctx context.Context, consumer, s
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":processing_time", seconds, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "processing_time", seconds)
 }
 
 func (t *redisUsageTracker) TrackTokens(ctx context.Context, consumer, serviceType string, prompt, completion int64) {
@@ -114,9 +145,11 @@ func (t *redisUsageTracker) TrackTokens(ctx context.Context, consumer, serviceTy
 	}
 	if prompt > 0 {
 		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:prompt", float64(prompt), consumer)
+		t.trackPeriodAggregate(ctx, serviceType, "tokens_prompt", float64(prompt))
 	}
 	if completion > 0 {
 		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:completion", float64(completion), consumer)
+		t.trackPeriodAggregate(ctx, serviceType, "tokens_completion", float64(completion))
 	}
 }
 

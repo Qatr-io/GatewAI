@@ -75,3 +75,23 @@ type AdminUsageResponse struct {
 	Offset    int64           `json:"offset"`
 	Consumers []ConsumerUsage `json:"consumers"`
 }
+
+// PeriodUsage holds cross-consumer aggregate metrics for one calendar bucket
+// (a single day, ISO week, or month, depending on the report's period).
+type PeriodUsage struct {
+	Bucket         string      `json:"bucket"`
+	Requests       int64       `json:"requests"`
+	Jobs           int64       `json:"jobs,omitempty"`
+	ProcessingTime float64     `json:"processing_time_seconds,omitempty"`
+	Tokens         *TokenUsage `json:"tokens,omitempty"`
+}
+
+// UsageReport is the response for GET /-/usage/report: cross-consumer
+// calendar-aligned totals for one service type, for BI/finance reporting.
+type UsageReport struct {
+	ServiceType string        `json:"service_type"`
+	Period      string        `json:"period"`
+	From        string        `json:"from"`
+	To          string        `json:"to"`
+	Buckets     []PeriodUsage `json:"buckets"`
+}

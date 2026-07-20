@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/usage"
@@ -16,6 +17,9 @@ type fakeStore struct {
 	consumerUsage map[string]*usage.ConsumerUsage
 	consumers     []string
 	total         int64
+
+	report    *usage.UsageReport
+	reportErr error
 }
 
 func (f *fakeStore) GetConsumerUsage(_ context.Context, consumer, _ string, _ []string, _ map[string][]string) (*usage.ConsumerUsage, error) {
@@ -34,6 +38,21 @@ func (f *fakeStore) ListConsumersByType(_ context.Context, _ string, _, _ int64)
 }
 
 func (f *fakeStore) UpdateRateLimits(_, _ map[string]map[string]config.RateLimitConfig) {}
+
+func (f *fakeStore) GetUsageReport(_ context.Context, serviceType, period string, from, to time.Time) (*usage.UsageReport, error) {
+	if f.reportErr != nil {
+		return nil, f.reportErr
+	}
+	if f.report != nil {
+		return f.report, nil
+	}
+	return &usage.UsageReport{
+		ServiceType: serviceType,
+		Period:      period,
+		From:        from.Format("2006-01-02"),
+		To:          to.Format("2006-01-02"),
+	}, nil
+}
 
 func newHandlerFromStore(store usage.UsageStore) *usage.UsageHandler {
 	return usage.NewUsageHandler(store, nil, "X-Consumer", "X-User-Type")
