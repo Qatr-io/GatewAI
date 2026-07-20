@@ -96,6 +96,26 @@ func TestUpdateJobResult_Tokens_SkippedWhenZero(t *testing.T) {
 	}
 }
 
+// TestGetJob_DeserializesAccountingFields verifies consumer_name, user_type,
+// and callback_url round-trip through GetJob — the relay's exactly-once
+// accounting/webhook side effects (see internal/accounting, internal/webhook)
+// depend on these being present on the fetched Job.
+func TestGetJob_DeserializesAccountingFields(t *testing.T) {
+	s, mr := newTestStore(t)
+	data := `{"id":"job-1","service_type":"transcription","status":"pending","consumer_name":"alice","user_type":"user","callback_url":"https://example.com/hook"}`
+	if err := mr.Set("job:job-1", data); err != nil {
+		t.Fatalf("seed job: %v", err)
+	}
+
+	got, err := s.GetJob(context.Background(), "job-1")
+	if err != nil {
+		t.Fatalf("GetJob: %v", err)
+	}
+	if got.ConsumerName != "alice" || got.UserType != "user" || got.CallbackURL != "https://example.com/hook" {
+		t.Errorf("got %+v, want consumer_name=alice user_type=user callback_url=https://example.com/hook", got)
+	}
+}
+
 // TestUpdateJobResult_TerminalJob_NotOverwritten is a regression guard for the
 // existing already-terminal short-circuit in updateJobScript.
 func TestUpdateJobResult_TerminalJob_NotOverwritten(t *testing.T) {
