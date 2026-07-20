@@ -18,6 +18,11 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+#### Changed
+
+- **Rate-limit debit, usage tracking, and webhook delivery for async jobs moved from the gateway to the relay.** Redis pub/sub broadcasts every job-completion event to *every* gateway replica, so these were previously duplicated N× on multi-replica deployments (each replica debited the budget, recorded usage, and delivered the webhook independently). They now run on the relay, which processes exactly one job per pod invocation. The gateway's completion handler keeps only the two responsibilities safe to run on every replica: the `gatewai_jobs_total` counter and the sync-wait notification.
+- **Breaking / deployment note:** deploy the new relay image before the new gateway image. Deploying gateway-first creates a window with no rate-limit debit, usage tracking, or webhook delivery until the relay catches up.
+
 #### Fixed
 
 - **Helm chart**: numeric fields in `rateLimits` (`rate`, `tokenRate`, `maxConcurrent`, `processingTime`) and per-service `tokenLimits` (`tokenRate`) now render as plain integers via `int64`. Previously values ≥ 1,000,000 were emitted in scientific notation (e.g. `5e+06`), a fragile representation for a downstream `int` field.
@@ -662,6 +667,12 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [Unreleased]
+
+#### Added
+
+- **Exactly-once accounting and webhook delivery**: the relay now debits rate-limit/token budgets, records usage, and delivers the completion webhook itself, since it processes each job exactly once (unlike the gateway's broadcast Redis pub/sub subscriber — see the Gateway changelog above). Deployments using rate limits or usage tracking need new config: `rate_limits` (mirrors the gateway's block — only `token_rate`/`token_period`/`processing_time`/`processing_period` matter here), `usage.retention`, `persists_result`.
 
 ### [v0.9.0] — 2026-06-24
 
