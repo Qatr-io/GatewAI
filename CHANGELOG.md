@@ -22,6 +22,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 - **New endpoint `POST /-/relay/jobs/{id}/complete`**: rate-limit debit, usage tracking, and webhook delivery for async jobs are back on the gateway, now triggered by a single targeted HTTP call from the relay (instead of the Redis pub/sub broadcast every replica receives). This avoids the N× duplication a broadcast-triggered side effect would cause on multi-replica deployments, without needing to duplicate the accounting/webhook logic in the relay itself. No authentication on the new endpoint — cluster-internal call only, same trust model as `/health`. The gateway's pub/sub completion handler keeps only the two responsibilities safe to run on every replica: the `gatewai_jobs_total` counter and the sync-wait notification.
 - **Breaking / deployment note:** deploy the new gateway image before the new relay image. The endpoint is harmless/unused until the relay starts calling it; deploying relay-first would mean 404s and no side effects for every job until the gateway catches up.
+- **New metric `gatewai_relay_queue_depth{model,state}`**: live length of each async model's `relay:{model}:pending`/`relay:{model}:processing` Redis lists, read directly by the gateway on every `/metrics` scrape. Lets the "Queue relay — Profondeur par modèle" Grafana panel work without deploying `redis_exporter`.
 
 #### Fixed
 

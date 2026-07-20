@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"go.opentelemetry.io/otel"
@@ -142,7 +143,7 @@ func buildRouter(
 	}
 
 	spec := handler.GenerateSpec(reg, version, usageHTTPHandler != nil)
-	adminSpec := handler.GenerateAdminSpec(version, usageHTTPHandler != nil)
+	adminSpec := handler.GenerateAdminSpec(version, usageHTTPHandler != nil, limiter != nil)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
 	r.Get("/health", handler.NewHealthHandler(healthChecker.Snapshot))
@@ -162,6 +163,9 @@ func buildRouter(
 	if usageHTTPHandler != nil {
 		r.Get("/usage", usageHTTPHandler.GetMyUsage)
 		r.Get("/-/usage", usageHTTPHandler.AdminListUsage)
+	}
+	if limiter != nil {
+		r.Post("/-/quota/reset", handler.NewQuotaHandler(limiter).ResetQuota)
 	}
 
 	if reg.HasSyncServices() {
@@ -320,6 +324,10 @@ func main() {
 	}
 	healthChecker := health.New(initialRegistry, redisClient.Raw(), cfg.Health, hostname)
 
+	// ── Relay queue depth ────────────────────────────────────────────────────
+	relayQueueDepth := gmetrics.NewRelayQueueDepthCollector(redisClient.Raw(), initialRegistry)
+	prometheus.MustRegister(relayQueueDepth)
+
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
 	// and reconciles Redis subscribers (stopping removed, starting added models).
@@ -347,6 +355,7 @@ func main() {
 		relayCompleteHandler.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
+		relayQueueDepth.UpdateRegistry(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
