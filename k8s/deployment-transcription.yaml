@@ -124,6 +124,8 @@ spec:
                   optional: true
             - name: INFERENCE_TIMEOUT
               value: "13000s"
+            - name: GATEWAY_BASE_URL
+              value: "http://gatewai-gateway.default.svc.cluster.local"
           volumeMounts:
             - mountPath: /etc/gatewai/
               name: gatewai-relay
