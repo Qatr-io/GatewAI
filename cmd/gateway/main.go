@@ -113,8 +113,8 @@ func buildRouter(
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
 	authzEngine *authz.Engine,
-	healthChecker    *health.Checker,
-	usageTracker     usage.UsageTracker,
+	healthChecker *health.Checker,
+	usageTracker usage.UsageTracker,
 	usageHTTPHandler *usage.UsageHandler,
 	relayCompleteHandler *handler.RelayCompleteHandler,
 ) *chi.Mux {

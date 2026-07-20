@@ -26,7 +26,7 @@ type RelayCompleteHandler struct {
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
-	usageTracker          usage.UsageTracker               // nil = no usage tracking
+	usageTracker          usage.UsageTracker              // nil = no usage tracking
 
 	wg sync.WaitGroup // tracks in-flight webhook goroutines
 }

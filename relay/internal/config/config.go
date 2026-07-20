@@ -14,11 +14,11 @@ import (
 
 // Config holds all relay runtime configuration.
 type Config struct {
-	Model          string           `yaml:"model"`
-	Redis          RedisConfig      `yaml:"redis"`
-	S3             S3Config         `yaml:"s3"`
-	Encryption     EncryptionConfig `yaml:"encryption"`
-	Inference      InferenceConfig  `yaml:"inference"`
+	Model      string           `yaml:"model"`
+	Redis      RedisConfig      `yaml:"redis"`
+	S3         S3Config         `yaml:"s3"`
+	Encryption EncryptionConfig `yaml:"encryption"`
+	Inference  InferenceConfig  `yaml:"inference"`
 	// Gateway holds the connection details for the gateway's completion
 	// callback endpoint (POST /-/relay/jobs/{id}/complete), called once after
 	// the relay persists a job's result to Redis.

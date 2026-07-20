@@ -78,7 +78,7 @@ func (s *stubProcessingTimeLimiter) AddProcessingTime(_ context.Context, consume
 
 type addTokensForCall struct {
 	consumer, userType, serviceType string
-	total                            int
+	total                           int
 }
 
 type stubTokenLimiter struct {
@@ -102,11 +102,11 @@ func (s *stubTokenLimiter) AddTokensFor(_ context.Context, consumer, userType, s
 
 type trackProcessingTimeCall struct {
 	consumer, serviceType string
-	seconds                float64
+	seconds               float64
 }
 type trackTokensCall struct {
 	consumer, serviceType string
-	prompt, completion     int64
+	prompt, completion    int64
 }
 type trackUserTypeCall struct {
 	consumer, serviceType, userType string
