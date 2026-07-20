@@ -18,6 +18,10 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+#### Added
+
+- **New admin endpoint `POST /-/quota/reset?consumer=X&type=Y`**: clears a consumer's rate-limit and token-budget Redis keys for one service type (service-level `rl:`/`trl:`/`ptrl:` across all user types, plus the exact policy-level `rlp:`/`trlp:` keys), so the next request starts a fresh window. Restricted to the `/-/` admin namespace — protect with upstream auth. Only registered when rate limiting (`rate_limits`) is configured. New metric: `gatewai_quota_resets_total{service_type}`.
+
 #### Changed
 
 - **New endpoint `POST /-/relay/jobs/{id}/complete`**: rate-limit debit, usage tracking, and webhook delivery for async jobs are back on the gateway, now triggered by a single targeted HTTP call from the relay (instead of the Redis pub/sub broadcast every replica receives). This avoids the N× duplication a broadcast-triggered side effect would cause on multi-replica deployments, without needing to duplicate the accounting/webhook logic in the relay itself. No authentication on the new endpoint — cluster-internal call only, same trust model as `/health`. The gateway's pub/sub completion handler keeps only the two responsibilities safe to run on every replica: the `gatewai_jobs_total` counter and the sync-wait notification.

@@ -63,13 +63,16 @@ func GenerateSpec(reg *service.Registry, appVersion string, usageEnabled bool) [
 // namespace (config reload, job purge, usage listing). Kept apart from
 // GenerateSpec so operator-only endpoints aren't mixed into the consumer-facing
 // API docs served at /docs.
-func GenerateAdminSpec(appVersion string, usageEnabled bool) []byte {
+func GenerateAdminSpec(appVersion string, usageEnabled bool, quotaResetEnabled bool) []byte {
 	paths := map[string]any{
 		"/-/reload":     reloadPathItem(),
 		"/-/jobs/purge": purgeJobsPathItem(),
 	}
 	if usageEnabled {
 		paths["/-/usage"] = adminUsagePathItem()
+	}
+	if quotaResetEnabled {
+		paths["/-/quota/reset"] = quotaResetPathItem()
 	}
 
 	spec := map[string]any{
@@ -506,6 +509,42 @@ func adminUsagePathItem() map[string]any {
 						},
 					},
 				},
+			},
+		},
+	}
+}
+
+// quotaResetPathItem documents POST /-/quota/reset (admin spec only).
+func quotaResetPathItem() map[string]any {
+	return map[string]any{
+		"post": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: reset a consumer's quota for a service type",
+			"operationId": "resetQuota",
+			"description": "Deletes the rate-limit and token-budget Redis keys for one consumer/service_type pair, across all user types, so the next request starts a fresh window. Restricted to the `/-/` admin namespace — protect with upstream auth.\n\n" +
+				"**Example:** `POST /-/quota/reset?consumer=acme&type=audio`",
+			"parameters": []any{
+				map[string]any{"name": "consumer", "in": "query", "required": true, "description": "Consumer identifier (as set by consumer_header)", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "type", "in": "query", "required": true, "description": "Service type, e.g. \"audio\", \"llm\"", "schema": map[string]any{"type": "string"}},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Quota reset",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"consumer":     map[string]any{"type": "string"},
+									"type":         map[string]any{"type": "string"},
+									"deleted_keys": map[string]any{"type": "integer"},
+								},
+							},
+						},
+					},
+				},
+				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
+				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
 			},
 		},
 	}
