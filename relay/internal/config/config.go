@@ -19,6 +19,10 @@ type Config struct {
 	S3             S3Config         `yaml:"s3"`
 	Encryption     EncryptionConfig `yaml:"encryption"`
 	Inference      InferenceConfig  `yaml:"inference"`
+	// Gateway holds the connection details for the gateway's completion
+	// callback endpoint (POST /-/relay/jobs/{id}/complete), called once after
+	// the relay persists a job's result to Redis.
+	Gateway GatewayConfig `yaml:"gateway"`
 	// QueuePopTimeout is how long Pop waits for a job before returning ErrNoJob.
 	// Use when a pod may start after its queue item was already cancelled.
 	// Defaults to 30s. Set to "0" to block indefinitely (legacy behaviour).
@@ -97,6 +101,15 @@ func (c InferenceConfig) HealthCheckTimeoutDuration() time.Duration {
 		return d
 	}
 	return 2 * time.Second
+}
+
+// GatewayConfig holds the gateway's in-cluster address for the completion callback.
+type GatewayConfig struct {
+	// BaseURL is the gateway's base URL, e.g.
+	// "http://gatewai-gateway.default.svc.cluster.local". No default —
+	// always supplied explicitly per-deployment (the Service name is derived
+	// from the Helm release name), same convention as redis.addr.
+	BaseURL string `yaml:"base_url"`
 }
 
 // EncryptionConfig holds the AES key for S3 payload encryption.
@@ -193,6 +206,9 @@ func (c *Config) validate() error {
 	}
 	if c.Inference.BaseURL == "" {
 		return fmt.Errorf("inference.base_url is required")
+	}
+	if c.Gateway.BaseURL == "" {
+		return fmt.Errorf("gateway.base_url is required")
 	}
 	return nil
 }
