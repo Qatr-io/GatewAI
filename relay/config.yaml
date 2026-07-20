@@ -46,6 +46,28 @@ inference:
     # prompt: "Extract all text visible in this document."
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Accounting (exactly-once per job, since the relay is a competing consumer)
+# ─────────────────────────────────────────────────────────────────────────────
+# rate_limits: mirror the RELEVANT subset of the gateway's rate_limits block —
+# only token_rate/token_period/processing_time/processing_period matter here.
+# Keep in sync manually when the gateway's config.yaml rate_limits changes for
+# a service type this relay handles.
+# rate_limits:
+#   transcription:
+#     user:
+#       token_rate: 100000
+#       token_period: "24h"
+#       processing_time: 3600
+#       processing_period: "24h"
+
+# usage.retention: mirror the gateway's usage.retention (same duration format).
+usage:
+  retention: "${USAGE_RETENTION:-8760h}"
+
+# persists_result: mirror the gateway's lifecycle.persists_result.
+persists_result: ${PERSISTS_RESULT:-false}
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OpenTelemetry (optional)
 # ─────────────────────────────────────────────────────────────────────────────
 # opentelemetry:

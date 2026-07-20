@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -70,5 +71,61 @@ func TestTimeoutDuration(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("TimeoutDuration(%q) = %v, want %v", tc.input, got, tc.want)
 		}
+	}
+}
+
+func TestUsageConfig_RetentionDuration_Default(t *testing.T) {
+	var u UsageConfig
+	if got := u.RetentionDuration(); got != 0 {
+		t.Errorf("empty retention: got %v, want 0", got)
+	}
+}
+
+func TestUsageConfig_RetentionDuration_Parses(t *testing.T) {
+	u := UsageConfig{Retention: "720h"}
+	if got := u.RetentionDuration(); got != 720*time.Hour {
+		t.Errorf("got %v, want 720h", got)
+	}
+}
+
+func TestLoad_ParsesRateLimitsAndAccountingConfig(t *testing.T) {
+	yamlContent := `
+model: "whisper-large-v3"
+redis:
+  addr: "localhost:6379"
+s3:
+  endpoint: "https://s3.example.com"
+  region: "fr-par"
+  bucket: "bucket"
+inference:
+  base_url: "http://127.0.0.1:9000"
+rate_limits:
+  transcription:
+    user:
+      token_rate: 100000
+      token_period: "24h"
+      processing_time: 3600
+      processing_period: "24h"
+usage:
+  retention: "8760h"
+persists_result: true
+`
+	path := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(path, []byte(yamlContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rl := cfg.RateLimits["transcription"]["user"]
+	if rl.TokenRate != 100000 || rl.ProcessingTime != 3600 {
+		t.Errorf("got %+v, want token_rate=100000 processing_time=3600", rl)
+	}
+	if cfg.Usage.RetentionDuration() != 8760*time.Hour {
+		t.Errorf("usage retention: got %v, want 8760h", cfg.Usage.RetentionDuration())
+	}
+	if !cfg.PersistsResult {
+		t.Error("expected persists_result=true")
 	}
 }

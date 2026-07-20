@@ -27,6 +27,44 @@ type Config struct {
 	// LogLevel sets the minimum log level: DEBUG, INFO, WARN, ERROR.
 	// Defaults to INFO when absent or invalid.
 	LogLevel string `yaml:"log_level"`
+	// RateLimits mirrors the gateway's rate_limits[service_type][user_type]
+	// block — only TokenRate/TokenPeriod/ProcessingTime/ProcessingPeriod
+	// matter here (the relay only performs the completion-time debit, never
+	// the submission-time check). Keep in sync with the gateway's
+	// config.yaml rate_limits block for any service type this relay handles.
+	RateLimits map[string]map[string]RateLimitConfig `yaml:"rate_limits"`
+	Usage      UsageConfig                            `yaml:"usage"`
+	// PersistsResult controls whether the S3 result object is deleted after
+	// successful webhook delivery (false = delete, true = keep). Mirrors the
+	// gateway's lifecycle.persists_result.
+	PersistsResult bool `yaml:"persists_result"`
+}
+
+// RateLimitConfig defines the token/processing-time budget for a
+// (service_type, user_type) pair. Only the fields the relay's
+// completion-time debit needs — mirrors the subset of the gateway's
+// config.RateLimitConfig that AddTokensFor/AddProcessingTime read.
+type RateLimitConfig struct {
+	TokenRate        int    `yaml:"token_rate"`        // max total tokens per TokenPeriod (0 = disabled)
+	TokenPeriod      string `yaml:"token_period"`       // e.g. "1h", "24h"
+	ProcessingTime   int    `yaml:"processing_time"`    // max total inference seconds per ProcessingPeriod (0 = disabled)
+	ProcessingPeriod string `yaml:"processing_period"`  // e.g. "1h", "24h"
+}
+
+// UsageConfig controls usage-tracking key retention.
+type UsageConfig struct {
+	// Retention is the duration usage sorted-set/hash keys are kept before
+	// expiry. Empty or invalid means no TTL (all-time accumulation).
+	Retention string `yaml:"retention"`
+}
+
+// RetentionDuration returns the parsed retention duration, or 0 (no TTL) if
+// empty or invalid.
+func (u UsageConfig) RetentionDuration() time.Duration {
+	if d, err := time.ParseDuration(u.Retention); err == nil && d > 0 {
+		return d
+	}
+	return 0
 }
 
 // QueuePopTimeoutDuration returns the configured queue pop timeout.
