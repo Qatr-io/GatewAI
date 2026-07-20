@@ -18,6 +18,11 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+#### Changed
+
+- **New endpoint `POST /-/relay/jobs/{id}/complete`**: rate-limit debit, usage tracking, and webhook delivery for async jobs are back on the gateway, now triggered by a single targeted HTTP call from the relay (instead of the Redis pub/sub broadcast every replica receives). This avoids the N× duplication a broadcast-triggered side effect would cause on multi-replica deployments, without needing to duplicate the accounting/webhook logic in the relay itself. No authentication on the new endpoint — cluster-internal call only, same trust model as `/health`. The gateway's pub/sub completion handler keeps only the two responsibilities safe to run on every replica: the `gatewai_jobs_total` counter and the sync-wait notification.
+- **Breaking / deployment note:** deploy the new gateway image before the new relay image. The endpoint is harmless/unused until the relay starts calling it; deploying relay-first would mean 404s and no side effects for every job until the gateway catches up.
+
 #### Fixed
 
 - **Helm chart**: numeric fields in `rateLimits` (`rate`, `tokenRate`, `maxConcurrent`, `processingTime`) and per-service `tokenLimits` (`tokenRate`) now render as plain integers via `int64`. Previously values ≥ 1,000,000 were emitted in scientific notation (e.g. `5e+06`), a fragile representation for a downstream `int` field.
