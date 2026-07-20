@@ -259,11 +259,7 @@ func main() {
 		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
-	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
-	if limiter != nil {
-		manager.WithProcessingTimeLimiter(limiter)
-		manager.WithTokenLimiter(limiter)
-	}
+	manager := consumer.NewManager(redisClient)
 
 	// ── LLM proxy ─────────────────────────────────────────────────────────────
 	providerRegistry := provider.NewRegistry()
@@ -284,7 +280,6 @@ func main() {
 		usageTracker = ut
 		usageStore = usage.NewRedisUsageStore(redisClient.Raw(), cfg.Usage.Retention, cfg.RateLimits, modelLimits)
 		usageHTTPHandler = usage.NewUsageHandler(usageStore, initialRegistry, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
-		manager.WithUsageTracker(usageTracker)
 		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
 	}
 
@@ -337,7 +332,6 @@ func main() {
 
 		// Update infrastructure state that survives across reloads.
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
-		manager.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
@@ -357,13 +351,6 @@ func main() {
 		} else {
 			limiter = nil
 			rl = nil
-		}
-		if limiter != nil {
-			manager.WithProcessingTimeLimiter(limiter)
-			manager.WithTokenLimiter(limiter)
-		} else {
-			manager.WithProcessingTimeLimiter(nil)
-			manager.WithTokenLimiter(nil)
 		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
@@ -491,8 +478,6 @@ func main() {
 
 	slog.Info("shutting down…")
 	cancel() // stop async workers and other background goroutines
-
-	manager.Wait() // drain in-flight webhook goroutines
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()
