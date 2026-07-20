@@ -51,7 +51,7 @@ func (a *mockAdapter) Call(_ context.Context, _ adapter.CallInput) ([]byte, erro
 }
 
 type publishCall struct {
-	jobID            string
+	job              *model.Job
 	status           model.JobStatus
 	resultRef        string
 	errMsg           string
@@ -64,8 +64,8 @@ type mockPublisher struct {
 	err   error
 }
 
-func (p *mockPublisher) PublishResult(_ context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, _ float64, promptTokens, completionTokens int64) error {
-	p.calls = append(p.calls, publishCall{jobID, status, resultRef, errMsg, promptTokens, completionTokens})
+func (p *mockPublisher) PublishResult(_ context.Context, job *model.Job, status model.JobStatus, resultRef, errMsg string, _ float64, promptTokens, completionTokens int64) error {
+	p.calls = append(p.calls, publishCall{job, status, resultRef, errMsg, promptTokens, completionTokens})
 	return p.err
 }
 
