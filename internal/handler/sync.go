@@ -482,14 +482,19 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				respBody, _ := io.ReadAll(resp.Body)
 				_, _ = w.Write(respBody)
 				consumer, userType := h.resolveConsumerAndType(r)
-				if h.processingLimiter != nil {
+				if h.processingLimiter != nil || h.usageTracker != nil {
 					pt := extractProcessingTimeFromResponse(respBody)
 					if pt == 0 {
 						pt = time.Since(start).Seconds()
 					}
 					if consumer != "" {
-						if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
-							slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+						if h.processingLimiter != nil {
+							if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
+								slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+							}
+						}
+						if h.usageTracker != nil {
+							h.usageTracker.TrackProcessingTime(r.Context(), consumer, def.Type, pt)
 						}
 					}
 				}
