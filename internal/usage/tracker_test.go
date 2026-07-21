@@ -2,6 +2,7 @@ package usage_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -162,6 +163,82 @@ func TestTrackProcessingTime_ZeroSeconds_DoesNothing(t *testing.T) {
 	if len(keys) != 0 {
 		t.Errorf("expected no keys, got %v", keys)
 	}
+}
+
+func TestTrackRequest_IncrementsPeriodAggregates(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	year, week := now.ISOWeek()
+
+	tracker.TrackRequest(ctx, "alice", "audio")
+	tracker.TrackRequest(ctx, "bob", "audio")
+
+	dailyKey := "usage:agg:audio:requests:daily:" + now.Format("20060102")
+	weeklyKey := "usage:agg:audio:requests:weekly:" + weekBucket(year, week)
+	monthlyKey := "usage:agg:audio:requests:monthly:" + now.Format("200601")
+
+	for _, key := range []string{dailyKey, weeklyKey, monthlyKey} {
+		v, err := mr.Get(key)
+		if err != nil {
+			t.Fatalf("Get(%s): %v", key, err)
+		}
+		if v != "2" {
+			t.Errorf("%s = %v, want 2 (aggregate across both consumers)", key, v)
+		}
+	}
+}
+
+func TestTrackTokens_IncrementsPeriodAggregates(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	now := time.Now().UTC()
+
+	tracker.TrackTokens(context.Background(), "alice", "llm", 100, 20)
+
+	promptKey := "usage:agg:llm:tokens_prompt:daily:" + now.Format("20060102")
+	completionKey := "usage:agg:llm:tokens_completion:daily:" + now.Format("20060102")
+
+	prompt, err := mr.Get(promptKey)
+	if err != nil || prompt != "100" {
+		t.Errorf("prompt aggregate = %v, %v, want 100", prompt, err)
+	}
+	completion, err := mr.Get(completionKey)
+	if err != nil || completion != "20" {
+		t.Errorf("completion aggregate = %v, %v, want 20", completion, err)
+	}
+}
+
+func TestTrackRequest_PeriodAggregate_TTLSetOnceForDailyAndWeekly_NoneForMonthly(t *testing.T) {
+	tracker, mr := newTracker(t, 0)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	tracker.TrackRequest(ctx, "alice", "audio")
+
+	dailyKey := "usage:agg:audio:requests:daily:" + now.Format("20060102")
+	monthlyKey := "usage:agg:audio:requests:monthly:" + now.Format("200601")
+
+	if ttl := mr.TTL(dailyKey); ttl <= 0 {
+		t.Errorf("expected daily aggregate TTL to be set, got %v", ttl)
+	}
+	if ttl := mr.TTL(monthlyKey); ttl != 0 {
+		t.Errorf("expected no TTL on monthly aggregate, got %v", ttl)
+	}
+
+	// Second call must not reset the daily TTL.
+	ttl1 := mr.TTL(dailyKey)
+	mr.FastForward(30 * time.Second)
+	tracker.TrackRequest(ctx, "alice", "audio")
+	ttl2 := mr.TTL(dailyKey)
+	if ttl2 >= ttl1 {
+		t.Errorf("daily aggregate TTL should have decremented, got ttl2=%v >= ttl1=%v", ttl2, ttl1)
+	}
+}
+
+// weekBucket mirrors the unexported periodBuckets weekly format, used to
+// compute the expected key in tests without depending on internal helpers.
+func weekBucket(year, week int) string {
+	return fmt.Sprintf("%04d-W%02d", year, week)
 }
 
 func TestNoopUsageTracker_DoesNothing(t *testing.T) {

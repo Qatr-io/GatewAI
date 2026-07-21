@@ -1001,8 +1001,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "redis_list_length{key=~\"relay:.*:(pending|processing)$\"}",
-          "legendFormat": "{{key}}",
+          "expr": "gatewai_relay_queue_depth{state=~\"pending|processing\"}",
+          "legendFormat": "{{model}} - {{state}}",
           "refId": "A"
         }
       ]

@@ -30,6 +30,9 @@
 //
 // Anonymous consumers (no consumer header) are always allowed by the policy
 // layer (cannot enforce per-member limits without a stable identity).
+//
+// ResetQuota (used by the admin POST /-/quota/reset endpoint) clears a
+// consumer's rl:/trl:/ptrl:/rlp:/trlp: keys for one service type.
 package ratelimit
 
 import (
@@ -753,6 +756,65 @@ func (l *Limiter) AddProcessingTime(ctx context.Context, consumer, userType, ser
 		metrics.TokenRatelimitErrorsTotal.WithLabelValues("pt:" + serviceType).Inc()
 	}
 	return nil
+}
+
+// QuotaResetter is implemented by Limiter; used by the admin quota-reset endpoint.
+type QuotaResetter interface {
+	// ResetQuota deletes all rate-limit and token-budget Redis keys for the
+	// given consumer/service_type pair (across all user types), returning the
+	// number of keys removed.
+	ResetQuota(ctx context.Context, consumer, serviceType string) (int, error)
+}
+
+// ResetQuota implements QuotaResetter. Deletes the service-level rate (rl:),
+// token (trl:), and processing-time (ptrl:) keys across all user types, plus
+// the exact policy-level rate (rlp:) and token (trlp:) keys, for one
+// consumer/service_type pair. Does not touch the in-flight concurrency slot
+// (jc:) — that counter self-heals via ReleaseSlot/TTL and isn't a configured
+// quota.
+func (l *Limiter) ResetQuota(ctx context.Context, consumer, serviceType string) (int, error) {
+	patterns := []string{
+		fmt.Sprintf("rl:%s:%s:*", consumer, serviceType),
+		fmt.Sprintf("trl:%s:%s:*", consumer, serviceType),
+		fmt.Sprintf("ptrl:%s:%s:*", consumer, serviceType),
+	}
+
+	var keys []string
+	for _, pattern := range patterns {
+		found, err := l.scanKeys(ctx, pattern)
+		if err != nil {
+			return 0, fmt.Errorf("scan %q: %w", pattern, err)
+		}
+		keys = append(keys, found...)
+	}
+	keys = append(keys,
+		fmt.Sprintf("rlp:%s:%s", consumer, serviceType),
+		fmt.Sprintf("trlp:%s:%s", consumer, serviceType),
+	)
+
+	deleted, err := l.rdb.Del(ctx, keys...).Result()
+	if err != nil {
+		return 0, fmt.Errorf("del: %w", err)
+	}
+	return int(deleted), nil
+}
+
+// scanKeys collects all keys matching pattern via cursor-based SCAN. Unlike
+// KEYS, SCAN doesn't block Redis on large keyspaces.
+func (l *Limiter) scanKeys(ctx context.Context, pattern string) ([]string, error) {
+	var keys []string
+	var cursor uint64
+	for {
+		batch, next, err := l.rdb.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return nil, err
+		}
+		keys = append(keys, batch...)
+		cursor = next
+		if cursor == 0 {
+			return keys, nil
+		}
+	}
 }
 
 // AddTokensFor implements TokenChecker. It mirrors AddProcessingTime: a

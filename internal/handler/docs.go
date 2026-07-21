@@ -63,13 +63,17 @@ func GenerateSpec(reg *service.Registry, appVersion string, usageEnabled bool) [
 // namespace (config reload, job purge, usage listing). Kept apart from
 // GenerateSpec so operator-only endpoints aren't mixed into the consumer-facing
 // API docs served at /docs.
-func GenerateAdminSpec(appVersion string, usageEnabled bool) []byte {
+func GenerateAdminSpec(appVersion string, usageEnabled bool, quotaResetEnabled bool) []byte {
 	paths := map[string]any{
 		"/-/reload":     reloadPathItem(),
 		"/-/jobs/purge": purgeJobsPathItem(),
 	}
 	if usageEnabled {
 		paths["/-/usage"] = adminUsagePathItem()
+		paths["/-/usage/report"] = usageReportPathItem()
+	}
+	if quotaResetEnabled {
+		paths["/-/quota/reset"] = quotaResetPathItem()
 	}
 
 	spec := map[string]any{
@@ -511,6 +515,75 @@ func adminUsagePathItem() map[string]any {
 	}
 }
 
+// usageReportPathItem documents GET /-/usage/report (admin spec only).
+func usageReportPathItem() map[string]any {
+	return map[string]any{
+		"get": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: cross-consumer calendar usage report",
+			"operationId": "adminUsageReport",
+			"description": "Cross-consumer, calendar-aligned usage totals for one service type — for finance/BI reporting (e.g. \"total tokens for service `llm` in March 2026\"), not a per-consumer breakdown. Restricted to the `/-/` admin namespace — protect with upstream auth.\n\n" +
+				"Buckets are UTC calendar-aligned: `daily` (`YYYYMMDD`), `weekly` (ISO `YYYY-Www`), or `monthly` (`YYYYMM`). The `[from, to]` range is capped at 400 buckets per request.\n\n" +
+				"**Example:** `GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31`",
+			"parameters": []any{
+				map[string]any{"name": "type", "in": "query", "required": true, "description": "Service type, e.g. \"audio\", \"llm\"", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "period", "in": "query", "required": true, "description": "Bucket granularity", "schema": map[string]any{"type": "string", "enum": []string{"daily", "weekly", "monthly"}}},
+				map[string]any{"name": "from", "in": "query", "required": true, "description": "Range start (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-01-01"}},
+				map[string]any{"name": "to", "in": "query", "required": true, "description": "Range end (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-03-31"}},
+				map[string]any{"name": "total", "in": "query", "required": false, "description": "When \"true\", also sum every bucket into the response's top-level `total` field", "schema": map[string]any{"type": "string", "enum": []string{"true", "false"}, "default": "false"}},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Usage report",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/UsageReport"},
+						},
+					},
+				},
+				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
+				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
+			},
+		},
+	}
+}
+
+// quotaResetPathItem documents POST /-/quota/reset (admin spec only).
+func quotaResetPathItem() map[string]any {
+	return map[string]any{
+		"post": map[string]any{
+			"tags":        []string{"Admin"},
+			"summary":     "Admin: reset a consumer's quota for a service type",
+			"operationId": "resetQuota",
+			"description": "Deletes the rate-limit and token-budget Redis keys for one consumer/service_type pair, across all user types, so the next request starts a fresh window. Restricted to the `/-/` admin namespace — protect with upstream auth.\n\n" +
+				"**Example:** `POST /-/quota/reset?consumer=acme&type=audio`",
+			"parameters": []any{
+				map[string]any{"name": "consumer", "in": "query", "required": true, "description": "Consumer identifier (as set by consumer_header)", "schema": map[string]any{"type": "string"}},
+				map[string]any{"name": "type", "in": "query", "required": true, "description": "Service type, e.g. \"audio\", \"llm\"", "schema": map[string]any{"type": "string"}},
+			},
+			"responses": map[string]any{
+				"200": map[string]any{
+					"description": "Quota reset",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"consumer":     map[string]any{"type": "string"},
+									"type":         map[string]any{"type": "string"},
+									"deleted_keys": map[string]any{"type": "integer"},
+								},
+							},
+						},
+					},
+				},
+				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
+				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
+			},
+		},
+	}
+}
+
 // purgeJobsPathItem documents POST /-/jobs/purge (admin spec only).
 func purgeJobsPathItem() map[string]any {
 	return map[string]any{
@@ -864,6 +937,35 @@ func specComponents() map[string]any {
 					"consumers": map[string]any{
 						"type":  "array",
 						"items": map[string]any{"$ref": "#/components/schemas/ConsumerUsage"},
+					},
+				},
+			},
+			"PeriodUsage": map[string]any{
+				"type":        "object",
+				"description": "Cross-consumer aggregate totals for one calendar bucket.",
+				"properties": map[string]any{
+					"bucket":                  map[string]any{"type": "string", "description": "Bucket ID: YYYYMMDD (daily), ISO YYYY-Www (weekly), or YYYYMM (monthly)", "example": "202603"},
+					"requests":                map[string]any{"type": "integer", "format": "int64"},
+					"jobs":                    map[string]any{"type": "integer", "format": "int64"},
+					"processing_time_seconds": map[string]any{"type": "number"},
+					"tokens":                  map[string]any{"$ref": "#/components/schemas/TokenUsage"},
+				},
+			},
+			"UsageReport": map[string]any{
+				"type":        "object",
+				"description": "Cross-consumer, calendar-aligned usage totals for one service type (GET /-/usage/report).",
+				"properties": map[string]any{
+					"service_type": map[string]any{"type": "string", "example": "llm"},
+					"period":       map[string]any{"type": "string", "enum": []string{"daily", "weekly", "monthly"}},
+					"from":         map[string]any{"type": "string", "format": "date"},
+					"to":           map[string]any{"type": "string", "format": "date"},
+					"buckets": map[string]any{
+						"type":  "array",
+						"items": map[string]any{"$ref": "#/components/schemas/PeriodUsage"},
+					},
+					"total": map[string]any{
+						"description": "Sum of every bucket in `buckets`. Only present when the request sets `total=true`.",
+						"allOf":       []any{map[string]any{"$ref": "#/components/schemas/TotalUsage"}},
 					},
 				},
 			},

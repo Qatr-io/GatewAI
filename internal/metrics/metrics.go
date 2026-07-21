@@ -221,6 +221,11 @@ var (
 		Help: "Total async jobs deleted by the admin purge endpoint.",
 	}, []string{"model"})
 
+	QuotaResetsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_quota_resets_total",
+		Help: "Total per-consumer quota resets performed via the admin quota-reset endpoint.",
+	}, []string{"service_type"})
+
 	// AuthzDecisionsTotal counts authorization decisions by result and service type.
 	AuthzDecisionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_authz_decisions_total",

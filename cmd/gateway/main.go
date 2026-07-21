@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	chimw "github.com/go-chi/chi/v5/middleware"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"go.opentelemetry.io/otel"
@@ -95,7 +96,10 @@ func reservedGatewayPath(path string) bool {
 }
 
 // authExemptPrefixes lists the path prefixes that bypass authentication checks.
-var authExemptPrefixes = []string{"/health", "/metrics", "/docs", "/openapi.yaml"}
+// "/-/relay" is the relay's completion callback — no client ever calls it, and
+// it carries no credentials; it is trusted purely on cluster-internal network
+// access, the same trust model as /health.
+var authExemptPrefixes = []string{"/health", "/metrics", "/docs", "/openapi.yaml", "/-/relay"}
 
 func buildRouter(
 	cfg *config.Config,
@@ -110,9 +114,10 @@ func buildRouter(
 	tracer trace.Tracer,
 	authenticator auth.Authenticator,
 	authzEngine *authz.Engine,
-	healthChecker    *health.Checker,
-	usageTracker     usage.UsageTracker,
+	healthChecker *health.Checker,
+	usageTracker usage.UsageTracker,
 	usageHTTPHandler *usage.UsageHandler,
+	relayCompleteHandler *handler.RelayCompleteHandler,
 ) *chi.Mux {
 	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
 	if limiter != nil {
@@ -138,7 +143,7 @@ func buildRouter(
 	}
 
 	spec := handler.GenerateSpec(reg, version, usageHTTPHandler != nil)
-	adminSpec := handler.GenerateAdminSpec(version, usageHTTPHandler != nil)
+	adminSpec := handler.GenerateAdminSpec(version, usageHTTPHandler != nil, limiter != nil)
 	swaggerSpecs := handler.FetchSwaggerSpecs(cfg.Services)
 
 	r.Get("/health", handler.NewHealthHandler(healthChecker.Snapshot))
@@ -154,9 +159,14 @@ func buildRouter(
 	r.Delete("/jobs/{service_type}/{id}", jobHandler.Cancel)
 	r.Post("/-/reload", handler.NewReloadHandler(reloadFn))
 	r.Post("/-/jobs/purge", jobHandler.AdminPurge)
+	r.Post("/-/relay/jobs/{id}/complete", relayCompleteHandler.Complete)
 	if usageHTTPHandler != nil {
 		r.Get("/usage", usageHTTPHandler.GetMyUsage)
 		r.Get("/-/usage", usageHTTPHandler.AdminListUsage)
+		r.Get("/-/usage/report", usageHTTPHandler.AdminUsageReport)
+	}
+	if limiter != nil {
+		r.Post("/-/quota/reset", handler.NewQuotaHandler(limiter).ResetQuota)
 	}
 
 	if reg.HasSyncServices() {
@@ -259,10 +269,12 @@ func main() {
 		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
 
-	manager := consumer.NewManager(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
+	manager := consumer.NewManager(redisClient)
+
+	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
 	if limiter != nil {
-		manager.WithProcessingTimeLimiter(limiter)
-		manager.WithTokenLimiter(limiter)
+		relayCompleteHandler.WithProcessingTimeLimiter(limiter)
+		relayCompleteHandler.WithTokenLimiter(limiter)
 	}
 
 	// ── LLM proxy ─────────────────────────────────────────────────────────────
@@ -284,7 +296,7 @@ func main() {
 		usageTracker = ut
 		usageStore = usage.NewRedisUsageStore(redisClient.Raw(), cfg.Usage.Retention, cfg.RateLimits, modelLimits)
 		usageHTTPHandler = usage.NewUsageHandler(usageStore, initialRegistry, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
-		manager.WithUsageTracker(usageTracker)
+		relayCompleteHandler.WithUsageTracker(usageTracker)
 		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
 	}
 
@@ -293,6 +305,9 @@ func main() {
 		cfg.Server.UserTypeHeader, consumerTracker,
 		llmproxy.AuditConfig{Enabled: cfg.AuditLog.Enabled, Prompt: cfg.AuditLog.Prompt},
 		tokenChecker(limiter))
+	if usageTracker != nil {
+		llmHandler.WithUsageTracker(usageTracker)
+	}
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -312,6 +327,10 @@ func main() {
 		hostname = "unknown"
 	}
 	healthChecker := health.New(initialRegistry, redisClient.Raw(), cfg.Health, hostname)
+
+	// ── Relay queue depth ────────────────────────────────────────────────────
+	relayQueueDepth := gmetrics.NewRelayQueueDepthCollector(redisClient.Raw(), initialRegistry)
+	prometheus.MustRegister(relayQueueDepth)
 
 	// ── Hot-reload ────────────────────────────────────────────────────────────
 	// reloadFn re-reads the config file, atomically swaps the active router,
@@ -337,9 +356,10 @@ func main() {
 
 		// Update infrastructure state that survives across reloads.
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
-		manager.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
+		relayCompleteHandler.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
+		relayQueueDepth.UpdateRegistry(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
@@ -359,16 +379,19 @@ func main() {
 			rl = nil
 		}
 		if limiter != nil {
-			manager.WithProcessingTimeLimiter(limiter)
-			manager.WithTokenLimiter(limiter)
+			relayCompleteHandler.WithProcessingTimeLimiter(limiter)
+			relayCompleteHandler.WithTokenLimiter(limiter)
 		} else {
-			manager.WithProcessingTimeLimiter(nil)
-			manager.WithTokenLimiter(nil)
+			relayCompleteHandler.WithProcessingTimeLimiter(nil)
+			relayCompleteHandler.WithTokenLimiter(nil)
 		}
 		llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 			newCfg.Server.UserTypeHeader, consumerTracker,
 			llmproxy.AuditConfig{Enabled: newCfg.AuditLog.Enabled, Prompt: newCfg.AuditLog.Prompt},
 			tokenChecker(limiter))
+		if usageTracker != nil {
+			llmHandler.WithUsageTracker(usageTracker)
+		}
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine
@@ -384,7 +407,7 @@ func main() {
 		if usageHTTPHandler != nil {
 			usageHTTPHandler.UpdateRegistry(newReg)
 		}
-		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, usageTracker, usageHTTPHandler)
+		newRouter := buildRouter(newCfg, newReg, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, newAuthzEngine, healthChecker, usageTracker, usageHTTPHandler, relayCompleteHandler)
 		holder.p.Store(newRouter)
 		slog.Info("config reloaded", "types", newReg.Types())
 		return nil
@@ -395,7 +418,7 @@ func main() {
 	if cfg.Policies != nil {
 		authzEngine = authz.New(*cfg.Policies)
 	}
-	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, usageTracker, usageHTTPHandler)
+	initialRouter := buildRouter(cfg, initialRegistry, s3Client, redisClient, logger, reloadFn, rl, limiter, llmHandler, otel.Tracer("gatewai/gateway"), authenticator, authzEngine, healthChecker, usageTracker, usageHTTPHandler, relayCompleteHandler)
 	holder.p.Store(initialRouter)
 
 	// ── Async workers + context ───────────────────────────────────────────────
@@ -492,7 +515,7 @@ func main() {
 	slog.Info("shutting down…")
 	cancel() // stop async workers and other background goroutines
 
-	manager.Wait() // drain in-flight webhook goroutines
+	relayCompleteHandler.Wait() // drain in-flight webhook goroutines
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer shutdownCancel()

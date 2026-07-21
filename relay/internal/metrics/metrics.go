@@ -53,4 +53,13 @@ var (
 		Name: "gatewai_relay_redis_done_errors_total",
 		Help: "Total number of Redis errors when removing job from the processing list.",
 	})
+
+	// GatewayCallbackErrorsTotal counts failures calling the gateway's
+	// POST /-/relay/jobs/{id}/complete completion callback (network error or
+	// non-2xx response). The job's own result is unaffected — this only means
+	// the debit/usage/webhook side effects were not triggered for that job.
+	GatewayCallbackErrorsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "gatewai_relay_gateway_callback_errors_total",
+		Help: "Total number of failed gateway completion-callback calls.",
+	})
 )

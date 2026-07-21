@@ -25,8 +25,8 @@ import (
 	"gatewai/relay/internal/model"
 	"gatewai/relay/internal/queue"
 	relayproc "gatewai/relay/internal/relay"
-	"gatewai/relay/internal/store"
 	"gatewai/relay/internal/storage"
+	"gatewai/relay/internal/store"
 	"gatewai/relay/internal/telemetry"
 )
 
@@ -38,9 +38,16 @@ var version = "dev"
 //  1. Atomically updates the job record in Redis (UpdateJobResult).
 //  2. Publishes a completion notification on jobs:{model}:completed.
 //  3. Removes the job from the processing list (Done).
+//  4. Makes a single bounded HTTP call to the gateway's completion callback,
+//     so the gateway can perform the rate-limit debit, usage tracking, and
+//     webhook delivery exactly once per job (see internal/handler.RelayCompleteHandler
+//     on the gateway side). Best-effort: failures are logged and counted, but
+//     never fail the job — the job's own result in Redis is unaffected.
 type redisPublisher struct {
-	st *store.Store
-	q  *queue.Queue
+	st             *store.Store
+	q              *queue.Queue
+	gatewayBaseURL string
+	httpClient     *http.Client
 }
 
 func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string, processingTime float64, promptTokens, completionTokens int64) error {
@@ -55,6 +62,21 @@ func (p *redisPublisher) PublishResult(ctx context.Context, jobID string, status
 		slog.Warn("failed to remove job from processing list", "job_id", jobID, "error", err)
 		metrics.RedisDoneErrorsTotal.Inc()
 	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(callCtx, http.MethodPost, p.gatewayBaseURL+"/-/relay/jobs/"+jobID+"/complete", nil)
+	if resp, err := p.httpClient.Do(req); err != nil {
+		slog.Warn("gateway completion callback failed", "job_id", jobID, "error", err)
+		metrics.GatewayCallbackErrorsTotal.Inc()
+	} else {
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			slog.Warn("gateway completion callback returned non-2xx", "job_id", jobID, "status", resp.StatusCode)
+			metrics.GatewayCallbackErrorsTotal.Inc()
+		}
+	}
+
 	return nil
 }
 
@@ -116,7 +138,7 @@ func main() {
 	q := queue.New(rdb, cfg.Model)
 	s := store.New(rdb)
 
-	pub := &redisPublisher{st: s, q: q}
+	pub := &redisPublisher{st: s, q: q, gatewayBaseURL: cfg.Gateway.BaseURL, httpClient: &http.Client{Timeout: 5 * time.Second}}
 
 	adp, err := adapter.New(cfg)
 	if err != nil {
