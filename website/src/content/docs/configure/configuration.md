@@ -427,4 +427,6 @@ Controls how long per-consumer cumulative usage data is kept in Redis sorted set
 
 When `server.consumer_header` is not configured, a no-op tracker is used and no data is written. `retention` is hot-reloadable and affects new sorted-set keys only (existing keys keep their original TTL).
 
-See [API reference](../reference/api) for the `GET /usage` and `GET /-/usage` endpoints that expose this data.
+Whenever consumer tracking is active, the gateway also writes cross-consumer calendar-aligned aggregate counters (`usage:agg:*` in Redis) — plain totals per service type/metric/day/week/month, with no per-consumer breakdown. These aren't governed by `usage.retention`: daily buckets expire after 400 days, weekly after 800 days, and monthly buckets are kept indefinitely (their cardinality stays trivial). They power `GET /-/usage/report`, described below.
+
+See [API reference](../reference/api) for the `GET /usage`, `GET /-/usage`, and `GET /-/usage/report` endpoints that expose this data.

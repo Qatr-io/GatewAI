@@ -24,6 +24,19 @@ Versioning: each component is versioned independently — see tag conventions be
 - **Token budget enforcement extended to async jobs**: `token_limits` now applies pre-flight on `POST /jobs/{service_type}` submission (in addition to the existing sync LLM path) and is recorded on async job completion, using the prompt/completion token counts the relay now extracts from the inference result (see Relay `v0.10.0`).
 - **`GET /v1/models?model=<name>`**: proxies to the underlying backend to return its native model info (context size, capabilities) instead of only the gateway's OpenAI-compatible model list.
 
+### [v0.20.0] — 2026-07-21
+
+#### Added
+
+- **New admin endpoint `GET /-/usage/report?type=X&period=daily|weekly|monthly&from=YYYY-MM-DD&to=YYYY-MM-DD`**: cross-consumer, calendar-aligned usage totals (requests, jobs, processing time, LLM tokens) for one service type — for finance/BI reporting (e.g. "total tokens for `llm` in March 2026"), not a per-consumer breakdown. Buckets are UTC-aligned; the `[from, to]` range is capped at 400 buckets per request. An optional `total=true` param sums every bucket into a top-level `total` field. Restricted to the `/-/` admin namespace — protect with upstream auth. Requires `server.consumer_header` (same gate as the existing usage-tracking endpoints). LLM proxy requests now also feed the underlying per-consumer token counters, closing a gap where LLM token usage wasn't reflected in `GET /usage` / `GET /-/usage`.
+- **New admin endpoint `POST /-/quota/reset?consumer=X&type=Y`**: clears a consumer's rate-limit and token-budget Redis keys for one service type (service-level `rl:`/`trl:`/`ptrl:` across all user types, plus the exact policy-level `rlp:`/`trlp:` keys), so the next request starts a fresh window. Restricted to the `/-/` admin namespace — protect with upstream auth. Only registered when rate limiting (`rate_limits`) is configured. New metric: `gatewai_quota_resets_total{service_type}`.
+
+#### Changed
+
+- **New endpoint `POST /-/relay/jobs/{id}/complete`**: rate-limit debit, usage tracking, and webhook delivery for async jobs are back on the gateway, now triggered by a single targeted HTTP call from the relay (instead of the Redis pub/sub broadcast every replica receives). This avoids the N× duplication a broadcast-triggered side effect would cause on multi-replica deployments, without needing to duplicate the accounting/webhook logic in the relay itself. No authentication on the new endpoint — cluster-internal call only, same trust model as `/health`. The gateway's pub/sub completion handler keeps only the two responsibilities safe to run on every replica: the `gatewai_jobs_total` counter and the sync-wait notification.
+- **Breaking / deployment note:** deploy the new gateway image before the new relay image. The endpoint is harmless/unused until the relay starts calling it; deploying relay-first would mean 404s and no side effects for every job until the gateway catches up.
+- **New metric `gatewai_relay_queue_depth{model,state}`**: live length of each async model's `relay:{model}:pending`/`relay:{model}:processing` Redis lists, read directly by the gateway on every `/metrics` scrape. Lets the "Queue relay — Profondeur par modèle" Grafana panel work without deploying `redis_exporter`.
+
 #### Fixed
 
 - **Swagger overlay**: `GET /swagger/{type}/{model}` now removes paths not declared in the service's `operations` map instead of leaving them in unmodified — backends that expose extra undocumented paths (e.g. `/v1/models`) no longer leak them into the per-service spec.
@@ -671,6 +684,14 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [Unreleased]
+
+### [v0.11.0] — 2026-07-21
+
+#### Changed
+
+- **Gateway completion callback**: after persisting a job's result to Redis, the relay now makes a single bounded HTTP call (`POST /-/relay/jobs/{id}/complete`, 5s timeout, no retry) to the gateway instead of debiting rate-limit/usage budgets and delivering the webhook itself. New required config: `gateway.base_url` (env `GATEWAY_BASE_URL`), the gateway's in-cluster Service URL. New metric `gatewai_relay_gateway_callback_errors_total` for callback failures — the job's own result is unaffected, only the debit/usage/webhook side effects are skipped for that job.
 
 ### [v0.10.0] — 2026-07-09
 

@@ -913,18 +913,28 @@ func (m *mockProcessingLimiter) AddProcessingTime(_ context.Context, _, _, _ str
 }
 
 // mockUsageTrackerSync is a test double for usage.UsageTracker that records
-// TrackTokens calls; the other methods are no-ops.
+// TrackTokens and TrackProcessingTime calls; the other methods are no-ops.
 type mockUsageTrackerSync struct {
 	tokenCalls []struct {
 		consumer, serviceType string
 		prompt, completion    int64
 	}
+	processingTimeCalls []struct {
+		consumer, serviceType string
+		seconds               float64
+	}
 }
 
-func (m *mockUsageTrackerSync) TrackRequest(_ context.Context, _, _ string)                   {}
-func (m *mockUsageTrackerSync) TrackJob(_ context.Context, _, _ string)                       {}
-func (m *mockUsageTrackerSync) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
-func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string)                       {}
+func (m *mockUsageTrackerSync) TrackRequest(_ context.Context, _, _ string) {}
+func (m *mockUsageTrackerSync) TrackJob(_ context.Context, _, _ string)     {}
+func (m *mockUsageTrackerSync) TrackProcessingTime(_ context.Context, consumer, serviceType string, seconds float64) {
+	m.processingTimeCalls = append(m.processingTimeCalls, struct {
+		consumer, serviceType string
+		seconds               float64
+	}{consumer, serviceType, seconds})
+}
+func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string) {}
+func (m *mockUsageTrackerSync) TrackUserType(_ context.Context, _, _, _ string)               {}
 func (m *mockUsageTrackerSync) UpdateRetention(_ time.Duration)                               {}
 func (m *mockUsageTrackerSync) TrackTokens(_ context.Context, consumer, serviceType string, prompt, completion int64) {
 	m.tokenCalls = append(m.tokenCalls, struct {
@@ -1122,6 +1132,57 @@ func TestSyncHandler_ProcessingTimeLimitAddsAfterProxy(t *testing.T) {
 	}
 	if limiter.addSeconds != 5.5 {
 		t.Errorf("expected addSeconds=5.5, got %v", limiter.addSeconds)
+	}
+}
+
+// TestSyncHandler_ProcessingTimeLimitAddsAfterProxy_TracksUsageTotal is a
+// regression guard: a successful sync-direct proxy must also feed the
+// permanent usage total (usage.UsageTracker.TrackProcessingTime), not just
+// the rate-limit window (ratelimit.ProcessingTimeChecker.AddProcessingTime).
+// Before this fix, /usage's total.processing_time_seconds never increased
+// for sync-direct traffic even though the window quota was tracked correctly.
+func TestSyncHandler_ProcessingTimeLimitAddsAfterProxy_TracksUsageTotal(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `{"text":"hello","processing_time":5.5}`)
+	}))
+	defer upstream.Close()
+
+	limiter := &mockProcessingLimiter{
+		checkResult: ratelimit.CheckResult{Allowed: true, Limit: 100, Remaining: 50},
+	}
+	tracker := &mockUsageTrackerSync{}
+	cfgs := []config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "whisper-large-v3",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		InferenceURL: upstream.URL,
+	}}
+	h := handler.NewSyncHandler(service.NewRegistry(cfgs), "X-Consumer", nil, nil).
+		WithProcessingLimiter(limiter, "X-User-Type").
+		WithUsageTracker(tracker)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/audio/transcriptions",
+		strings.NewReader(`{"model":"whisper-large-v3"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Consumer", "consumer-x")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(tracker.processingTimeCalls) != 1 {
+		t.Fatalf("expected 1 TrackProcessingTime call, got %d", len(tracker.processingTimeCalls))
+	}
+	if tracker.processingTimeCalls[0].seconds != 5.5 {
+		t.Errorf("TrackProcessingTime: got seconds=%v, want 5.5", tracker.processingTimeCalls[0].seconds)
+	}
+	if tracker.processingTimeCalls[0].consumer != "consumer-x" {
+		t.Errorf("TrackProcessingTime: got consumer=%q, want consumer-x", tracker.processingTimeCalls[0].consumer)
 	}
 }
 

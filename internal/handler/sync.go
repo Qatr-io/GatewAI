@@ -338,10 +338,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		start := time.Now()
-		consumer := ""
-		if h.consumerHeader != "" {
-			consumer = r.Header.Get(h.consumerHeader)
-		}
+		consumer, userType := h.resolveConsumerAndType(r)
 		sw := &statusWriter{ResponseWriter: w}
 		h.llm.ServeJSON(sw, r, def, raw, consumer)
 		metrics.RequestsTotal.WithLabelValues("llm", def.Type, def.Model, strconv.Itoa(sw.Status())).Inc()
@@ -349,6 +346,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		if h.usageTracker != nil && consumer != "" && sw.Status() < 500 {
 			h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
 			h.usageTracker.TrackActive(r.Context(), consumer)
+			h.usageTracker.TrackUserType(r.Context(), consumer, def.Type, userType)
 		}
 		return
 	}
@@ -467,10 +465,11 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 			defer resp.Body.Close()
 			metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, strconv.Itoa(resp.StatusCode)).Inc()
 			if h.usageTracker != nil && resp.StatusCode < 500 {
-				consumer, _ := h.resolveConsumerAndType(r)
+				consumer, userType := h.resolveConsumerAndType(r)
 				if consumer != "" {
 					h.usageTracker.TrackRequest(r.Context(), consumer, def.Type)
 					h.usageTracker.TrackActive(r.Context(), consumer)
+					h.usageTracker.TrackUserType(r.Context(), consumer, def.Type, userType)
 				}
 			}
 			for key, values := range resp.Header {
@@ -483,14 +482,19 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 				respBody, _ := io.ReadAll(resp.Body)
 				_, _ = w.Write(respBody)
 				consumer, userType := h.resolveConsumerAndType(r)
-				if h.processingLimiter != nil {
+				if h.processingLimiter != nil || h.usageTracker != nil {
 					pt := extractProcessingTimeFromResponse(respBody)
 					if pt == 0 {
 						pt = time.Since(start).Seconds()
 					}
 					if consumer != "" {
-						if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
-							slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+						if h.processingLimiter != nil {
+							if err := h.processingLimiter.AddProcessingTime(r.Context(), consumer, userType, def.Type, pt); err != nil {
+								slog.ErrorContext(r.Context(), "failed to add processing time", "error", err)
+							}
+						}
+						if h.usageTracker != nil {
+							h.usageTracker.TrackProcessingTime(r.Context(), consumer, def.Type, pt)
 						}
 					}
 				}

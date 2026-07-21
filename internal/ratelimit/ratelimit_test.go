@@ -777,3 +777,118 @@ func TestCheckTokens_PolicyLimits_AnonymousSkipped(t *testing.T) {
 		t.Fatal("expected allowed: anonymous consumer should skip policy token check")
 	}
 }
+
+func TestResetQuota_DeletesRateTokenAndProcessingKeysAcrossUserTypes(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {
+			"premium": {Rate: 10, Period: "1m", TokenRate: 1000, TokenPeriod: "1m", ProcessingTime: 60, ProcessingPeriod: "1m"},
+			"*":       {Rate: 5, Period: "1m"},
+		},
+	}
+	l, mr := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	ctx := context.Background()
+
+	rPremium := httptest.NewRequest("POST", "/", nil)
+	rPremium.Header.Set("X-Consumer", "acme")
+	rPremium.Header.Set("X-User-Type", "premium")
+	if _, err := l.Check(ctx, rPremium, "audio"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.AddTokens(ctx, rPremium, "audio", 100); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.AddProcessingTime(ctx, "acme", "premium", "audio", 5); err != nil {
+		t.Fatal(err)
+	}
+
+	rDefault := httptest.NewRequest("POST", "/", nil)
+	rDefault.Header.Set("X-Consumer", "acme")
+	if _, err := l.Check(ctx, rDefault, "audio"); err != nil {
+		t.Fatal(err)
+	}
+
+	policyCfg := &config.RateLimitConfig{Rate: 3, Period: "1m", TokenRate: 500, TokenPeriod: "1m"}
+	ctxPolicy := ratelimit.WithPolicyLimits(ctx, policyCfg)
+	if _, err := l.Check(ctxPolicy, rPremium, "audio"); err != nil {
+		t.Fatal(err)
+	}
+	if err := l.AddTokens(ctxPolicy, rPremium, "audio", 50); err != nil {
+		t.Fatal(err)
+	}
+
+	wantKeys := []string{
+		"rl:acme:audio:premium",
+		"rl:acme:audio:*",
+		"trl:acme:audio:premium",
+		"ptrl:acme:audio:premium",
+		"rlp:acme:audio",
+		"trlp:acme:audio",
+	}
+	for _, k := range wantKeys {
+		if !mr.Exists(k) {
+			t.Fatalf("setup: expected key %q to exist before reset", k)
+		}
+	}
+
+	deleted, err := l.ResetQuota(ctx, "acme", "audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != len(wantKeys) {
+		t.Fatalf("deleted = %d, want %d", deleted, len(wantKeys))
+	}
+	for _, k := range wantKeys {
+		if mr.Exists(k) {
+			t.Fatalf("expected key %q to be deleted by ResetQuota", k)
+		}
+	}
+}
+
+func TestResetQuota_NoKeys_ReturnsZero(t *testing.T) {
+	l, _ := newLimiter(t, map[string]map[string]config.RateLimitConfig{}, "X-Consumer", "X-User-Type")
+	deleted, err := l.ResetQuota(context.Background(), "acme", "audio")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("deleted = %d, want 0", deleted)
+	}
+}
+
+func TestResetQuota_DoesNotAffectOtherConsumersOrServiceTypes(t *testing.T) {
+	limits := map[string]map[string]config.RateLimitConfig{
+		"audio": {"*": {Rate: 5, Period: "1m"}},
+		"video": {"*": {Rate: 5, Period: "1m"}},
+	}
+	l, mr := newLimiter(t, limits, "X-Consumer", "X-User-Type")
+	ctx := context.Background()
+
+	rAcme := httptest.NewRequest("POST", "/", nil)
+	rAcme.Header.Set("X-Consumer", "acme")
+	if _, err := l.Check(ctx, rAcme, "audio"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := l.Check(ctx, rAcme, "video"); err != nil {
+		t.Fatal(err)
+	}
+
+	rOther := httptest.NewRequest("POST", "/", nil)
+	rOther.Header.Set("X-Consumer", "other")
+	if _, err := l.Check(ctx, rOther, "audio"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := l.ResetQuota(ctx, "acme", "audio"); err != nil {
+		t.Fatal(err)
+	}
+
+	if mr.Exists("rl:acme:audio:*") {
+		t.Fatal("expected acme's audio key to be deleted")
+	}
+	if !mr.Exists("rl:acme:video:*") {
+		t.Fatal("acme's video key should be untouched by an audio-scoped reset")
+	}
+	if !mr.Exists("rl:other:audio:*") {
+		t.Fatal("other consumer's audio key should be untouched")
+	}
+}

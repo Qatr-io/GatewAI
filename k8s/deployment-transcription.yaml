@@ -93,7 +93,7 @@ spec:
               nvidia.com/mig-1g.10gb: "1"
         # ── Relay consumer ───────────────────────────────────────────────────
         - name: relay
-          image: ghcr.io/qatr-io/gatewai/relay:v0.8.0
+          image: ghcr.io/qatr-io/gatewai/relay:v0.11.0
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -124,6 +124,8 @@ spec:
                   optional: true
             - name: INFERENCE_TIMEOUT
               value: "13000s"
+            - name: GATEWAY_BASE_URL
+              value: "http://gatewai-gateway.default.svc.cluster.local"
           volumeMounts:
             - mountPath: /etc/gatewai/
               name: gatewai-relay

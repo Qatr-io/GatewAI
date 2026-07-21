@@ -6,7 +6,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/usage"
 )
 
@@ -15,9 +17,12 @@ type fakeStore struct {
 	consumerUsage map[string]*usage.ConsumerUsage
 	consumers     []string
 	total         int64
+
+	report    *usage.UsageReport
+	reportErr error
 }
 
-func (f *fakeStore) GetConsumerUsage(_ context.Context, consumer, _ string, _ []string) (*usage.ConsumerUsage, error) {
+func (f *fakeStore) GetConsumerUsage(_ context.Context, consumer, _ string, _ []string, _ map[string][]string) (*usage.ConsumerUsage, error) {
 	if cu, ok := f.consumerUsage[consumer]; ok {
 		return cu, nil
 	}
@@ -30,6 +35,23 @@ func (f *fakeStore) ListConsumers(_ context.Context, _, _ int64) ([]string, int6
 
 func (f *fakeStore) ListConsumersByType(_ context.Context, _ string, _, _ int64) ([]string, int64, error) {
 	return f.consumers, f.total, nil
+}
+
+func (f *fakeStore) UpdateRateLimits(_, _ map[string]map[string]config.RateLimitConfig) {}
+
+func (f *fakeStore) GetUsageReport(_ context.Context, serviceType, period string, from, to time.Time) (*usage.UsageReport, error) {
+	if f.reportErr != nil {
+		return nil, f.reportErr
+	}
+	if f.report != nil {
+		return f.report, nil
+	}
+	return &usage.UsageReport{
+		ServiceType: serviceType,
+		Period:      period,
+		From:        from.Format("2006-01-02"),
+		To:          to.Format("2006-01-02"),
+	}, nil
 }
 
 func newHandlerFromStore(store usage.UsageStore) *usage.UsageHandler {
@@ -184,5 +206,110 @@ func TestAdminListUsage_Offset(t *testing.T) {
 	json.NewDecoder(w.Body).Decode(&resp)
 	if resp.Offset != 10 {
 		t.Errorf("offset = %d, want 10", resp.Offset)
+	}
+}
+
+func reportBuckets() []usage.PeriodUsage {
+	return []usage.PeriodUsage{
+		{Bucket: "202601", Requests: 100, Jobs: 5, ProcessingTime: 12.5, Tokens: &usage.TokenUsage{Prompt: 1000, Completion: 200}},
+		{Bucket: "202602", Requests: 50, Jobs: 2, ProcessingTime: 7.5},
+		{Bucket: "202603", Requests: 25, Tokens: &usage.TokenUsage{Prompt: 500, Completion: 100}},
+	}
+}
+
+func TestAdminUsageReport_TotalOmittedByDefault(t *testing.T) {
+	store := &fakeStore{report: &usage.UsageReport{ServiceType: "llm", Period: "monthly", Buckets: reportBuckets()}}
+	h := newHandlerFromStore(store)
+	r := httptest.NewRequest("GET", "/-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31", nil)
+	w := httptest.NewRecorder()
+	h.AdminUsageReport(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", w.Code)
+	}
+	var raw map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["total"]; ok {
+		t.Errorf("total should be omitted when total=true is not passed, got %+v", raw["total"])
+	}
+}
+
+func TestAdminUsageReport_TotalTrue_SumsBuckets(t *testing.T) {
+	store := &fakeStore{report: &usage.UsageReport{ServiceType: "llm", Period: "monthly", Buckets: reportBuckets()}}
+	h := newHandlerFromStore(store)
+	r := httptest.NewRequest("GET", "/-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31&total=true", nil)
+	w := httptest.NewRecorder()
+	h.AdminUsageReport(w, r)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200", w.Code)
+	}
+	var resp usage.UsageReport
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total == nil {
+		t.Fatal("total should be populated when total=true is passed")
+	}
+	if resp.Total.Requests != 175 {
+		t.Errorf("total.requests = %d, want 175", resp.Total.Requests)
+	}
+	if resp.Total.Jobs != 7 {
+		t.Errorf("total.jobs = %d, want 7", resp.Total.Jobs)
+	}
+	if resp.Total.ProcessingTime != 20 {
+		t.Errorf("total.processing_time_seconds = %v, want 20", resp.Total.ProcessingTime)
+	}
+	if resp.Total.Tokens == nil {
+		t.Fatal("total.tokens should be populated: at least one bucket carried tokens")
+	}
+	if resp.Total.Tokens.Prompt != 1500 || resp.Total.Tokens.Completion != 300 {
+		t.Errorf("total.tokens = %+v, want prompt=1500 completion=300", resp.Total.Tokens)
+	}
+}
+
+func TestAdminUsageReport_TotalTrue_NoTokens(t *testing.T) {
+	store := &fakeStore{report: &usage.UsageReport{
+		ServiceType: "audio",
+		Period:      "monthly",
+		Buckets: []usage.PeriodUsage{
+			{Bucket: "202601", Requests: 10, Jobs: 10, ProcessingTime: 5},
+		},
+	}}
+	h := newHandlerFromStore(store)
+	r := httptest.NewRequest("GET", "/-/usage/report?type=audio&period=monthly&from=2026-01-01&to=2026-01-31&total=true", nil)
+	w := httptest.NewRecorder()
+	h.AdminUsageReport(w, r)
+
+	var resp usage.UsageReport
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total == nil {
+		t.Fatal("total should be populated")
+	}
+	if resp.Total.Tokens != nil {
+		t.Errorf("total.tokens should stay nil when no bucket carried tokens, got %+v", resp.Total.Tokens)
+	}
+}
+
+func TestAdminUsageReport_TotalTrue_EmptyBuckets(t *testing.T) {
+	store := &fakeStore{report: &usage.UsageReport{ServiceType: "llm", Period: "monthly"}}
+	h := newHandlerFromStore(store)
+	r := httptest.NewRequest("GET", "/-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-01-31&total=true", nil)
+	w := httptest.NewRecorder()
+	h.AdminUsageReport(w, r)
+
+	var resp usage.UsageReport
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Total == nil {
+		t.Fatal("total should be populated even with zero buckets")
+	}
+	if resp.Total.Requests != 0 || resp.Total.Tokens != nil {
+		t.Errorf("expected zero-valued total, got %+v", resp.Total)
 	}
 }

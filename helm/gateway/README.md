@@ -51,7 +51,7 @@ Gateway (:8080)
 | Parameter | Description | Default |
 |---|---|---|
 | `image.repository` | Gateway image | `ghcr.io/qatr-io/gatewai/gateway` |
-| `image.tag` | Image tag | `v0.19.0` |
+| `image.tag` | Image tag | `v0.20.0` |
 | `image.pullPolicy` | Pull policy | `IfNotPresent` |
 
 ### Config
@@ -573,3 +573,12 @@ No breaking changes.
 
 **New optional parameters:**
 - `usage.retention`
+
+### 0.19.0 → 0.20.0
+
+No breaking changes for the chart itself. Requires the relay to be redeployed with `gateway.base_url` set (see the relay's own release notes) once the new gateway image is live.
+
+**New features:**
+- **`GET /-/usage/report`** (admin) — cross-consumer, calendar-aligned usage totals per service type, for finance/BI reporting; optional `total=true` sums all buckets.
+- **`POST /-/quota/reset`** (admin) — clears a consumer's rate-limit/token-budget Redis keys for one service type.
+- **`gatewai_relay_queue_depth{model,state}`** — new gauge exposing live relay queue depth.

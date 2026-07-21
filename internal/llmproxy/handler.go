@@ -26,6 +26,7 @@ import (
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/usage"
 )
 
 // providerLookup is the subset of provider.Registry used by Handler,
@@ -51,6 +52,15 @@ type Handler struct {
 	audit          AuditConfig
 	tokenLimiter   ratelimit.TokenChecker // nil = token rate limiting disabled
 	guard          *guardrails.Checker    // output DLP scanner
+	usageTracker   usage.UsageTracker     // nil = calendar usage reporting disabled
+}
+
+// WithUsageTracker sets the usage tracker used to feed the cross-consumer
+// calendar-aligned usage report (GET /-/usage/report) with LLM token counts.
+// Optional: nil (the default) simply skips that reporting for LLM requests.
+func (h *Handler) WithUsageTracker(t usage.UsageTracker) *Handler {
+	h.usageTracker = t
+	return h
 }
 
 // New creates a Handler. httpClient should have a generous timeout (e.g. 15 min).
@@ -171,6 +181,9 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 				tCtx := context.WithoutCancel(r.Context())
 				h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
 				h.tracker.Track(tCtx, consumer, userType, "completion", usage.CompletionTokens)
+				if h.usageTracker != nil {
+					h.usageTracker.TrackTokens(tCtx, consumer, def.Type, int64(usage.PromptTokens), int64(usage.CompletionTokens))
+				}
 			}
 			w.Header().Set("Content-Type", entry.ContentType)
 			w.Header().Set("X-Cache", "HIT")
@@ -296,6 +309,9 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			tCtx := context.WithoutCancel(r.Context())
 			h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
 			h.tracker.Track(tCtx, consumer, userType, "completion", usage.CompletionTokens)
+			if h.usageTracker != nil {
+				h.usageTracker.TrackTokens(tCtx, consumer, def.Type, int64(usage.PromptTokens), int64(usage.CompletionTokens))
+			}
 		}
 	}
 

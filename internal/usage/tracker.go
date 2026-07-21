@@ -18,6 +18,12 @@ type UsageTracker interface {
 	TrackProcessingTime(ctx context.Context, consumer, serviceType string, seconds float64)
 	TrackTokens(ctx context.Context, consumer, serviceType string, prompt, completion int64)
 	TrackActive(ctx context.Context, consumer string)
+	// TrackUserType records the rate-limit tier a consumer was actually
+	// evaluated under for a given service type, at the moment a real request
+	// to that service was handled. A consumer can hold a different tier per
+	// service (distinct roles per service upstream), so this is looked up
+	// per service type rather than assumed from a single request's identity.
+	TrackUserType(ctx context.Context, consumer, serviceType, userType string)
 	UpdateRetention(d time.Duration)
 }
 
@@ -41,6 +47,29 @@ if tonumber(ARGV[3]) > 0 and redis.call('TTL', KEYS[1]) == -1 then
     redis.call('EXPIRE', KEYS[1], ARGV[3])
 end
 return 1
+`)
+
+// hsetWithTTL sets a hash field and sets a TTL on the key only on first
+// creation (mirrors zincrWithTTL's TTL semantics for the hash case).
+// Keys: KEYS[1]=key; Args: ARGV[1]=field, ARGV[2]=value, ARGV[3]=ttlSeconds (0=no TTL)
+var hsetWithTTL = redis.NewScript(`
+redis.call('HSET', KEYS[1], ARGV[1], ARGV[2])
+if tonumber(ARGV[3]) > 0 and redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[3])
+end
+return 1
+`)
+
+// incrWithTTL atomically increments a plain counter key and sets a TTL on
+// the key only on first creation. Used for cross-consumer period-aggregate
+// counters (usage:agg:*), which are plain counters rather than sorted sets.
+// Keys: KEYS[1]=key; Args: ARGV[1]=increment, ARGV[2]=ttlSeconds (0=no TTL)
+var incrWithTTL = redis.NewScript(`
+local val = redis.call('INCRBYFLOAT', KEYS[1], ARGV[1])
+if tonumber(ARGV[2]) > 0 and redis.call('TTL', KEYS[1]) == -1 then
+    redis.call('EXPIRE', KEYS[1], ARGV[2])
+end
+return val
 `)
 
 type redisUsageTracker struct {
@@ -70,11 +99,28 @@ func (t *redisUsageTracker) zincrBy(ctx context.Context, key string, delta float
 	}
 }
 
+// trackPeriodAggregate increments the cross-consumer calendar-aligned
+// counters (usage:agg:{serviceType}:{metric}:{period}:{bucket}) consumed by
+// GetUsageReport. Unlike the per-consumer sorted sets above, these are plain
+// counters with no consumer dimension, so their cardinality stays bounded
+// regardless of consumer count.
+func (t *redisUsageTracker) trackPeriodAggregate(ctx context.Context, serviceType, metric string, delta float64) {
+	buckets := periodBuckets(time.Now())
+	for period, bucket := range buckets {
+		key := "usage:agg:" + serviceType + ":" + metric + ":" + period + ":" + bucket
+		ttl := int64(periodTTL(period).Seconds())
+		if err := incrWithTTL.Run(ctx, t.rdb, []string{key}, delta, ttl).Err(); err != nil {
+			slog.WarnContext(ctx, "usage tracker: trackPeriodAggregate failed", "key", key, "error", err)
+		}
+	}
+}
+
 func (t *redisUsageTracker) TrackRequest(ctx context.Context, consumer, serviceType string) {
 	if consumer == "" {
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":requests", 1, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "requests", 1)
 }
 
 func (t *redisUsageTracker) TrackJob(ctx context.Context, consumer, serviceType string) {
@@ -82,6 +128,7 @@ func (t *redisUsageTracker) TrackJob(ctx context.Context, consumer, serviceType 
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":jobs", 1, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "jobs", 1)
 }
 
 func (t *redisUsageTracker) TrackProcessingTime(ctx context.Context, consumer, serviceType string, seconds float64) {
@@ -89,6 +136,7 @@ func (t *redisUsageTracker) TrackProcessingTime(ctx context.Context, consumer, s
 		return
 	}
 	t.zincrBy(ctx, "usage:consumer:"+serviceType+":processing_time", seconds, consumer)
+	t.trackPeriodAggregate(ctx, serviceType, "processing_time", seconds)
 }
 
 func (t *redisUsageTracker) TrackTokens(ctx context.Context, consumer, serviceType string, prompt, completion int64) {
@@ -97,9 +145,11 @@ func (t *redisUsageTracker) TrackTokens(ctx context.Context, consumer, serviceTy
 	}
 	if prompt > 0 {
 		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:prompt", float64(prompt), consumer)
+		t.trackPeriodAggregate(ctx, serviceType, "tokens_prompt", float64(prompt))
 	}
 	if completion > 0 {
 		t.zincrBy(ctx, "usage:consumer:"+serviceType+":tokens:completion", float64(completion), consumer)
+		t.trackPeriodAggregate(ctx, serviceType, "tokens_completion", float64(completion))
 	}
 }
 
@@ -111,6 +161,21 @@ func (t *redisUsageTracker) TrackActive(ctx context.Context, consumer string) {
 	ttl := t.ttlSeconds()
 	if err := zaddGTWithTTL.Run(ctx, t.rdb, []string{"usage:consumers"}, now, consumer, ttl).Err(); err != nil {
 		slog.WarnContext(ctx, "usage tracker: TrackActive failed", "consumer", consumer, "error", err)
+	}
+}
+
+// TrackUserType records userType as consumer's current rate-limit tier for
+// serviceType in a Redis hash ("usage:consumer:{serviceType}:usertype"),
+// consulted by the usage store instead of trusting a single request's own
+// resolved identity for every service type being reported.
+func (t *redisUsageTracker) TrackUserType(ctx context.Context, consumer, serviceType, userType string) {
+	if consumer == "" || userType == "" {
+		return
+	}
+	key := "usage:consumer:" + serviceType + ":usertype"
+	ttl := t.ttlSeconds()
+	if err := hsetWithTTL.Run(ctx, t.rdb, []string{key}, consumer, userType, ttl).Err(); err != nil {
+		slog.WarnContext(ctx, "usage tracker: TrackUserType failed", "key", key, "error", err)
 	}
 }
 
@@ -126,6 +191,7 @@ func (noopUsageTracker) TrackJob(_ context.Context, _, _ string)                
 func (noopUsageTracker) TrackProcessingTime(_ context.Context, _, _ string, _ float64) {}
 func (noopUsageTracker) TrackTokens(_ context.Context, _, _ string, _, _ int64)        {}
 func (noopUsageTracker) TrackActive(_ context.Context, _ string)                       {}
+func (noopUsageTracker) TrackUserType(_ context.Context, _, _, _ string)               {}
 func (noopUsageTracker) UpdateRetention(_ time.Duration)                               {}
 
 // NoopUsageTracker is a shared no-op tracker. Safe for concurrent use.
