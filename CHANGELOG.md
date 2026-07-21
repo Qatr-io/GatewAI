@@ -18,6 +18,8 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+### [v0.20.0] — 2026-07-21
+
 #### Added
 
 - **New admin endpoint `GET /-/usage/report?type=X&period=daily|weekly|monthly&from=YYYY-MM-DD&to=YYYY-MM-DD`**: cross-consumer, calendar-aligned usage totals (requests, jobs, processing time, LLM tokens) for one service type — for finance/BI reporting (e.g. "total tokens for `llm` in March 2026"), not a per-consumer breakdown. Buckets are UTC-aligned; the `[from, to]` range is capped at 400 buckets per request. An optional `total=true` param sums every bucket into a top-level `total` field. Restricted to the `/-/` admin namespace — protect with upstream auth. Requires `server.consumer_header` (same gate as the existing usage-tracking endpoints). LLM proxy requests now also feed the underlying per-consumer token counters, closing a gap where LLM token usage wasn't reflected in `GET /usage` / `GET /-/usage`.
@@ -675,6 +677,8 @@ New `lifecycle.gc` config block:
 ## Relay
 
 ### [Unreleased]
+
+### [v0.11.0] — 2026-07-21
 
 #### Changed
 
