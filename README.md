@@ -30,6 +30,7 @@ API Gateway for KServe inference services on Kubernetes — async job queue, Ope
 - AES-256-GCM at-rest encryption for S3 objects
 - KEDA autoscaling — relay scales on Redis queue depth, scale-to-zero
 - Prometheus metrics — requests, latency, tokens, cache, rate limits, top-N consumer usage
+- Per-consumer usage tracking — `GET /usage` / `GET /-/usage`, cumulative + windowed request/token counters across all service types
 
 ## Documentation
 
