@@ -530,6 +530,7 @@ func usageReportPathItem() map[string]any {
 				map[string]any{"name": "period", "in": "query", "required": true, "description": "Bucket granularity", "schema": map[string]any{"type": "string", "enum": []string{"daily", "weekly", "monthly"}}},
 				map[string]any{"name": "from", "in": "query", "required": true, "description": "Range start (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-01-01"}},
 				map[string]any{"name": "to", "in": "query", "required": true, "description": "Range end (inclusive), UTC", "schema": map[string]any{"type": "string", "format": "date", "example": "2026-03-31"}},
+				map[string]any{"name": "total", "in": "query", "required": false, "description": "When \"true\", also sum every bucket into the response's top-level `total` field", "schema": map[string]any{"type": "string", "enum": []string{"true", "false"}, "default": "false"}},
 			},
 			"responses": map[string]any{
 				"200": map[string]any{
@@ -961,6 +962,10 @@ func specComponents() map[string]any {
 					"buckets": map[string]any{
 						"type":  "array",
 						"items": map[string]any{"$ref": "#/components/schemas/PeriodUsage"},
+					},
+					"total": map[string]any{
+						"description": "Sum of every bucket in `buckets`. Only present when the request sets `total=true`.",
+						"allOf":       []any{map[string]any{"$ref": "#/components/schemas/TotalUsage"}},
 					},
 				},
 			},

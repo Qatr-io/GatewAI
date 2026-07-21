@@ -143,8 +143,9 @@ func (h *UsageHandler) AdminListUsage(w http.ResponseWriter, r *http.Request) {
 
 // AdminUsageReport handles GET /-/usage/report: cross-consumer calendar-aligned
 // totals for one service type, for finance/BI reporting.
-// Query params (all required): type, period (daily|weekly|monthly),
-// from, to (YYYY-MM-DD, UTC, inclusive).
+// Query params: type, period (daily|weekly|monthly), from, to (YYYY-MM-DD,
+// UTC, inclusive) are all required; total=true additionally sums every
+// bucket into the response's top-level "total" field.
 func (h *UsageHandler) AdminUsageReport(w http.ResponseWriter, r *http.Request) {
 	svcType := r.URL.Query().Get("type")
 	if svcType == "" {
@@ -185,7 +186,34 @@ func (h *UsageHandler) AdminUsageReport(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	if r.URL.Query().Get("total") == "true" {
+		result.Total = sumBuckets(result.Buckets)
+	}
+
 	writeJSON(w, http.StatusOK, result)
+}
+
+// sumBuckets adds up every PeriodUsage bucket into a single TotalUsage.
+// Tokens stays nil if no bucket carried any (mirrors PeriodUsage's own
+// omit-when-zero convention).
+func sumBuckets(buckets []PeriodUsage) *TotalUsage {
+	total := &TotalUsage{}
+	var tokens TokenUsage
+	haveTokens := false
+	for _, b := range buckets {
+		total.Requests += b.Requests
+		total.Jobs += b.Jobs
+		total.ProcessingTime += b.ProcessingTime
+		if b.Tokens != nil {
+			haveTokens = true
+			tokens.Prompt += b.Tokens.Prompt
+			tokens.Completion += b.Tokens.Completion
+		}
+	}
+	if haveTokens {
+		total.Tokens = &tokens
+	}
+	return total
 }
 
 func (h *UsageHandler) serviceTypes() []string {

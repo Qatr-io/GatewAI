@@ -264,13 +264,14 @@ Requires `server.consumer_header` to be configured (same gate as `GET /usage` / 
 | `period` | Yes | Bucket granularity: `daily`, `weekly`, or `monthly` |
 | `from` | Yes | Range start (inclusive), UTC, `YYYY-MM-DD` |
 | `to` | Yes | Range end (inclusive), UTC, `YYYY-MM-DD` |
+| `total` | No | When `true`, also sum every bucket into a top-level `total` field |
 
 The `[from, to]` range is capped at 400 buckets per request (about 400 days, ~7.5 years of weekly buckets, or ~33 years of monthly buckets) — returns `400 Bad Request` beyond that.
 
 **Example**
 
 ```bash
-GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31
+GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31&total=true
 ```
 
 **Response**
@@ -285,7 +286,11 @@ GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31
     { "bucket": "202601", "requests": 12000, "tokens": { "prompt": 450000, "completion": 120000 } },
     { "bucket": "202602", "requests": 15000, "tokens": { "prompt": 510000, "completion": 138000 } },
     { "bucket": "202603", "requests": 9000,  "tokens": { "prompt": 300000, "completion": 81000 } }
-  ]
+  ],
+  "total": {
+    "requests": 36000,
+    "tokens": { "prompt": 1260000, "completion": 339000 }
+  }
 }
 ```
 
@@ -298,6 +303,7 @@ GET /-/usage/report?type=llm&period=monthly&from=2026-01-01&to=2026-03-31
 | `buckets[].jobs` | Async jobs submitted (async service types only) |
 | `buckets[].processing_time_seconds` | Cumulative inference seconds (async only) |
 | `buckets[].tokens` | LLM token counts (`prompt` + `completion`) — omitted when no tokens were tracked in that bucket |
+| `total` | Sum of every bucket in `buckets`. Only present when `total=true` is passed |
 
 Buckets with no activity are still returned, zero-filled — the response always has one entry per bucket in the requested range.
 

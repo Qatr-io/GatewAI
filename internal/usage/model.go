@@ -94,4 +94,8 @@ type UsageReport struct {
 	From        string        `json:"from"`
 	To          string        `json:"to"`
 	Buckets     []PeriodUsage `json:"buckets"`
+	// Total sums every bucket in Buckets. Only populated when the request
+	// sets total=true (omitted otherwise to avoid changing the response
+	// shape for existing callers).
+	Total *TotalUsage `json:"total,omitempty"`
 }
