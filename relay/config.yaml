@@ -40,6 +40,10 @@ inference:
   ready_timeout:        "${INFERENCE_READY_TIMEOUT:-10m}"
   ready_interval:       "${INFERENCE_READY_INTERVAL:-5s}"
   health_check_timeout: "${INFERENCE_HEALTH_CHECK_TIMEOUT:-2s}"
+  # health_url: override the URL polled at startup to determine readiness.
+  # Defaults to base_url + "/health". Set when the inference service's health
+  # endpoint lives at a different path or host/port than the inference calls.
+  health_url:           "${INFERENCE_HEALTH_URL:-}"
   extra_fields:
     response_format: "json"
     # language: "fr"
