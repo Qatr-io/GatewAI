@@ -54,13 +54,19 @@ func (c *Config) QueuePopTimeoutDuration() time.Duration {
 // extra_fields contains optional form fields sent with every multipart request
 // (e.g. response_format, language, prompt). Empty values are skipped.
 type InferenceConfig struct {
-	BaseURL            string            `yaml:"base_url"`
-	APIKey             string            `yaml:"api_key"`
-	Timeout            string            `yaml:"timeout"`
-	ReadyTimeout       string            `yaml:"ready_timeout"`
-	ReadyInterval      string            `yaml:"ready_interval"`
-	HealthCheckTimeout string            `yaml:"health_check_timeout"`
-	ExtraFields        map[string]string `yaml:"extra_fields"`
+	BaseURL            string `yaml:"base_url"`
+	APIKey             string `yaml:"api_key"`
+	Timeout            string `yaml:"timeout"`
+	ReadyTimeout       string `yaml:"ready_timeout"`
+	ReadyInterval      string `yaml:"ready_interval"`
+	HealthCheckTimeout string `yaml:"health_check_timeout"`
+	// HealthURL overrides the URL polled at startup to determine readiness.
+	// Defaults to base_url + "/health" when empty. Set this when the
+	// inference service's health endpoint lives at a different path or
+	// even a different host/port than the one used for actual inference
+	// requests.
+	HealthURL   string            `yaml:"health_url"`
+	ExtraFields map[string]string `yaml:"extra_fields"`
 }
 
 // TimeoutDuration returns the configured inference timeout.
@@ -101,6 +107,15 @@ func (c InferenceConfig) HealthCheckTimeoutDuration() time.Duration {
 		return d
 	}
 	return 2 * time.Second
+}
+
+// HealthCheckURL returns the URL polled at startup to determine readiness:
+// HealthURL if set, otherwise base_url + "/health".
+func (c InferenceConfig) HealthCheckURL() string {
+	if c.HealthURL != "" {
+		return c.HealthURL
+	}
+	return strings.TrimRight(c.BaseURL, "/") + "/health"
 }
 
 // GatewayConfig holds the gateway's in-cluster address for the completion callback.
