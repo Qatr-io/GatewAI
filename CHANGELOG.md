@@ -687,6 +687,12 @@ New `lifecycle.gc` config block:
 
 ### [Unreleased]
 
+### [v0.11.1] — 2026-07-23
+
+#### Fixed
+
+- **Configurable inference health-check URL**: the startup readiness check always derived the health-check URL as `inference.base_url + "/health"`, with no way to point it at a different path or host/port than the one used for actual inference requests. Added an optional `inference.health_url` config field (env `INFERENCE_HEALTH_URL`) that overrides the derived URL when set.
+
 ### [v0.11.0] — 2026-07-21
 
 #### Changed
