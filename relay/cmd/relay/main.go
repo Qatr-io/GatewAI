@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -148,7 +147,7 @@ func main() {
 
 	proc := relayproc.New(adp, s3Client, pub)
 
-	inferenceHealthURL := strings.TrimRight(cfg.Inference.BaseURL, "/") + "/health"
+	inferenceHealthURL := cfg.Inference.HealthCheckURL()
 	healthClient := &http.Client{Timeout: cfg.Inference.HealthCheckTimeoutDuration()}
 	waitForInference(inferenceHealthURL, healthClient, cfg.Inference.ReadyTimeoutDuration(), cfg.Inference.ReadyIntervalDuration())
 
