@@ -578,6 +578,15 @@ No breaking changes.
 
 No breaking changes for the chart itself. Requires the relay to be redeployed with `gateway.base_url` set (see the relay's own release notes) once the new gateway image is live.
 
+### 0.20.0 → 0.20.1
+
+No breaking changes.
+
+**New optional parameters:**
+- `alerting.prometheusRule.thresholds.jobsPendingFor` (default `15m`) / `.jobsRunningFor` (default `1h`) — two new `PrometheusRule` alerts, `RelayJobsPendingTooLong` and `RelayJobsRunningTooLong`, based on `gatewai_relay_queue_depth{state}` and `gatewai_jobs_total`. See `values.yaml` (`alerting.prometheusRule.thresholds`) and the [alerting docs](https://qatr-io.github.io/GatewAI/observe/prometheus/#alerts) for the full alert list.
+
+All shipped alerts also lost their legacy `Kevent` name prefix (e.g. `KeventGatewayHighErrorRate` → `GatewayHighErrorRate`) — update any existing Alertmanager routes/silences matching on the old alert names.
+
 **New features:**
 - **`GET /-/usage/report`** (admin) — cross-consumer, calendar-aligned usage totals per service type, for finance/BI reporting; optional `total=true` sums all buckets.
 - **`POST /-/quota/reset`** (admin) — clears a consumer's rate-limit/token-budget Redis keys for one service type.

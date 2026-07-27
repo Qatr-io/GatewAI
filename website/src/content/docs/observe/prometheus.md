@@ -52,6 +52,8 @@ alerting:
       relayJobFailureRateCritical: 0.30 # 30%
       relayInferenceP95Seconds: 120
       rateLimitRejectionRateWarning: 0.20 # 20%
+      jobsPendingFor: 15m
+      jobsRunningFor: 1h
 ```
 
 Add custom rules via `alerting.prometheusRule.extraRules` (appended to the `gatewai-relay` group).
@@ -90,18 +92,24 @@ All alerts are defined in `helm/gateway/templates/prometheusrule.yaml`. Threshol
 
 | Alert | Severity | Description | Threshold key |
 |-------|----------|-------------|---------------|
-| `KeventGatewayHighErrorRate` | warning | > X% of requests return 5xx over 5 min | `gatewayErrorRateWarning` |
-| `KeventGatewayHighErrorRate` | critical | > X% of requests return 5xx over 5 min | `gatewayErrorRateCritical` |
-| `KeventGatewayS3Errors` | warning | Any S3 errors in the last 5 min | — |
-| `KeventGatewaySyncJobsInFlightHigh` | warning | Sync connections above threshold for 5 min | `syncJobsInFlight` |
-| `KeventGatewayRateLimitHighRejectionRate` | warning | > X% of requests rate-limited per service type | `rateLimitRejectionRateWarning` |
-| `KeventGatewayRateLimitErrors` | warning | Redis errors in rate limiter (fail-open) | — |
+| `GatewayHighErrorRate` | warning | > X% of requests return 5xx over 5 min | `gatewayErrorRateWarning` |
+| `GatewayHighErrorRate` | critical | > X% of requests return 5xx over 5 min | `gatewayErrorRateCritical` |
+| `GatewayS3Errors` | warning | Any S3 errors in the last 5 min | — |
+| `GatewaySyncJobsInFlightHigh` | warning | Sync connections above threshold for 5 min | `syncJobsInFlight` |
+| `GatewayRateLimitHighRejectionRate` | warning | > X% of requests rate-limited per service type | `rateLimitRejectionRateWarning` |
+| `GatewayRateLimitErrors` | warning | Redis errors in rate limiter (fail-open) | — |
 
 ### Relay
 
 | Alert | Severity | Description | Threshold key |
 |-------|----------|-------------|---------------|
-| `KeventRelayJobFailureRate` | warning | > X% of relay jobs failing per service type | `relayJobFailureRateWarning` |
-| `KeventRelayJobFailureRate` | critical | > X% of relay jobs failing per service type | `relayJobFailureRateCritical` |
-| `KeventRelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
-| `KeventRelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
+| `RelayJobFailureRate` | warning | > X% of relay jobs failing per service type | `relayJobFailureRateWarning` |
+| `RelayJobFailureRate` | critical | > X% of relay jobs failing per service type | `relayJobFailureRateCritical` |
+| `RelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
+| `RelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
+| `RelayJobsPendingTooLong` | warning | Relay `pending` queue non-empty AND zero jobs completed for that model, for the threshold duration | `jobsPendingFor` |
+| `RelayJobsRunningTooLong` | warning | Relay `processing` queue non-empty AND zero jobs completed for that model, for the threshold duration | `jobsRunningFor` |
+
+Both alerts also require zero completions (`gatewai_jobs_total`) in the same window — queue depth alone can't tell a genuine stall apart from healthy load (no job-level ID/age is exposed), so they only fire when nothing at all is finishing for that model:
+- `RelayJobsRunningTooLong` catches a stuck in-flight job (or crashed relay) rather than firing on any busy model with concurrent jobs.
+- `RelayJobsPendingTooLong` catches the relay not picking up jobs at all (down / stuck starting) rather than firing on a relay that's merely overloaded (arrival rate > capacity) but still actively consuming and completing jobs — that's a capacity-pressure situation, worth watching separately via `gatewai_relay_queue_depth{state="pending"}` if desired, but distinct from a starting problem.

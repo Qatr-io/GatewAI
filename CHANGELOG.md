@@ -956,6 +956,16 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ## Helm chart (gatewai-gateway)
 
+### [0.20.1] — 2026-07-27
+
+#### Added
+- Two `PrometheusRule` alerts in the `gatewai-relay` group, both requiring the relay queue to be non-empty *and* zero `gatewai_jobs_total` completions for that model over the same window (since `gatewai_relay_queue_depth` has no per-job ID/age, and either metric alone would false-positive under normal load): `RelayJobsPendingTooLong` (`pending` queue, `thresholds.jobsPendingFor`, default `15m` — the relay isn't picking up jobs at all, as opposed to being merely overloaded but still consuming) and `RelayJobsRunningTooLong` (`processing` queue, `thresholds.jobsRunningFor`, default `1h` — a job is stuck rather than the model just being busy).
+
+#### Changed
+- All shipped `PrometheusRule` alerts renamed to drop the legacy `Kevent` prefix (e.g. `KeventGatewayHighErrorRate` → `GatewayHighErrorRate`), matching the runbook naming already used in the docs.
+
+---
+
 ### [0.19.0] — 2026-07-09
 
 #### Added

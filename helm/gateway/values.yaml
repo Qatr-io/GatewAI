@@ -348,6 +348,10 @@ alerting:
       relayInferenceP95Seconds: 120
       # Taux de rejet rate limit (0.20 = 20% des requêtes rejetées sur un service)
       rateLimitRejectionRateWarning: 0.20
+      # Durée pendant laquelle la queue relay "pending" doit rester non vide avant alerte
+      jobsPendingFor: 15m
+      # Durée pendant laquelle la queue relay "processing" doit rester non vide avant alerte
+      jobsRunningFor: 1h
     # Règles supplémentaires ajoutées au groupe gatewai-relay.
     extraRules: []
     # Exemple :
