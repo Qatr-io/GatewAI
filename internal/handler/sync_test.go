@@ -177,6 +177,78 @@ func TestSyncHandler_MissingModelField_SingleModel(t *testing.T) {
 	}
 }
 
+// TestSyncHandler_JSONBodyTooLarge_Returns413 verifies that a JSON body larger
+// than the default 1 MiB cap is rejected cleanly with 413 (not silently
+// truncated), and the upstream is never contacted.
+func TestSyncHandler_JSONBodyTooLarge_Returns413(t *testing.T) {
+	var upstreamCalled atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled.Store(true)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfgs := []config.ServiceConfig{{
+		Type:         "ocr",
+		Model:        "llava",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: upstream.URL,
+	}}
+	reg := service.NewRegistry(cfgs)
+	h := handler.NewSyncHandler(reg, "", nil, nil) // default 1 MiB cap
+
+	big := strings.Repeat("a", 2<<20) // 2 MiB payload, exceeds the 1 MiB default
+	body := `{"model":"llava","messages":[{"role":"user","content":"` + big + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Errorf("expected 413 for oversized body, got %d: %s", w.Code, w.Body.String())
+	}
+	if upstreamCalled.Load() {
+		t.Error("upstream should not be contacted when the body is rejected")
+	}
+}
+
+// TestSyncHandler_WithMaxBodyMB_AllowsLargerBody verifies that raising the cap
+// via WithMaxBodyMB lets a body through that the default would have rejected.
+func TestSyncHandler_WithMaxBodyMB_AllowsLargerBody(t *testing.T) {
+	var upstreamCalled atomic.Bool
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalled.Store(true)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[]}`))
+	}))
+	defer upstream.Close()
+
+	cfgs := []config.ServiceConfig{{
+		Type:         "ocr",
+		Model:        "llava",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: upstream.URL,
+	}}
+	reg := service.NewRegistry(cfgs)
+	h := handler.NewSyncHandler(reg, "", nil, nil).WithMaxBodyMB(5) // 5 MiB cap
+
+	big := strings.Repeat("a", 2<<20) // 2 MiB — over default, under the 5 MiB cap
+	body := `{"model":"llava","messages":[{"role":"user","content":"` + big + `"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200 for body under the raised cap, got %d: %s", w.Code, w.Body.String())
+	}
+	if !upstreamCalled.Load() {
+		t.Error("upstream should have been contacted for an in-limit body")
+	}
+}
+
 // TestSyncHandler_MissingModelField_MultipleModels verifies that when multiple
 // models are registered for a path, omitting "model" returns 400.
 func TestSyncHandler_MissingModelField_MultipleModels(t *testing.T) {
@@ -933,9 +1005,9 @@ func (m *mockUsageTrackerSync) TrackProcessingTime(_ context.Context, consumer, 
 		seconds               float64
 	}{consumer, serviceType, seconds})
 }
-func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string) {}
-func (m *mockUsageTrackerSync) TrackUserType(_ context.Context, _, _, _ string)               {}
-func (m *mockUsageTrackerSync) UpdateRetention(_ time.Duration)                               {}
+func (m *mockUsageTrackerSync) TrackActive(_ context.Context, _ string)         {}
+func (m *mockUsageTrackerSync) TrackUserType(_ context.Context, _, _, _ string) {}
+func (m *mockUsageTrackerSync) UpdateRetention(_ time.Duration)                 {}
 func (m *mockUsageTrackerSync) TrackTokens(_ context.Context, consumer, serviceType string, prompt, completion int64) {
 	m.tokenCalls = append(m.tokenCalls, struct {
 		consumer, serviceType string

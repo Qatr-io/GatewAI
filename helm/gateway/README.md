@@ -62,6 +62,17 @@ Gateway (:8080)
 
 When `config.existingConfigMap` is set, the chart mounts the referenced ConfigMap as `/etc/GatewAI/config.yaml`. The ConfigMap must contain the key `config.yaml`. Use this to manage configuration externally (e.g. with a GitOps tool or External Secrets).
 
+### Server / request body size
+
+| Parameter | Description | Default |
+|---|---|---|
+| `server.consumerHeader` | Header identifying the consumer (e.g. `X-Consumer-Username`). Required for per-consumer rate limiting and job ownership. | `""` |
+| `server.userTypeHeader` | Header carrying the consumer type; matched against `rate_limits[type][user_type]`. | `""` |
+| `server.priorityHeader` | Header marking high-priority requests (pushed to the head of the Redis queue). | `""` |
+| `server.maxBodyMB` | Max request body (MiB) on the **sync JSON path** (`POST /v1/*`). Oversized requests get a clean **413**. `0` = 1 MiB default. | `0` |
+
+The sync JSON path carries base64-embedded images for vision models. The default 1 MiB cap is fine for text but too small for images — raise `server.maxBodyMB` to enable them. **Base64 inflates binary by ~33%**, so a 30 MB image becomes ~40 MB of JSON: size the cap on the *encoded* payload (e.g. `maxBodyMB: 45` for 30 MB images). This is independent of `services[].maxFileSizeMB`, which bounds the multipart file-upload path only.
+
 ### S3
 
 Two options — choose one:
