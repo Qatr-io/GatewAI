@@ -159,13 +159,20 @@ spec:
             runbook_url: "{{ $runbookBase }}/RelayJobsPendingTooLong"
 
         - alert: RelayJobsRunningTooLong
-          expr: sum by (model) (gatewai_relay_queue_depth{state="processing"}) > 0
+          expr: |
+            (
+              sum by (model) (gatewai_relay_queue_depth{state="processing"}) > 0
+            )
+            and
+            (
+              sum by (model) (increase(gatewai_jobs_total[{{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }}])) == 0
+            )
           for: {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }}
           labels:
             severity: warning
           annotations:
-            summary: "Jobs stuck processing for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
-            description: "The relay processing queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }} — a job may be stuck or the relay may have crashed mid-job."
+            summary: "Jobs stuck processing for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }} in queue, none completed)"
+            description: "The relay processing queue for model={{ "{{" }} $labels.model {{ "}}" }} has stayed non-empty with zero completed/failed jobs for {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }} — a job is likely stuck or the relay crashed mid-job. Queue depth alone can't identify which job (no job_id label); this alert only fires when nothing at all is finishing, so it stays quiet under healthy concurrent load. Inspect via `LRANGE relay:{{ "{{" }} $labels.model {{ "}}" }}:processing 0 -1` and relay logs to find the stuck job."
             runbook_url: "{{ $runbookBase }}/RelayJobsRunningTooLong"
 
         {{- with .Values.alerting.prometheusRule.extraRules }}

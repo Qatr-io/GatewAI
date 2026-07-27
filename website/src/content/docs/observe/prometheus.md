@@ -108,4 +108,6 @@ All alerts are defined in `helm/gateway/templates/prometheusrule.yaml`. Threshol
 | `RelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
 | `RelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
 | `RelayJobsPendingTooLong` | warning | Relay `pending` queue non-empty for the threshold duration | `jobsPendingFor` |
-| `RelayJobsRunningTooLong` | warning | Relay `processing` queue non-empty for the threshold duration | `jobsRunningFor` |
+| `RelayJobsRunningTooLong` | warning | Relay `processing` queue non-empty AND zero jobs completed for that model, for the threshold duration | `jobsRunningFor` |
+
+`RelayJobsRunningTooLong` also requires zero completions (`gatewai_jobs_total`) in the same window — queue depth alone can't tell a genuinely stuck job apart from healthy concurrent throughput (no job-level ID/age is exposed), so the alert only fires when nothing at all is finishing for that model.
