@@ -687,6 +687,10 @@ New `lifecycle.gc` config block:
 
 ### [Unreleased]
 
+#### Fixed
+
+- **OTLP metrics push was a no-op**: `opentelemetry.metrics.enabled: true` started a fully-wired OTLP metric export pipeline (exporter, `MeterProvider`, `PeriodicReader`), but nothing ever fed it — the relay's actual metrics (`gatewai_relay_jobs_total`, `gatewai_relay_inference_duration_seconds`, `gatewai_relay_s3_errors_total`, etc.) live in the `client_golang`/`promauto` default registry, which was never scraped (relay has no `/metrics` endpoint) nor bridged to the OTel SDK. For the one-shot relay Job pod this meant those metrics never reached any backend. Fixed by adding `go.opentelemetry.io/contrib/bridges/prometheus` as a `sdkmetric.Producer` on the metrics `PeriodicReader`, so the existing Prometheus collectors are gathered and exported over OTLP on every flush (including the final flush on shutdown). No config or metric-name changes — this only makes the already-documented `metrics.enabled: true` behavior (see [OpenTelemetry docs](https://qatr-io.github.io/GatewAI/observe/opentelemetry/#relay-one-shot-jobs-and-otlp-push)) actually work.
+
 ### [v0.11.1] — 2026-07-23
 
 #### Fixed

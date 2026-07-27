@@ -6,6 +6,7 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	otelprom "go.opentelemetry.io/contrib/bridges/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
@@ -142,8 +143,16 @@ func Setup(ctx context.Context, cfg OtelConfig, svcName, svcVersion string) (*Te
 		if err != nil {
 			return nil, shutdown, fmt.Errorf("otlp metric exporter: %w", err)
 		}
+		// Bridge the relay's promauto/client_golang metrics (gatewai_relay_*) into
+		// this reader — otherwise they sit in the default Prometheus registry with
+		// no scrape endpoint and no OTLP producer, and are lost when the one-shot
+		// relay pod exits.
+		promBridge := otelprom.NewMetricProducer()
 		mp := sdkmetric.NewMeterProvider(
-			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(interval))),
+			sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp,
+				sdkmetric.WithInterval(interval),
+				sdkmetric.WithProducer(promBridge),
+			)),
 			sdkmetric.WithResource(res),
 		)
 		otel.SetMeterProvider(mp)
