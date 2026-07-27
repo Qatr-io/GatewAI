@@ -289,7 +289,7 @@ Two alerting rules are shipped with the Helm chart:
 
 | Alert | Threshold | Severity |
 |---|---|---|
-| `KeventGatewayRateLimitHighRejectionRate` | > 20% rejections over 5 min | warning |
-| `KeventGatewayRateLimitErrors` | any Redis error | warning |
+| `GatewayRateLimitHighRejectionRate` | > 20% rejections over 5 min | warning |
+| `GatewayRateLimitErrors` | any Redis error | warning |
 
 See the runbooks: [GatewayRateLimitHighRejectionRate](../manage/runbooks#gatewayratelimithighrejectionrate) and [GatewayRateLimitErrors](../manage/runbooks#gatewayratelimiterrors).

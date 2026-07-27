@@ -52,6 +52,8 @@ alerting:
       relayJobFailureRateCritical: 0.30 # 30%
       relayInferenceP95Seconds: 120
       rateLimitRejectionRateWarning: 0.20 # 20%
+      jobsPendingFor: 15m
+      jobsRunningFor: 1h
 ```
 
 Add custom rules via `alerting.prometheusRule.extraRules` (appended to the `gatewai-relay` group).
@@ -90,18 +92,20 @@ All alerts are defined in `helm/gateway/templates/prometheusrule.yaml`. Threshol
 
 | Alert | Severity | Description | Threshold key |
 |-------|----------|-------------|---------------|
-| `KeventGatewayHighErrorRate` | warning | > X% of requests return 5xx over 5 min | `gatewayErrorRateWarning` |
-| `KeventGatewayHighErrorRate` | critical | > X% of requests return 5xx over 5 min | `gatewayErrorRateCritical` |
-| `KeventGatewayS3Errors` | warning | Any S3 errors in the last 5 min | — |
-| `KeventGatewaySyncJobsInFlightHigh` | warning | Sync connections above threshold for 5 min | `syncJobsInFlight` |
-| `KeventGatewayRateLimitHighRejectionRate` | warning | > X% of requests rate-limited per service type | `rateLimitRejectionRateWarning` |
-| `KeventGatewayRateLimitErrors` | warning | Redis errors in rate limiter (fail-open) | — |
+| `GatewayHighErrorRate` | warning | > X% of requests return 5xx over 5 min | `gatewayErrorRateWarning` |
+| `GatewayHighErrorRate` | critical | > X% of requests return 5xx over 5 min | `gatewayErrorRateCritical` |
+| `GatewayS3Errors` | warning | Any S3 errors in the last 5 min | — |
+| `GatewaySyncJobsInFlightHigh` | warning | Sync connections above threshold for 5 min | `syncJobsInFlight` |
+| `GatewayRateLimitHighRejectionRate` | warning | > X% of requests rate-limited per service type | `rateLimitRejectionRateWarning` |
+| `GatewayRateLimitErrors` | warning | Redis errors in rate limiter (fail-open) | — |
 
 ### Relay
 
 | Alert | Severity | Description | Threshold key |
 |-------|----------|-------------|---------------|
-| `KeventRelayJobFailureRate` | warning | > X% of relay jobs failing per service type | `relayJobFailureRateWarning` |
-| `KeventRelayJobFailureRate` | critical | > X% of relay jobs failing per service type | `relayJobFailureRateCritical` |
-| `KeventRelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
-| `KeventRelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
+| `RelayJobFailureRate` | warning | > X% of relay jobs failing per service type | `relayJobFailureRateWarning` |
+| `RelayJobFailureRate` | critical | > X% of relay jobs failing per service type | `relayJobFailureRateCritical` |
+| `RelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
+| `RelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
+| `RelayJobsPendingTooLong` | warning | Relay `pending` queue non-empty for the threshold duration | `jobsPendingFor` |
+| `RelayJobsRunningTooLong` | warning | Relay `processing` queue non-empty for the threshold duration | `jobsRunningFor` |

@@ -19,7 +19,7 @@ spec:
       rules:
         {{- $runbookBase := .Values.alerting.prometheusRule.runbookBaseURL }}
 
-        - alert: KeventGatewayHighErrorRate
+        - alert: GatewayHighErrorRate
           expr: |
             (
               sum(rate(gatewai_requests_total{status=~"5.."}[5m])) /
@@ -31,9 +31,9 @@ spec:
           annotations:
             summary: "High gateway error rate ({{ "{{" }} $value | humanizePercentage {{ "}}" }})"
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.gatewayErrorRateWarning 100 }}% of gateway requests are returning 5xx errors."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayHighErrorRate"
+            runbook_url: "{{ $runbookBase }}/GatewayHighErrorRate"
 
-        - alert: KeventGatewayHighErrorRate
+        - alert: GatewayHighErrorRate
           expr: |
             (
               sum(rate(gatewai_requests_total{status=~"5.."}[5m])) /
@@ -45,9 +45,9 @@ spec:
           annotations:
             summary: "Critical gateway error rate ({{ "{{" }} $value | humanizePercentage {{ "}}" }})"
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.gatewayErrorRateCritical 100 }}% of gateway requests are returning 5xx errors."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayHighErrorRate"
+            runbook_url: "{{ $runbookBase }}/GatewayHighErrorRate"
 
-        - alert: KeventGatewayS3Errors
+        - alert: GatewayS3Errors
           expr: sum(increase(gatewai_s3_errors_total[5m])) > 0
           for: 0m
           labels:
@@ -55,9 +55,9 @@ spec:
           annotations:
             summary: "Gateway S3 errors"
             description: "The gateway encountered S3 errors (upload/get/delete)."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayS3Errors"
+            runbook_url: "{{ $runbookBase }}/GatewayS3Errors"
 
-        - alert: KeventGatewaySyncJobsInFlightHigh
+        - alert: GatewaySyncJobsInFlightHigh
           expr: gatewai_sync_jobs_in_flight > {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }}
           for: 5m
           labels:
@@ -65,9 +65,9 @@ spec:
           annotations:
             summary: "High number of sync jobs in flight ({{ "{{" }} $value {{ "}}" }})"
             description: "More than {{ .Values.alerting.prometheusRule.thresholds.syncJobsInFlight }} sync connections are open simultaneously."
-            runbook_url: "{{ $runbookBase }}/KeventGatewaySyncJobsInFlightHigh"
+            runbook_url: "{{ $runbookBase }}/GatewaySyncJobsInFlightHigh"
 
-        - alert: KeventGatewayRateLimitHighRejectionRate
+        - alert: GatewayRateLimitHighRejectionRate
           expr: |
             (
               sum by (service_type) (rate(gatewai_ratelimit_requests_total{result="rejected"}[5m])) /
@@ -79,9 +79,9 @@ spec:
           annotations:
             summary: "High rate-limit rejection rate on {{ "{{" }} $labels.service_type {{ "}}" }} ({{ "{{" }} $value | humanizePercentage {{ "}}" }})"
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.rateLimitRejectionRateWarning 100 }}% of requests are being rate-limited for service_type={{ "{{" }} $labels.service_type {{ "}}" }}. Check quota configuration or consumer activity."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayRateLimitHighRejectionRate"
+            runbook_url: "{{ $runbookBase }}/GatewayRateLimitHighRejectionRate"
 
-        - alert: KeventGatewayRateLimitErrors
+        - alert: GatewayRateLimitErrors
           expr: sum(increase(gatewai_ratelimit_errors_total[5m])) > 0
           for: 0m
           labels:
@@ -89,13 +89,13 @@ spec:
           annotations:
             summary: "Rate limiter Redis errors (fail-open)"
             description: "The rate limiter encountered Redis errors — requests are being allowed through (fail-open). Check Redis connectivity."
-            runbook_url: "{{ $runbookBase }}/KeventGatewayRateLimitErrors"
+            runbook_url: "{{ $runbookBase }}/GatewayRateLimitErrors"
 
     - name: gatewai-relay
       rules:
         {{- $runbookBase := .Values.alerting.prometheusRule.runbookBaseURL }}
 
-        - alert: KeventRelayJobFailureRate
+        - alert: RelayJobFailureRate
           expr: |
             (
               sum by (service_type) (rate(gatewai_relay_jobs_total{status="failed"}[5m])) /
@@ -107,9 +107,9 @@ spec:
           annotations:
             summary: "High relay job failure rate on {{ "{{" }} $labels.service_type {{ "}}" }} ({{ "{{" }} $value | humanizePercentage {{ "}}" }})"
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.relayJobFailureRateWarning 100 }}% of relay jobs are failing for service_type={{ "{{" }} $labels.service_type {{ "}}" }}."
-            runbook_url: "{{ $runbookBase }}/KeventRelayJobFailureRate"
+            runbook_url: "{{ $runbookBase }}/RelayJobFailureRate"
 
-        - alert: KeventRelayJobFailureRate
+        - alert: RelayJobFailureRate
           expr: |
             (
               sum by (service_type) (rate(gatewai_relay_jobs_total{status="failed"}[5m])) /
@@ -121,9 +121,9 @@ spec:
           annotations:
             summary: "Critical relay job failure rate on {{ "{{" }} $labels.service_type {{ "}}" }} ({{ "{{" }} $value | humanizePercentage {{ "}}" }})"
             description: "More than {{ mulf .Values.alerting.prometheusRule.thresholds.relayJobFailureRateCritical 100 }}% of relay jobs are failing for service_type={{ "{{" }} $labels.service_type {{ "}}" }}."
-            runbook_url: "{{ $runbookBase }}/KeventRelayJobFailureRate"
+            runbook_url: "{{ $runbookBase }}/RelayJobFailureRate"
 
-        - alert: KeventRelayInferenceSlow
+        - alert: RelayInferenceSlow
           expr: |
             histogram_quantile(0.95,
               sum by (service_type, le) (
@@ -136,9 +136,9 @@ spec:
           annotations:
             summary: "Slow inference p95 on {{ "{{" }} $labels.service_type {{ "}}" }} ({{ "{{" }} $value | humanizeDuration {{ "}}" }})"
             description: "95th percentile inference duration exceeds {{ .Values.alerting.prometheusRule.thresholds.relayInferenceP95Seconds }}s for service_type={{ "{{" }} $labels.service_type {{ "}}" }}."
-            runbook_url: "{{ $runbookBase }}/KeventRelayInferenceSlow"
+            runbook_url: "{{ $runbookBase }}/RelayInferenceSlow"
 
-        - alert: KeventRelayS3Errors
+        - alert: RelayS3Errors
           expr: sum(increase(gatewai_relay_s3_errors_total[5m])) > 0
           for: 0m
           labels:
@@ -146,9 +146,9 @@ spec:
           annotations:
             summary: "Relay S3 errors"
             description: "Relay sidecars encountered S3 errors (get/put/delete) — jobs may be failing."
-            runbook_url: "{{ $runbookBase }}/KeventRelayS3Errors"
+            runbook_url: "{{ $runbookBase }}/RelayS3Errors"
 
-        - alert: KeventRelayJobsPendingTooLong
+        - alert: RelayJobsPendingTooLong
           expr: sum by (model) (gatewai_relay_queue_depth{state="pending"}) > 0
           for: {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }}
           labels:
@@ -156,9 +156,9 @@ spec:
           annotations:
             summary: "Jobs stuck pending for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
             description: "The relay pending queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }} — the relay may be down or unable to keep up."
-            runbook_url: "{{ $runbookBase }}/KeventRelayJobsPendingTooLong"
+            runbook_url: "{{ $runbookBase }}/RelayJobsPendingTooLong"
 
-        - alert: KeventRelayJobsRunningTooLong
+        - alert: RelayJobsRunningTooLong
           expr: sum by (model) (gatewai_relay_queue_depth{state="processing"}) > 0
           for: {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }}
           labels:
@@ -166,7 +166,7 @@ spec:
           annotations:
             summary: "Jobs stuck processing for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
             description: "The relay processing queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }} — a job may be stuck or the relay may have crashed mid-job."
-            runbook_url: "{{ $runbookBase }}/KeventRelayJobsRunningTooLong"
+            runbook_url: "{{ $runbookBase }}/RelayJobsRunningTooLong"
 
         {{- with .Values.alerting.prometheusRule.extraRules }}
         {{- toYaml . | nindent 8 }}
