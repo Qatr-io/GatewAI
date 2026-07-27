@@ -107,7 +107,9 @@ All alerts are defined in `helm/gateway/templates/prometheusrule.yaml`. Threshol
 | `RelayJobFailureRate` | critical | > X% of relay jobs failing per service type | `relayJobFailureRateCritical` |
 | `RelayInferenceSlow` | warning | p95 inference latency above threshold for 10 min | `relayInferenceP95Seconds` |
 | `RelayS3Errors` | warning | Any relay S3 errors in the last 5 min | — |
-| `RelayJobsPendingTooLong` | warning | Relay `pending` queue non-empty for the threshold duration | `jobsPendingFor` |
+| `RelayJobsPendingTooLong` | warning | Relay `pending` queue non-empty AND zero jobs completed for that model, for the threshold duration | `jobsPendingFor` |
 | `RelayJobsRunningTooLong` | warning | Relay `processing` queue non-empty AND zero jobs completed for that model, for the threshold duration | `jobsRunningFor` |
 
-`RelayJobsRunningTooLong` also requires zero completions (`gatewai_jobs_total`) in the same window — queue depth alone can't tell a genuinely stuck job apart from healthy concurrent throughput (no job-level ID/age is exposed), so the alert only fires when nothing at all is finishing for that model.
+Both alerts also require zero completions (`gatewai_jobs_total`) in the same window — queue depth alone can't tell a genuine stall apart from healthy load (no job-level ID/age is exposed), so they only fire when nothing at all is finishing for that model:
+- `RelayJobsRunningTooLong` catches a stuck in-flight job (or crashed relay) rather than firing on any busy model with concurrent jobs.
+- `RelayJobsPendingTooLong` catches the relay not picking up jobs at all (down / stuck starting) rather than firing on a relay that's merely overloaded (arrival rate > capacity) but still actively consuming and completing jobs — that's a capacity-pressure situation, worth watching separately via `gatewai_relay_queue_depth{state="pending"}` if desired, but distinct from a starting problem.

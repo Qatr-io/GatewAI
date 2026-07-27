@@ -149,13 +149,20 @@ spec:
             runbook_url: "{{ $runbookBase }}/RelayS3Errors"
 
         - alert: RelayJobsPendingTooLong
-          expr: sum by (model) (gatewai_relay_queue_depth{state="pending"}) > 0
+          expr: |
+            (
+              sum by (model) (gatewai_relay_queue_depth{state="pending"}) > 0
+            )
+            and
+            (
+              sum by (model) (increase(gatewai_jobs_total[{{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }}])) == 0
+            )
           for: {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }}
           labels:
             severity: warning
           annotations:
-            summary: "Jobs stuck pending for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
-            description: "The relay pending queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }} — the relay may be down or unable to keep up."
+            summary: "No jobs starting for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }} pending, none completed)"
+            description: "The relay pending queue for model={{ "{{" }} $labels.model {{ "}}" }} has stayed non-empty with zero completed/failed jobs for {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }} — the relay is likely down or not picking up jobs at all. This intentionally does not fire for a relay that is merely overloaded (arrival rate > capacity) but still consuming — that shows up as a growing but draining pending queue with a nonzero completion rate; use `gatewai_relay_queue_depth{state=\"pending\"}` directly if you also want a capacity-pressure alert."
             runbook_url: "{{ $runbookBase }}/RelayJobsPendingTooLong"
 
         - alert: RelayJobsRunningTooLong
