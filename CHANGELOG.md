@@ -956,6 +956,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ## Helm chart (gatewai-gateway)
 
+### [0.21.0] — 2026-07-27
+
+#### Added
+- Two `PrometheusRule` alerts in the `gatewai-relay` group: `KeventRelayJobsPendingTooLong` (relay `pending` queue non-empty for `thresholds.jobsPendingFor`, default `15m`) and `KeventRelayJobsRunningTooLong` (relay `processing` queue non-empty for `thresholds.jobsRunningFor`, default `1h`), both based on `gatewai_relay_queue_depth{state}`.
+
+---
+
 ### [0.19.0] — 2026-07-09
 
 #### Added

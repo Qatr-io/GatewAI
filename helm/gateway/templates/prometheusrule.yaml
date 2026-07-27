@@ -148,6 +148,26 @@ spec:
             description: "Relay sidecars encountered S3 errors (get/put/delete) — jobs may be failing."
             runbook_url: "{{ $runbookBase }}/KeventRelayS3Errors"
 
+        - alert: KeventRelayJobsPendingTooLong
+          expr: sum by (model) (gatewai_relay_queue_depth{state="pending"}) > 0
+          for: {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jobs stuck pending for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
+            description: "The relay pending queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsPendingFor }} — the relay may be down or unable to keep up."
+            runbook_url: "{{ $runbookBase }}/KeventRelayJobsPendingTooLong"
+
+        - alert: KeventRelayJobsRunningTooLong
+          expr: sum by (model) (gatewai_relay_queue_depth{state="processing"}) > 0
+          for: {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }}
+          labels:
+            severity: warning
+          annotations:
+            summary: "Jobs stuck processing for model {{ "{{" }} $labels.model {{ "}}" }} ({{ "{{" }} $value {{ "}}" }})"
+            description: "The relay processing queue for model={{ "{{" }} $labels.model {{ "}}" }} has not drained for {{ .Values.alerting.prometheusRule.thresholds.jobsRunningFor }} — a job may be stuck or the relay may have crashed mid-job."
+            runbook_url: "{{ $runbookBase }}/KeventRelayJobsRunningTooLong"
+
         {{- with .Values.alerting.prometheusRule.extraRules }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
