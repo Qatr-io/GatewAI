@@ -685,7 +685,11 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
-### [Unreleased]
+### [v0.11.2] — 2026-07-27
+
+#### Fixed
+
+- **OTLP metrics push was a no-op**: `opentelemetry.metrics.enabled: true` started a fully-wired OTLP metric export pipeline (exporter, `MeterProvider`, `PeriodicReader`), but nothing ever fed it — the relay's actual metrics (`gatewai_relay_jobs_total`, `gatewai_relay_inference_duration_seconds`, `gatewai_relay_s3_errors_total`, etc.) live in the `client_golang`/`promauto` default registry, which was never scraped (relay has no `/metrics` endpoint) nor bridged to the OTel SDK. For the one-shot relay Job pod this meant those metrics never reached any backend. Fixed by adding `go.opentelemetry.io/contrib/bridges/prometheus` as a `sdkmetric.Producer` on the metrics `PeriodicReader`, so the existing Prometheus collectors are gathered and exported over OTLP on every flush (including the final flush on shutdown). No config or metric-name changes — this only makes the already-documented `metrics.enabled: true` behavior (see [OpenTelemetry docs](https://qatr-io.github.io/GatewAI/observe/opentelemetry/#relay-one-shot-jobs-and-otlp-push)) actually work.
 
 ### [v0.11.1] — 2026-07-23
 
@@ -955,6 +959,16 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.20.1] — 2026-07-27
+
+#### Added
+- Two `PrometheusRule` alerts in the `gatewai-relay` group, both requiring the relay queue to be non-empty *and* zero `gatewai_jobs_total` completions for that model over the same window (since `gatewai_relay_queue_depth` has no per-job ID/age, and either metric alone would false-positive under normal load): `RelayJobsPendingTooLong` (`pending` queue, `thresholds.jobsPendingFor`, default `15m` — the relay isn't picking up jobs at all, as opposed to being merely overloaded but still consuming) and `RelayJobsRunningTooLong` (`processing` queue, `thresholds.jobsRunningFor`, default `1h` — a job is stuck rather than the model just being busy).
+
+#### Changed
+- All shipped `PrometheusRule` alerts renamed to drop the legacy `Kevent` prefix (e.g. `KeventGatewayHighErrorRate` → `GatewayHighErrorRate`), matching the runbook naming already used in the docs.
+
+---
 
 ### [0.19.0] — 2026-07-09
 
