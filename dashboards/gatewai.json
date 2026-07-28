@@ -1284,7 +1284,7 @@
           "sort": "desc"
         }
       },
-      "title": "Relay — Durée d'inférence p95 par service_type",
+      "title": "Relay — Durée d'inférence p95 par service_type / model",
       "type": "timeseries",
       "targets": [
         {
@@ -1292,8 +1292,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "histogram_quantile(0.95, sum by (le, service_type) (rate(gatewai_relay_inference_duration_seconds_bucket[10m])))",
-          "legendFormat": "p95 {{service_type}}",
+          "expr": "histogram_quantile(0.95, sum by (le, service_type, model) (rate(gatewai_relay_inference_duration_seconds_bucket[10m])))",
+          "legendFormat": "p95 {{service_type}} / {{model}}",
           "refId": "A",
           "exemplar": true
         }

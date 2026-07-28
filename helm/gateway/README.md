@@ -479,7 +479,7 @@ The relay sidecar exposes its own `/metrics` endpoint (scraped separately, e.g. 
 | Metric | Type | Labels |
 |---|---|---|
 | `GatewAI_relay_jobs_total` | counter | `service_type`, `status` |
-| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type` |
+| `GatewAI_relay_inference_duration_seconds` | histogram | `service_type`, `model` |
 | `GatewAI_relay_input_size_bytes` | histogram | `service_type` |
 | `GatewAI_relay_sync_priority` | gauge | — |
 | `GatewAI_relay_deferred_total` | counter | — |

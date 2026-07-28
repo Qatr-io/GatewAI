@@ -18,7 +18,7 @@ var (
 		Name:    "gatewai_relay_inference_duration_seconds",
 		Help:    "Inference call duration in seconds.",
 		Buckets: []float64{.5, 1, 5, 10, 30, 60, 120, 300, 600},
-	}, []string{"service_type"})
+	}, []string{"service_type", "model"})
 
 	// InputSizeBytes tracks the size of input files downloaded from S3.
 	// Uses an exponential scale from ~1 KB to ~1 GB.

@@ -695,6 +695,12 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
+### [v0.11.3] — 2026-07-28
+
+#### Changed
+
+- **`gatewai_relay_inference_duration_seconds` now has a `model` label** (in addition to the existing `service_type`), so p95/p50 inference duration can be broken down per model, not just per service type. Updated the Grafana dashboard panel and docs accordingly. Existing PromQL queries that `sum by (le, service_type)` without also grouping by `model` will now double-count across models with the same `service_type` — update them to include `model` in the `by (...)` clause.
+
 ### [v0.11.2] — 2026-07-27
 
 #### Fixed
