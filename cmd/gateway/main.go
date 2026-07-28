@@ -171,7 +171,8 @@ func buildRouter(
 
 	if reg.HasSyncServices() {
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
-			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw()))
+			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw())).
+			WithMaxBodyMB(cfg.Server.MaxBodyMB)
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
 			sh.WithTokenLimiter(limiter)

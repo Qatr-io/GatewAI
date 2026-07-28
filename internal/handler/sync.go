@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -47,7 +48,11 @@ type SyncHandler struct {
 	userTypeHeader    string
 	authz             *authz.Engine      // nil = no enforcement
 	usageTracker      usage.UsageTracker // nil = no usage tracking
+	maxBodyBytes      int64              // max request body on the JSON path; default 1 MiB
 }
+
+// defaultMaxBodyBytes caps the sync JSON request body when max_body_mb is unset.
+const defaultMaxBodyBytes int64 = 1 << 20 // 1 MiB
 
 func NewSyncHandler(
 	registry *service.Registry,
@@ -64,7 +69,17 @@ func NewSyncHandler(
 		// Generous timeout for direct-proxy path.
 		httpClient:   &http.Client{Timeout: 15 * time.Minute},
 		retryBackoff: 500 * time.Millisecond,
+		maxBodyBytes: defaultMaxBodyBytes,
 	}
+}
+
+// WithMaxBodyMB sets the maximum request body size (in MiB) accepted on the
+// sync JSON path. A value ≤ 0 keeps the default (1 MiB).
+func (h *SyncHandler) WithMaxBodyMB(mb int) *SyncHandler {
+	if mb > 0 {
+		h.maxBodyBytes = int64(mb) << 20
+	}
+	return h
 }
 
 // WithSemaphore sets the per-model concurrency limiter for sync calls.
@@ -234,8 +249,23 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
-	raw, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+	limit := h.maxBodyBytes
+	if limit <= 0 {
+		limit = defaultMaxBodyBytes
+	}
+	// MaxBytesReader rejects oversized bodies with a typed error instead of
+	// silently truncating (as io.LimitReader would), so a too-large request —
+	// e.g. a base64 image on the vision path — gets a clean 413 rather than a
+	// confusing "unexpected end of JSON input".
+	r.Body = http.MaxBytesReader(w, r.Body, limit)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("request body exceeds limit of %d bytes (%d MiB)", limit, limit>>20))
+			return
+		}
 		writeError(w, http.StatusBadRequest, "failed to read body: "+err.Error())
 		return
 	}

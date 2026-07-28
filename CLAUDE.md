@@ -113,6 +113,8 @@ Gateway → HTTP proxy → InferenceService URL (inference_url in config)
 
 Configured via `services[].operations`, `services[].model`, `services[].inference_url` in `config.yaml`.
 
+**Request body limit**: the sync JSON path caps the body at `server.max_body_mb` MiB (default 1 MiB), enforced with `http.MaxBytesReader` — oversized requests get `413`. Raise it for vision models sending base64-embedded images (base64 inflates ~33%). Independent of `services[].max_file_size_mb`, which bounds only the multipart upload path.
+
 **LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
 
 - **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM)
