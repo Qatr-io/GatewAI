@@ -695,7 +695,7 @@ New `lifecycle.gc` config block:
 
 ## Relay
 
-### [Unreleased]
+### [v0.11.3] — 2026-07-28
 
 #### Changed
 
