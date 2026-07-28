@@ -221,6 +221,13 @@ type ServerConfig struct {
 	// "*" is the fallback when the header is absent. Leave empty to disable
 	// per-type differentiation.
 	UserTypeHeader string `yaml:"user_type_header"`
+	// MaxBodyMB caps the request body size (in MiB) on the sync JSON path
+	// (POST /v1/*). This path carries base64-embedded images for vision models,
+	// which can exceed the default. Requests larger than the cap are rejected
+	// with 413 Request Entity Too Large (not silently truncated).
+	// 0 or absent = 1 MiB default. Does not affect the multipart file-upload
+	// path, which is bounded per-service by max_file_size_mb.
+	MaxBodyMB int `yaml:"max_body_mb"`
 }
 
 // S3Config holds S3-compatible object storage credentials and settings.

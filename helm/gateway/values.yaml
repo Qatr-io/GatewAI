@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/qatr-io/gatewai/gateway
-  tag: "v0.20.0"
+  tag: "v0.20.1"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -35,6 +35,11 @@ server:
   # HTTP header set by the API gateway on high-priority requests.
   # When present, jobs are pushed to the head of the Redis queue.
   priorityHeader: ""
+  # Max request body (MiB) on the sync JSON path (POST /v1/*). This path carries
+  # base64-embedded images for vision models; oversized requests get a clean 413.
+  # 0 = 1 MiB default. Note base64 inflates binary ~33% — for a 30 MB image set
+  # ~45. Does not affect multipart uploads (bounded by services[].maxFileSizeMB).
+  maxBodyMB: 0
 
 # ── Authentication (optional) ─────────────────────────────────────────────────
 # Empty ⇒ no gateway-side auth: identity is trusted from the upstream headers

@@ -16,6 +16,16 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.20.1] — 2026-07-28
+
+#### Added
+
+- **Configurable sync request body limit**: new `server.max_body_mb` caps the request body on the sync JSON path (`POST /v1/*`) — the route vision requests use for base64-embedded images. `0` or absent = 1 MiB default. Raise it to accept images (base64 inflates binary ~33%, so a 30 MB image needs a cap around 45). Independent of `max_file_size_mb`, which bounds the multipart upload path. Exposed in the Helm chart as `server.maxBodyMB`.
+
+#### Fixed
+
+- **Oversized sync JSON bodies now return a clean `413`** instead of being silently truncated. The path previously used `io.LimitReader`, so a body over the (hardcoded 1 MiB) cap was cut mid-stream — surfacing as a confusing `400 "unexpected end of JSON input"` or corrupted base64 reaching the backend. It now uses `http.MaxBytesReader` and rejects oversized requests with `413 Request Entity Too Large`.
+
 ### [v0.19.0] — 2026-07-09
 
 #### Added
@@ -959,6 +969,16 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.20.2] — 2026-07-28
+
+#### Added
+- `server.maxBodyMB` — caps the request body (MiB) on the sync JSON path (`POST /v1/*`); oversized requests get a clean `413`. `0` = 1 MiB default.
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.20.1`
+
+---
 
 ### [0.20.1] — 2026-07-27
 

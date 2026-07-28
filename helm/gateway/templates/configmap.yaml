@@ -21,6 +21,9 @@ data:
       {{- if .Values.server.userTypeHeader }}
       user_type_header: {{ .Values.server.userTypeHeader | quote }}
       {{- end }}
+      {{- if .Values.server.maxBodyMB }}
+      max_body_mb: {{ .Values.server.maxBodyMB | int64 }}
+      {{- end }}
 
     {{- with .Values.auth }}
     auth:
