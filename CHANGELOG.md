@@ -16,7 +16,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [Unreleased]
+### [v0.20.1] — 2026-07-28
 
 #### Added
 
@@ -969,6 +969,16 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.20.2] — 2026-07-28
+
+#### Added
+- `server.maxBodyMB` — caps the request body (MiB) on the sync JSON path (`POST /v1/*`); oversized requests get a clean `413`. `0` = 1 MiB default.
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.20.1`
+
+---
 
 ### [0.20.1] — 2026-07-27
 
