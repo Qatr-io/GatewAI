@@ -78,7 +78,7 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `gatewai_relay_jobs_total` | counter | `service_type`, `status` | Jobs processed by the relay (`status`: `success`\|`failed`) |
-| `gatewai_relay_inference_duration_seconds` | histogram | `service_type` | Inference call duration. Buckets: 0.5s–600s |
+| `gatewai_relay_inference_duration_seconds` | histogram | `service_type`, `model` | Inference call duration. Buckets: 0.5s–600s |
 | `gatewai_relay_input_size_bytes` | histogram | `service_type` | Input file size. Exponential buckets: 1 KB–256 MB |
 | `gatewai_relay_s3_errors_total` | counter | `operation` | Relay S3 operation errors |
 | `gatewai_relay_s3_operation_duration_seconds` | histogram | `operation` | Relay S3 operation duration. Default Prometheus buckets |
