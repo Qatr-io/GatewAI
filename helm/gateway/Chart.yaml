@@ -2,8 +2,8 @@ apiVersion: v2
 name: gatewai-gateway
 description: API gateway for GatewAI inference jobs
 type: application
-version: 0.20.1
-appVersion: "v0.20.0"
+version: 0.20.2
+appVersion: "v0.20.1"
 
 dependencies:
   - name: redis-ha
