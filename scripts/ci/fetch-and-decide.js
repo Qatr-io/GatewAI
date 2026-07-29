@@ -11,7 +11,7 @@ module.exports = async ({ github, context, core }) => {
   for (const packageName of PACKAGES) {
     const versions = await github.paginate(
       github.rest.packages.getAllPackageVersionsForPackageOwnedByOrg,
-      { package_type: 'container', package_owner: owner, package_name: packageName, per_page: 100 }
+      { package_type: 'container', org: owner, package_name: packageName, per_page: 100 }
     );
     for (const sha of extractRcShas(versions)) shas.add(sha);
   }
