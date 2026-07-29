@@ -1,0 +1,75 @@
+name: Cleanup — old images
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (preview only, no deletions)"
+        type: boolean
+        default: true
+
+concurrency:
+  group: cleanup-images
+  cancel-in-progress: false
+
+permissions:
+  packages: write
+  pull-requests: read
+  contents: read
+
+jobs:
+  compute-delete-list:
+    name: Compute delete list
+    runs-on: ubuntu-latest
+    outputs:
+      dry_run: ${{ steps.dryrun.outputs.value }}
+      delete_rc_tags: ${{ steps.rc.outputs.delete_rc_tags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve dry-run flag
+        id: dryrun
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            echo "value=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${{ inputs.dry_run }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Find rc-<sha> tags whose develop PR is closed
+        id: rc
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const decide = require('./scripts/ci/fetch-and-decide.js')
+            await decide({ github, context, core })
+
+  cleanup:
+    name: Cleanup ${{ matrix.package.name }}
+    needs: compute-delete-list
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - { name: gateway, ghcr: gatewai/gateway }
+          - { name: relay,   ghcr: gatewai/relay }
+    permissions:
+      packages: write
+    steps:
+      - name: Cleanup untagged versions older than 7 days
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: ${{ matrix.package.ghcr }}
+          delete-untagged: true
+          older-than: "7 days"
+          dry-run: ${{ needs.compute-delete-list.outputs.dry_run }}
+
+      - name: Cleanup orphaned rc-<sha> tags
+        if: needs.compute-delete-list.outputs.delete_rc_tags != ''
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: ${{ matrix.package.ghcr }}
+          tags: ${{ needs.compute-delete-list.outputs.delete_rc_tags }}
+          dry-run: ${{ needs.compute-delete-list.outputs.dry_run }}
