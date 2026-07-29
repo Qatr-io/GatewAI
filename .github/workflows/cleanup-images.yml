@@ -45,3 +45,31 @@ jobs:
           script: |
             const decide = require('./scripts/ci/fetch-and-decide.js')
             await decide({ github, context, core })
+
+  cleanup:
+    name: Cleanup ${{ matrix.package.name }}
+    needs: compute-delete-list
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package:
+          - { name: gateway, ghcr: gatewai/gateway }
+          - { name: relay,   ghcr: gatewai/relay }
+    permissions:
+      packages: write
+    steps:
+      - name: Cleanup untagged versions older than 7 days
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: ${{ matrix.package.ghcr }}
+          delete-untagged: true
+          older-than: "7 days"
+          dry-run: ${{ needs.compute-delete-list.outputs.dry_run }}
+
+      - name: Cleanup orphaned rc-<sha> tags
+        if: needs.compute-delete-list.outputs.delete_rc_tags != ''
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          package: ${{ matrix.package.ghcr }}
+          tags: ${{ needs.compute-delete-list.outputs.delete_rc_tags }}
+          dry-run: ${{ needs.compute-delete-list.outputs.dry_run }}
