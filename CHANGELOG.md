@@ -16,6 +16,16 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [v0.20.2] — 2026-07-31
+
+#### Added
+
+- **Top-N usage gauges extended**: new `gatewai_usage_requests_top` (request count per top consumer, sync and async alike) and `gatewai_usage_processing_time_top` (cumulative processing time per top consumer) gauges, refreshed from Redis alongside the existing token top-N gauges. Requires `metricsConfig.topConsumers > 0`.
+
+#### Fixed
+
+- **Broken TraceQL queries in the bundled Grafana dashboards** (`gatewai.json`, `gatewai-traces.json`, `gatewai-llm.json`): the intrinsic span name accessor is `name`, not `span.name`; service name must use `resource.service.name`, not bare `service.name`; AND-combination inside `{}` requires `&&`, not a comma. Also added a `model` breakdown to the "Taux de requêtes" panel in `gatewai.json`.
+
 ### [v0.20.1] — 2026-07-28
 
 #### Added
@@ -975,6 +985,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.20.3] — 2026-07-31
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.20.2`
+
+---
 
 ### [0.20.2] — 2026-07-28
 
