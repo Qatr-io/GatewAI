@@ -69,6 +69,15 @@ Two options for tracking per-consumer usage (mutually exclusive):
 
 Avoid `consumerLabels: true` with large or dynamic consumer sets — it creates unbounded label cardinality.
 
+`metricsConfig.topConsumers` populates four gauges, refreshed from Redis every 60s (see [metrics reference](/reference/metrics)):
+
+- `gatewai_llm_consumer_tokens_top` — LLM-proxy token usage
+- `gatewai_usage_tokens_top` — token usage on non-LLM-proxy service types
+- `gatewai_usage_requests_top` — request count per service type, **sync and async alike** (the only one covering sync-only consumers — `gatewai_jobs_by_consumer_total` only counts async job submissions)
+- `gatewai_usage_processing_time_top` — cumulative processing time per service type, useful to surface the heaviest (not just the most frequent) consumers
+
+All four are visualized in the "Gateway — Consumers" row of the `gatewai.json` dashboard (LLM token panels are also mirrored in `gatewai-llm.json` / `gatewai-audit-trail.json`).
+
 ## Dashboards
 
 Four Grafana dashboards are available in [`dashboards/`](https://github.com/Qatr-io/GatewAI/tree/main/dashboards/):

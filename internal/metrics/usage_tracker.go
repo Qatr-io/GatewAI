@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -37,6 +38,8 @@ func refreshUsageTopN(ctx context.Context, client *redis.Client, topN int, servi
 	tokenTypes := []string{"prompt", "completion"}
 
 	UsageTokensTop.Reset()
+	UsageRequestsTop.Reset()
+	UsageProcessingTimeTop.Reset()
 
 	for _, svcType := range serviceTypes {
 		for _, tt := range tokenTypes {
@@ -54,5 +57,26 @@ func refreshUsageTopN(ctx context.Context, client *redis.Client, topN int, servi
 				UsageTokensTop.WithLabelValues(consumer, svcType, tt).Set(z.Score)
 			}
 		}
+
+		refreshUsageScalarTopN(ctx, client, topN, svcType, "requests", UsageRequestsTop)
+		refreshUsageScalarTopN(ctx, client, topN, svcType, "processing_time", UsageProcessingTimeTop)
+	}
+}
+
+// refreshUsageScalarTopN reads the top-N members of usage:consumer:<svcType>:<metric>
+// and sets them on a {consumer, service_type} GaugeVec.
+func refreshUsageScalarTopN(ctx context.Context, client *redis.Client, topN int, svcType, metric string, gauge *prometheus.GaugeVec) {
+	key := fmt.Sprintf("usage:consumer:%s:%s", svcType, metric)
+	results, err := client.ZRevRangeWithScores(ctx, key, 0, int64(topN-1)).Result()
+	if err != nil {
+		slog.WarnContext(ctx, "usage tracker: top-N refresh failed", "key", key, "error", err)
+		return
+	}
+	for _, z := range results {
+		consumer, ok := z.Member.(string)
+		if !ok {
+			continue
+		}
+		gauge.WithLabelValues(consumer, svcType).Set(z.Score)
 	}
 }

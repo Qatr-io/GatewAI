@@ -48,6 +48,14 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Total tokens (prompt+completion) per request. Buckets: 50–100 000 |
 | `gatewai_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Token usage for top-N consumers (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
 
+### Usage tracking (top consumers)
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `gatewai_usage_tokens_top` | gauge | `consumer`, `service_type`, `token_type` | Token usage for top-N consumers on non-LLM-proxy services (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_usage_requests_top` | gauge | `consumer`, `service_type` | Request count for top-N consumers per service type, sync and async alike (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_usage_processing_time_top` | gauge | `consumer`, `service_type` | Cumulative processing time (seconds) for top-N consumers per service type (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+
 ### Response cache
 
 | Metric | Type | Labels | Description |

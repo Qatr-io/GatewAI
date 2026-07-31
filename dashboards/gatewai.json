@@ -43,7 +43,7 @@
   "timezone": "browser",
   "title": "GatewAI — Gateway & Relay",
   "uid": "gatewai-gw-relay-v1",
-  "version": 5,
+  "version": 10,
   "templating": {
     "list": [
       {
@@ -69,7 +69,7 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(gatewai_jobs_by_consumer_total, consumer)",
+        "definition": "label_values({__name__=~\"gatewai_jobs_by_consumer_total|gatewai_usage_requests_top|gatewai_usage_processing_time_top|gatewai_usage_tokens_top\"}, consumer)",
         "hide": 0,
         "includeAll": true,
         "label": "Consumer",
@@ -77,7 +77,7 @@
         "name": "consumer",
         "options": [],
         "query": {
-          "query": "label_values(gatewai_jobs_by_consumer_total, consumer)",
+          "query": "label_values({__name__=~\"gatewai_jobs_by_consumer_total|gatewai_usage_requests_top|gatewai_usage_processing_time_top|gatewai_usage_tokens_top\"}, consumer)",
           "refId": "StandardVariableQuery"
         },
         "refresh": 2,
@@ -96,6 +96,25 @@
         "query": "tempo",
         "refresh": 1,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "gatewai",
+          "value": "gatewai"
+        },
+        "hide": 0,
+        "label": "Service Name",
+        "name": "service_name",
+        "options": [
+          {
+            "selected": true,
+            "text": "gatewai",
+            "value": "gatewai"
+          }
+        ],
+        "query": "gatewai",
+        "skipUrlSync": false,
+        "type": "textbox"
       }
     ]
   },
@@ -172,8 +191,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (mode, service_type, status) (rate(gatewai_requests_total[5m]))",
-          "legendFormat": "{{mode}} / {{service_type}} — {{status}}",
+          "expr": "sum by (mode, service_type, model, status) (rate(gatewai_requests_total[5m]))",
+          "legendFormat": "{{mode}} / {{service_type}} / {{model}} — {{status}}",
           "refId": "A"
         }
       ]
@@ -479,7 +498,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum(gatewai_async_jobs_submitted_total)",
+          "expr": "sum(increase(gatewai_async_jobs_submitted_total[$__range])) by (model)",
           "legendFormat": "{{service_type}} / {{model}}",
           "refId": "A"
         }
@@ -1826,12 +1845,320 @@
       "type": "bargauge"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Top-N consumers by sync/LLM request count, all service types (usage.TrackRequest, covers the sync path missing from the async-only jobs_by_consumer metric above). Requires metrics.top_consumers > 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": [],
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "id": 320,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(20, sum by (consumer) (gatewai_usage_requests_top{consumer=~\"$consumer\"}))",
+          "interval": "",
+          "legendFormat": "{{consumer}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Top consumers — requêtes cumulées (sync + async)",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Same metric broken down by service_type. Requires metrics.top_consumers > 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 100
+              },
+              {
+                "color": "red",
+                "value": 1000
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": [],
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
+      "id": 321,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(20, sum by (consumer, service_type) (gatewai_usage_requests_top{consumer=~\"$consumer\"}))",
+          "interval": "",
+          "legendFormat": "{{consumer}} / {{service_type}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Top consumers — requêtes par service_type",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Top-N consumers by cumulative processing time across all service types. Useful to spot the heaviest (not just the most frequent) users. Requires metrics.top_consumers > 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1800
+              },
+              {
+                "color": "red",
+                "value": 7200
+              }
+            ]
+          },
+          "unit": "s",
+          "mappings": [],
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 104
+      },
+      "id": 322,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(20, sum by (consumer) (gatewai_usage_processing_time_top{consumer=~\"$consumer\"}))",
+          "interval": "",
+          "legendFormat": "{{consumer}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Top consumers — temps de traitement cumulé",
+      "type": "bargauge"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Top-N consumers by token usage on non-LLM-proxy service types (see the dedicated LLM dashboard for gatewai_llm_consumer_tokens_top). Requires metrics.top_consumers > 0.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10000
+              },
+              {
+                "color": "red",
+                "value": 100000
+              }
+            ]
+          },
+          "unit": "short",
+          "mappings": [],
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none"
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 104
+      },
+      "id": 323,
+      "options": {
+        "displayMode": "gradient",
+        "maxVizHeight": 300,
+        "minVizHeight": 16,
+        "minVizWidth": 8,
+        "namePlacement": "left",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(20, sum by (consumer) (gatewai_usage_tokens_top{consumer=~\"$consumer\"}))",
+          "interval": "",
+          "legendFormat": "{{consumer}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Top consumers — tokens (services non-LLM-proxy)",
+      "type": "bargauge"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 96
+        "y": 112
       },
       "id": 36,
       "title": "Gateway — Rate Limiting",
@@ -1888,7 +2215,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 97
+        "y": 113
       },
       "id": 37,
       "options": {
@@ -1971,7 +2298,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 97
+        "y": 113
       },
       "id": 38,
       "options": {
@@ -2054,7 +2381,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 105
+        "y": 121
       },
       "id": 39,
       "options": {
@@ -2153,7 +2480,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 105
+        "y": 121
       },
       "id": 40,
       "options": {
@@ -2237,7 +2564,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 113
+        "y": 129
       },
       "id": 41,
       "options": {
@@ -2275,7 +2602,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 121
+        "y": 137
       },
       "id": 42,
       "title": "Gateway — LLM Proxy",
@@ -2332,7 +2659,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 122
+        "y": 138
       },
       "id": 43,
       "options": {
@@ -2415,7 +2742,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 122
+        "y": 138
       },
       "id": 44,
       "options": {
@@ -2519,7 +2846,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 130
+        "y": 146
       },
       "id": 45,
       "options": {
@@ -2602,7 +2929,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 130
+        "y": 146
       },
       "id": 46,
       "options": {
@@ -2685,7 +3012,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 138
+        "y": 154
       },
       "id": 47,
       "options": {
@@ -2786,7 +3113,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 138
+        "y": 154
       },
       "id": 48,
       "options": {
@@ -2824,7 +3151,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 147
+        "y": 163
       },
       "id": 215,
       "title": "Traces distribuées",
@@ -2836,7 +3163,7 @@
       "type": "traces",
       "gridPos": {
         "x": 0,
-        "y": 148,
+        "y": 164,
         "w": 12,
         "h": 10
       },
@@ -2851,7 +3178,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.job.submit\"}",
+          "query": "{name=\"gateway.job.submit\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -2869,7 +3196,7 @@
       "type": "traces",
       "gridPos": {
         "x": 12,
-        "y": 148,
+        "y": 164,
         "w": 12,
         "h": 10
       },
@@ -2884,7 +3211,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"relay.process_job\"}",
+          "query": "{name=\"relay.process_job\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -2902,7 +3229,7 @@
       "type": "traces",
       "gridPos": {
         "x": 0,
-        "y": 158,
+        "y": 174,
         "w": 24,
         "h": 10
       },
@@ -2917,7 +3244,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{status=error, service.name=~\"gatewai.*\"}",
+          "query": "{status=error && resource.service.name=~\"${service_name}.*\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
