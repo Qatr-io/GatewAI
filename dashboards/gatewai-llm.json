@@ -10,7 +10,7 @@
   ],
   "timezone": "browser",
   "schemaVersion": 38,
-  "version": 2,
+  "version": 3,
   "refresh": "30s",
   "time": {
     "from": "now-1h",
@@ -1407,7 +1407,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.llm.request\"}",
+          "query": "{name=\"gateway.llm.request\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -1440,7 +1440,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.llm.request\", status=error}",
+          "query": "{name=\"gateway.llm.request\", status=error}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -1473,7 +1473,7 @@
             "uid": "${datasource_tempo}"
           },
           "queryType": "traceql",
-          "query": "{span.name=\"gateway.llm.request\"} | quantile_over_time(duration, 0.95) by(span.llm.backend_model)",
+          "query": "{name=\"gateway.llm.request\"} | quantile_over_time(duration, 0.95) by(span.llm.backend_model)",
           "refId": "A"
         }
       ],

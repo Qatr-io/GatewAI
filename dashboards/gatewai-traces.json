@@ -51,7 +51,7 @@
   "timezone": "browser",
   "title": "GatewAI — Traces",
   "uid": "gatewai-traces-v1",
-  "version": 1,
+  "version": 3,
   "templating": {
     "list": [
       {
@@ -77,6 +77,25 @@
         "query": "tempo",
         "refresh": 1,
         "type": "datasource"
+      },
+      {
+        "current": {
+          "text": "gatewai",
+          "value": "gatewai"
+        },
+        "hide": 0,
+        "label": "Service Name",
+        "name": "service_name",
+        "options": [
+          {
+            "selected": true,
+            "text": "gatewai",
+            "value": "gatewai"
+          }
+        ],
+        "query": "gatewai",
+        "skipUrlSync": false,
+        "type": "textbox"
       }
     ]
   },
@@ -114,7 +133,7 @@
             "uid": "${datasource_tempo}"
           },
           "queryType": "serviceMap",
-          "serviceMapQuery": "{service.name=~\"gatewai.*\"}",
+          "serviceMapQuery": "{resource.service.name=~\"${service_name}.*\"}",
           "refId": "A"
         }
       ],
@@ -168,7 +187,7 @@
             "uid": "${datasource_tempo}"
           },
           "queryType": "traceql",
-          "query": "{service.name=~\"gatewai.*\"} | rate() by(resource.service.name)",
+          "query": "{resource.service.name=~\"${service_name}.*\"} | rate() by(resource.service.name)",
           "refId": "A"
         }
       ],
@@ -223,7 +242,7 @@
             "uid": "${datasource_tempo}"
           },
           "queryType": "traceql",
-          "query": "{status=error, service.name=~\"gatewai.*\"} | rate() by(resource.service.name)",
+          "query": "{status=error && resource.service.name=~\"${service_name}.*\"} | rate() by(resource.service.name)",
           "refId": "A"
         }
       ],
@@ -278,7 +297,7 @@
             "uid": "${datasource_tempo}"
           },
           "queryType": "traceql",
-          "query": "{service.name=~\"gatewai.*\"} | quantile_over_time(duration, 0.95) by(span.name)",
+          "query": "{resource.service.name=~\"${service_name}.*\"} | quantile_over_time(duration, 0.95) by(name)",
           "refId": "A"
         }
       ],
@@ -349,7 +368,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.job.submit\"}",
+          "query": "{name=\"gateway.job.submit\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -382,7 +401,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.llm.request\"}",
+          "query": "{name=\"gateway.llm.request\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -427,7 +446,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"relay.process_job\"}",
+          "query": "{name=\"relay.process_job\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -460,7 +479,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"relay.inference_call\"}",
+          "query": "{name=\"relay.inference_call\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -505,7 +524,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.webhook.send\"}",
+          "query": "{name=\"gateway.webhook.send\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -538,7 +557,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.consumer.job_completed\"}",
+          "query": "{name=\"gateway.consumer.job_completed\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -583,7 +602,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{status=error, service.name=~\"gatewai.*\"}",
+          "query": "{status=error && resource.service.name=~\"${service_name}.*\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -628,7 +647,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=~\"gateway.s3.*\"}",
+          "query": "{name=~\"gateway.s3.*\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
@@ -661,7 +680,7 @@
             "uid": "${datasource_tempo}"
           },
           "limit": 20,
-          "query": "{span.name=\"gateway.redis.enqueue\"}",
+          "query": "{name=\"gateway.redis.enqueue\"}",
           "queryType": "traceql",
           "refId": "A",
           "tableType": "spans"
