@@ -483,6 +483,12 @@ type ServiceConfig struct {
 	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
 	// Health controls backend probing for this service (GET /health?verbose=true).
 	Health ServiceHealthConfig `yaml:"health"`
+	// Deprecated marks this model as deprecated: surfaced in GET /v1/models
+	// (capabilities.deprecated) and as `deprecated: true` on the corresponding
+	// operations in the generated OpenAPI spec (per-model swagger docs always;
+	// shared sync paths only when every model on that path is deprecated).
+	// Purely informational — does not affect routing or availability.
+	Deprecated bool `yaml:"deprecated"`
 }
 
 // GuardrailsStageConfig controls PII/secrets detection for one stage (input or output).

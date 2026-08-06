@@ -346,6 +346,50 @@ func TestApplyGatewayOverlay_InjectsModelsEndpointWithDefault(t *testing.T) {
 	}
 }
 
+func TestApplyGatewayOverlay_Deprecated_MarksOperations(t *testing.T) {
+	svc := whisperSvc(map[string][]string{
+		"transcription": {"/v1/audio/transcriptions"},
+	})
+	svc.Deprecated = true
+	result := ApplyGatewayOverlay(whisperFixture, svc, []string{"whisper-large-v3"})
+
+	var spec map[string]any
+	if err := json.Unmarshal(result, &spec); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	paths, _ := spec["paths"].(map[string]any)
+
+	item, _ := paths["/v1/audio/transcriptions"].(map[string]any)
+	op, _ := item["post"].(map[string]any)
+	if op["deprecated"] != true {
+		t.Errorf("expected deprecated=true on POST /v1/audio/transcriptions, got %v", op["deprecated"])
+	}
+
+	modelsItem, _ := paths["/v1/models"].(map[string]any)
+	modelsGet, _ := modelsItem["get"].(map[string]any)
+	if modelsGet["deprecated"] != true {
+		t.Errorf("expected deprecated=true on GET /v1/models, got %v", modelsGet["deprecated"])
+	}
+}
+
+func TestApplyGatewayOverlay_NotDeprecated_NoDeprecatedField(t *testing.T) {
+	svc := whisperSvc(map[string][]string{
+		"transcription": {"/v1/audio/transcriptions"},
+	})
+	result := ApplyGatewayOverlay(whisperFixture, svc, []string{"whisper-large-v3"})
+
+	var spec map[string]any
+	if err := json.Unmarshal(result, &spec); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	paths, _ := spec["paths"].(map[string]any)
+	item, _ := paths["/v1/audio/transcriptions"].(map[string]any)
+	op, _ := item["post"].(map[string]any)
+	if _, ok := op["deprecated"]; ok {
+		t.Errorf("expected no deprecated field when svc.Deprecated is false, got %v", op["deprecated"])
+	}
+}
+
 func TestApplyGatewayOverlay_InvalidJSON_ReturnsUnchanged(t *testing.T) {
 	bad := json.RawMessage(`not json`)
 	result := ApplyGatewayOverlay(bad, whisperSvc(nil), []string{"whisper-large-v3"})

@@ -141,6 +141,7 @@ services:
 | `type` | Service type used in async routes (`/jobs/{type}`). Multiple models can share the same type. |
 | `model` | Model identifier — matched against the `model` field in the request. |
 | `default` | `true` → used as fallback when `model` is omitted and multiple models are registered for the type. |
+| `deprecated` | `true` → marks the model deprecated. Surfaced in `GET /v1/models` (`capabilities.deprecated`) and as `deprecated: true` on the corresponding OpenAPI operations (per-model swagger doc always; a shared sync path only when every model on it is deprecated). Informational only — does not affect routing or availability. |
 | `operations` | Map of `operationName → [url-paths]`. All paths are indexed for sync routing. The first path of the selected operation is forwarded in async InputEvents. |
 | `inferenceURL` | Base URL of the Knative InferenceService predictor (cluster-local). The original request path is appended at runtime. Single-backend legacy — use `backends` for multi-backend. |
 | `backends` | List of backends with weighted routing. Takes precedence over `inferenceURL`. See below. |

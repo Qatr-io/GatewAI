@@ -23,18 +23,19 @@ func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName stri
 type modelsResponse struct {
 	Object string `json:"object"`
 	Data   []struct {
-		ID          string `json:"id"`
-		Object      string `json:"object"`
-		OwnedBy     string `json:"owned_by"`
-		ServiceType string `json:"service_type"`
-		Provider    string `json:"provider,omitempty"`
+		ID           string `json:"id"`
+		Object       string `json:"object"`
+		OwnedBy      string `json:"owned_by"`
+		ServiceType  string `json:"service_type"`
+		Provider     string `json:"provider,omitempty"`
 		Capabilities struct {
-			SupportsAsync    bool     `json:"supports_async"`
-			SupportsSync     bool     `json:"supports_sync"`
+			SupportsAsync     bool     `json:"supports_async"`
+			SupportsSync      bool     `json:"supports_sync"`
 			SupportsStreaming bool     `json:"supports_streaming"`
-			AcceptedFormats  []string `json:"accepted_formats,omitempty"`
-			MaxFileSizeMB    int64    `json:"max_file_size_mb,omitempty"`
-			Operations       []string `json:"operations,omitempty"`
+			AcceptedFormats   []string `json:"accepted_formats,omitempty"`
+			MaxFileSizeMB     int64    `json:"max_file_size_mb,omitempty"`
+			Operations        []string `json:"operations,omitempty"`
+			Deprecated        bool     `json:"deprecated,omitempty"`
 		} `json:"capabilities"`
 	} `json:"data"`
 }
@@ -111,6 +112,37 @@ func TestListModels_Capabilities_AsyncOnly(t *testing.T) {
 	}
 }
 
+func TestListModels_Capabilities_Deprecated(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:       "transcription",
+			Model:      "whisper-large-v2",
+			Deprecated: true,
+		},
+		{
+			Type:  "transcription",
+			Model: "whisper-large-v3",
+		},
+	})
+
+	resp := callListModels(t, reg)
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(resp.Data))
+	}
+	for _, m := range resp.Data {
+		switch m.ID {
+		case "whisper-large-v2":
+			if !m.Capabilities.Deprecated {
+				t.Error("expected deprecated=true for whisper-large-v2")
+			}
+		case "whisper-large-v3":
+			if m.Capabilities.Deprecated {
+				t.Error("expected deprecated=false for whisper-large-v3")
+			}
+		}
+	}
+}
+
 func TestListModels_Capabilities_SyncLLM(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{{
 		Type:     "llm",
@@ -145,24 +177,24 @@ func TestListModels_Capabilities_SyncLLM(t *testing.T) {
 func TestListModels_MultipleModels_SortedByID(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{
 		{
-			Type:     "llm",
-			Model:    "zephyr-7b",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "zephyr-7b",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b1.example.com",
 		},
 		{
-			Type:     "llm",
-			Model:    "gpt-4o",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "gpt-4o",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b2.example.com",
 		},
 		{
-			Type:     "llm",
-			Model:    "mistral-7b",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "mistral-7b",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b3.example.com",
 		},
 	})
@@ -183,9 +215,9 @@ func TestListModels_MultipleModels_SortedByID(t *testing.T) {
 
 func TestListModels_Capabilities_MultiBackend(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{{
-		Type:     "llm",
-		Model:    "llama3",
-		Provider: "ollama",
+		Type:       "llm",
+		Model:      "llama3",
+		Provider:   "ollama",
 		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
 		Backends: []config.BackendConfig{
 			{URL: "http://b1.example.com", Weight: 100},

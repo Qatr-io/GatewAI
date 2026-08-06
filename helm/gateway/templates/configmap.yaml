@@ -205,6 +205,9 @@ data:
         {{- if .default }}
         default:           true
         {{- end }}
+        {{- if .deprecated }}
+        deprecated:        true
+        {{- end }}
         {{- if .operations }}
         operations:
           {{- range $op, $paths := .operations }}

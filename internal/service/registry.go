@@ -47,6 +47,7 @@ type Def struct {
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
 	HealthCheck      config.ServiceHealthConfig
+	Deprecated       bool // informational: surfaced in /v1/models and OpenAPI specs
 }
 
 // OperationPath returns the first path for the given operation name.
@@ -222,6 +223,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			Retries:           cfg.Retries,
 			Guardrails:        resolveGuardrails(cfg.Guardrails),
 			HealthCheck:       cfg.Health,
+			Deprecated:        cfg.Deprecated,
 		}
 
 		if r.byTypeModel[cfg.Type] == nil {

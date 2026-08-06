@@ -15,12 +15,13 @@ var modelsProxyClient = &http.Client{Timeout: 30 * time.Second}
 
 // modelCapabilities describes what a model supports.
 type modelCapabilities struct {
-	SupportsAsync    bool     `json:"supports_async"`
-	SupportsSync     bool     `json:"supports_sync"`
+	SupportsAsync     bool     `json:"supports_async"`
+	SupportsSync      bool     `json:"supports_sync"`
 	SupportsStreaming bool     `json:"supports_streaming"`
-	AcceptedFormats  []string `json:"accepted_formats,omitempty"`
-	MaxFileSizeMB    int64    `json:"max_file_size_mb,omitempty"`
-	Operations       []string `json:"operations,omitempty"`
+	AcceptedFormats   []string `json:"accepted_formats,omitempty"`
+	MaxFileSizeMB     int64    `json:"max_file_size_mb,omitempty"`
+	Operations        []string `json:"operations,omitempty"`
+	Deprecated        bool     `json:"deprecated,omitempty"`
 }
 
 // modelObject mirrors the OpenAI model object returned by GET /v1/models,
@@ -60,12 +61,13 @@ func ListModels(registry *service.Registry) http.HandlerFunc {
 				ServiceType: d.Type,
 				Provider:    d.Provider,
 				Capabilities: modelCapabilities{
-					SupportsAsync:    d.SupportsAsync,
-					SupportsSync:     len(d.Backends) > 0 || d.InferenceURL != "",
+					SupportsAsync:     d.SupportsAsync,
+					SupportsSync:      len(d.Backends) > 0 || d.InferenceURL != "",
 					SupportsStreaming: d.Provider != "",
-					AcceptedFormats:  sortedExts(d.AcceptedExts),
-					MaxFileSizeMB:    d.MaxFileSizeMB,
-					Operations:       sortedKeys(d.Operations),
+					AcceptedFormats:   sortedExts(d.AcceptedExts),
+					MaxFileSizeMB:     d.MaxFileSizeMB,
+					Operations:        sortedKeys(d.Operations),
+					Deprecated:        d.Deprecated,
 				},
 			})
 		}
