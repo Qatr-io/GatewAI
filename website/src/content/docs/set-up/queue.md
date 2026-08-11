@@ -47,12 +47,19 @@ Each relay pod:
 
 ## Stale processing list
 
-If a relay pod crashes mid-job without calling `Done`, the job remains in `relay:<model>:processing`. The GC's stale-pending sweep (`redis.pending_max_age`) does not cover the processing list. To recover a stuck job manually:
+If a relay pod crashes mid-job without calling `Done`, the job remains in `relay:<model>:processing`. The GC's stale-pending sweep (`redis.pending_max_age`) does not cover the processing list — it only marks the job's Redis record failed, it never touches the queue entry.
+
+With `lifecycle.gc.enabled: true`, GC phase 3 (see [Configuration — `gc`](../configure/configuration#gc)) removes the leftover entry once the job's Redis record has expired, so `gatewai_relay_queue_depth` doesn't stay stuck forever. This is a cleanup, not a retry: the job itself is already terminally failed (or gone) by the time its record expires, so nothing re-runs it. Swept entries are counted in `gatewai_relay_queue_orphans_swept_total{model,state}`.
+
+To recover a stuck job immediately — before its record expires, or if `gc.enabled` is `false` — inspect and act on it manually:
 
 ```bash
 # Inspect processing list
 redis-cli LRANGE relay:whisper-large-v3:processing 0 -1
 
-# Move job back to pending (re-queue)
+# Move job back to pending to retry it (job record still valid)
 redis-cli LMOVE relay:whisper-large-v3:processing relay:whisper-large-v3:pending RIGHT LEFT
+
+# Or drop it without retrying (job record already failed/expired)
+redis-cli LREM relay:whisper-large-v3:processing 1 <job-id>
 ```
