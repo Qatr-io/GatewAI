@@ -157,6 +157,16 @@ Both binaries use `config.Load(path)` which reads a YAML file and expands `${VAR
 
 **Adding a new service type** requires only a new entry in `config.yaml` (and `values.yaml` for Helm). No Go code change is needed — the service registry (`internal/service/registry.go`) is entirely config-driven.
 
+### Lifecycle GC
+
+`cmd/gateway/gc.go`: unified background GC, gated by `lifecycle.gc.enabled` (default `false`), ticking every `lifecycle.gc.interval` (default 15m). Three phases per cycle:
+
+1. **Stale-pending sweep** (`redis.SweepStalePendingJobs`) — marks pending jobs older than `redis.pending_max_age` as failed and deletes their S3 input. Skipped when `pending_max_age` is `0s`/empty.
+2. **Orphan S3 cleanup** — deletes S3 objects whose job ID predates `lifecycle.gc.orphan_min_age` and no longer has a Redis job record.
+3. **Orphan relay queue cleanup** (`redis.SweepOrphanedRelayQueueEntries`) — removes job IDs from `relay:{model}:pending`/`relay:{model}:processing` whose Redis job record no longer exists. Catches jobs a relay pod left behind when it `os.Exit`s on an infra error before calling `Done` (queue.go) — with one-pod-per-job scaling, no later pod ever cleans that entry up, so it inflates `gatewai_relay_queue_depth` forever without this sweep. Swept counts are exposed as `gatewai_relay_queue_orphans_swept_total{model,state}`.
+
+Phases 2 and 3 abort the cycle if Redis is unreachable (`redis.Ping`), since "job gone" can't be distinguished from "Redis down".
+
 ### Rate limiting & token limits
 
 **`rate_limits`** (top-level config block): per-consumer, per-service-type, per-user-type request limits. Keyed by `{consumer}:{service_type}:{user_type}` in Redis. Returns `429` with `Retry-After` on breach. Requires `server.consumer_header` and `server.user_type_header`.
@@ -215,6 +225,7 @@ A rule may also carry an optional **`limits`** block (a `RateLimitConfig`: `rate
 | `k8s/deployment-transcription.yaml` | Deployment + Service + RBAC for whisper-large-v3 |
 | `internal/service/registry.go` | Config-driven service registry (routing, default model, operations map) |
 | `internal/handler/docs.go` | Dynamic OpenAPI spec generator + Swagger UI handler |
+| `cmd/gateway/gc.go` | Unified background GC — stale-pending sweep, S3 orphan cleanup, relay queue orphan cleanup |
 | `internal/ratelimit/` | Per-consumer Redis fixed-window rate limiting |
 | `internal/consumer/` | Redis pub/sub subscriber + webhook sender (replaces Kafka) |
 | `internal/llmproxy/` | LLM proxy with provider interface (openai/anthropic/ollama/passthrough) |

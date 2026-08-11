@@ -6,16 +6,18 @@ import (
 	"time"
 
 	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
 )
 
 // runGC executes one GC cycle:
 //   - Phase 1: sweep stale-pending jobs (skipped when maxAge == 0)
 //   - Phase 2: delete orphaned S3 objects for jobs absent from Redis
+//   - Phase 3: remove relay queue entries for jobs absent from Redis
 //
-// Phase 2 aborts early if Redis is unavailable or returns errors, to avoid
-// deleting S3 objects whose jobs simply couldn't be verified.
-func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3Client, maxAge, orphanMinAge time.Duration) {
+// Phases 2 and 3 abort early if Redis is unavailable, to avoid deleting S3
+// objects or queue entries whose jobs simply couldn't be verified.
+func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3Client, reg *service.Registry, maxAge, orphanMinAge time.Duration) {
 	// ── Phase 1: stale-pending sweep ─────────────────────────────────────────
 	if maxAge > 0 {
 		swept, err := redis.SweepStalePendingJobs(ctx, maxAge)
@@ -41,14 +43,21 @@ func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3
 		}
 	}
 
-	// ── Phase 2: orphan S3 cleanup ────────────────────────────────────────────
-	// Safeguard: abort if Redis is unavailable — we cannot distinguish "job gone"
-	// from "Redis down" without a reliable ping.
+	// Safeguard: abort phases 2 and 3 if Redis is unavailable — we cannot
+	// distinguish "job gone" from "Redis down" without a reliable ping.
 	if err := redis.Ping(ctx); err != nil {
-		slog.Error("GC phase2: Redis unavailable, skipping S3 orphan cleanup", "error", err)
+		slog.Error("GC: Redis unavailable, skipping orphan cleanup", "error", err)
 		return
 	}
 
+	// ── Phase 2: orphan S3 cleanup ────────────────────────────────────────────
+	runOrphanS3Cleanup(ctx, redis, s3Client, orphanMinAge)
+
+	// ── Phase 3: orphaned relay queue entries ────────────────────────────────
+	runOrphanRelayQueueCleanup(ctx, redis, reg)
+}
+
+func runOrphanS3Cleanup(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3Client, orphanMinAge time.Duration) {
 	jobObjects, err := s3Client.ListJobObjects(ctx)
 	if err != nil {
 		slog.Error("GC phase2: S3 listing failed, skipping orphan cleanup", "error", err)
@@ -88,5 +97,40 @@ func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3
 	}
 	if orphans > 0 {
 		slog.Info("GC phase2: orphan S3 cleanup complete", "orphans", orphans)
+	}
+}
+
+func runOrphanRelayQueueCleanup(ctx context.Context, redis *storage.RedisClient, reg *service.Registry) {
+	if reg == nil {
+		return
+	}
+	seen := make(map[string]struct{})
+	var models []string
+	for _, def := range reg.All() {
+		if !def.SupportsAsync || def.Model == "" {
+			continue
+		}
+		if _, ok := seen[def.Model]; ok {
+			continue
+		}
+		seen[def.Model] = struct{}{}
+		models = append(models, def.Model)
+	}
+	if len(models) == 0 {
+		return
+	}
+
+	removed, err := redis.SweepOrphanedRelayQueueEntries(ctx, models)
+	if err != nil {
+		slog.Error("GC phase3: relay queue orphan sweep failed", "error", err)
+		return
+	}
+	total := 0
+	for _, r := range removed {
+		total += r.Count
+		metrics.RelayQueueOrphansSweptTotal.WithLabelValues(r.Model, r.State).Add(float64(r.Count))
+	}
+	if total > 0 {
+		slog.Info("GC phase3: relay queue orphan sweep complete", "removed", total)
 	}
 }

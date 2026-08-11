@@ -218,6 +218,11 @@ var (
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",
 	}, []string{"model"})
 
+	RelayQueueOrphansSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_relay_queue_orphans_swept_total",
+		Help: "Total relay queue entries removed by the GC because their job record no longer exists in Redis.",
+	}, []string{"model", "state"})
+
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",
 		Help: "Total async jobs accepted (202) by service type and model.",

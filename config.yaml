@@ -149,7 +149,8 @@ lifecycle:
     # pending:    "${LIFECYCLE_JOB_TTL_PENDING:-}"
     # failed:     "${LIFECYCLE_JOB_TTL_FAILED:-}"
     # cancelled:  "${LIFECYCLE_JOB_TTL_CANCELLED:-}"
-  # gc: unified background garbage collector.
+  # gc: unified background garbage collector. Sweeps stale-pending jobs, orphaned
+  # S3 objects, and relay queue entries left behind by a crashed relay pod.
   # enabled: false by default — set to true to activate.
   # interval: how often the GC runs (default 15m).
   # orphan_min_age: S3 objects younger than this are never treated as orphans (default 5m).
