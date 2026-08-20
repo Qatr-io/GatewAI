@@ -126,6 +126,9 @@ data:
         enabled: {{ .Values.lifecycle.gc.enabled | default false }}
         interval: "{{ .Values.lifecycle.gc.interval | default "15m" }}"
         orphan_min_age: "{{ .Values.lifecycle.gc.orphanMinAge | default "5m" }}"
+        {{- if .Values.lifecycle.gc.maxReapAttempts }}
+        max_reap_attempts: {{ .Values.lifecycle.gc.maxReapAttempts | int64 }}
+        {{- end }}
 
     metrics:
       top_consumers: {{ .Values.metricsConfig.topConsumers | default 0 }}

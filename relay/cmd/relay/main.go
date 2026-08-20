@@ -134,7 +134,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	q := queue.New(rdb, cfg.Model)
+	owner, _ := os.Hostname()
+	if owner == "" {
+		owner = "relay-" + cfg.Model
+	}
+	q := queue.New(rdb, cfg.Model, owner, cfg.LeaseTTLDuration())
 	s := store.New(rdb)
 
 	pub := &redisPublisher{st: s, q: q, gatewayBaseURL: cfg.Gateway.BaseURL, httpClient: &http.Client{Timeout: 5 * time.Second}}
@@ -174,6 +178,14 @@ func main() {
 		slog.Error("queue pop error", "error", err)
 		os.Exit(1)
 	}
+
+	// Keep the processing lease alive for the whole job lifetime. If this pod
+	// dies (OOM, node loss, SIGKILL), the lease expires and the gateway reaper
+	// requeues the job. Stopped on every exit path via defer; Done() deletes the
+	// lease outright on normal completion/cancellation.
+	hbCtx, stopHeartbeat := context.WithCancel(context.Background())
+	defer stopHeartbeat()
+	go q.Heartbeat(hbCtx, jobID)
 
 	// jobCtx is cancelled if the gateway sends a DELETE request for this job.
 	// SIGTERM does not cancel it — inference must finish (or be cancelled by the gateway).

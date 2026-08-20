@@ -15,7 +15,7 @@ func newTestQueue(t *testing.T) (*queue.Queue, *miniredis.Miniredis) {
 	t.Helper()
 	mr := miniredis.RunT(t)
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	return queue.New(rdb, "test-model"), mr
+	return queue.New(rdb, "test-model", "test-owner", 60*time.Second), mr
 }
 
 func listLen(t *testing.T, mr *miniredis.Miniredis, key string) int {
@@ -181,5 +181,51 @@ func TestPop_CancelledContext_ReturnsError(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Pop did not return after context was cancelled")
+	}
+}
+
+// TestPop_AcquiresLease verifies that a successful Pop writes the per-job
+// processing lease key with the configured owner and a TTL.
+func TestPop_AcquiresLease(t *testing.T) {
+	q, mr := newTestQueue(t)
+	mr.RPush("relay:test-model:pending", "job-1")
+
+	id, err := q.Pop(context.Background(), time.Second)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if id != "job-1" {
+		t.Fatalf("expected job-1, got %q", id)
+	}
+	leaseKey := "relay:test-model:lease:job-1"
+	if !mr.Exists(leaseKey) {
+		t.Fatal("expected lease key to exist after Pop")
+	}
+	val, err := mr.Get(leaseKey)
+	if err != nil || val != "test-owner" {
+		t.Fatalf("expected lease value test-owner, got %q (err=%v)", val, err)
+	}
+	if ttl := mr.TTL(leaseKey); ttl <= 0 {
+		t.Fatalf("expected positive lease TTL, got %v", ttl)
+	}
+}
+
+// TestDone_RemovesProcessingAndLease verifies Done clears both the processing
+// list entry and the lease key.
+func TestDone_RemovesProcessingAndLease(t *testing.T) {
+	q, mr := newTestQueue(t)
+	mr.RPush("relay:test-model:pending", "job-1")
+	if _, err := q.Pop(context.Background(), time.Second); err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+
+	if err := q.Done(context.Background(), "job-1"); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	if listLen(t, mr, "relay:test-model:processing") != 0 {
+		t.Fatal("expected processing list empty after Done")
+	}
+	if mr.Exists("relay:test-model:lease:job-1") {
+		t.Fatal("expected lease key deleted after Done")
 	}
 }

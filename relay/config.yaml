@@ -1,5 +1,10 @@
 model: "${RELAY_MODEL}"   # e.g. "whisper-diarization"
 
+# lease_ttl: TTL of the per-job processing lease (relay:{model}:lease:{id}),
+# refreshed every lease_ttl/3 while the job runs. If this pod dies mid-job the
+# lease expires and the gateway reaper requeues the job. Default 60s.
+lease_ttl: "${RELAY_LEASE_TTL:-60s}"
+
 redis:
   addr:     "${REDIS_ADDR}"
   password: "${REDIS_PASSWORD:-}"

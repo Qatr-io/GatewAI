@@ -302,6 +302,10 @@ lifecycle:
     interval: "15m"
     # orphanMinAge: S3 objects younger than this are never treated as orphans. Default "5m".
     orphanMinAge: "5m"
+    # maxReapAttempts: times the reaper requeues a job abandoned in the processing
+    # list by a dead relay pod (expired lease) before dead-lettering it to
+    # relay:{model}:deadletter and marking it failed. Default 3.
+    maxReapAttempts: 3
 
 metricsConfig:
   # Nombre de top consumers à exposer dans Prometheus (Redis sorted set, refresh 60s).

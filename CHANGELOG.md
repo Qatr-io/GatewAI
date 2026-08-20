@@ -16,6 +16,12 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+#### Added
+
+- **Processing-queue crash recovery (lease reaper)**: a new GC phase (`ReapOrphanedProcessingJobs`) requeues async jobs abandoned in `relay:{model}:processing` by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing its lease. Jobs with no live lease are requeued to `relay:{model}:pending` up to `lifecycle.gc.max_reap_attempts` times (default 3), then **dead-lettered** to `relay:{model}:deadletter` and marked failed; entries whose job record is already gone/terminal are dropped. The lease check is atomic with the reclaim (Lua), so a healthy worker's job is never requeued, and it is idempotent across gateway replicas. New metric `gatewai_async_jobs_reaped_total{model, outcome}` (`requeued`/`deadletter`/`dropped`). Runs in the existing GC loop; requires `lifecycle.gc.enabled`. Helm: `lifecycle.gc.maxReapAttempts`.
+
 ### [v0.20.2] — 2026-07-31
 
 #### Added
@@ -704,6 +710,12 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [Unreleased]
+
+#### Added
+
+- **Per-job processing lease**: on `Pop` the relay writes a short-lived lease key `relay:{model}:lease:{jobID}` and refreshes it every `lease_ttl/3` (config `lease_ttl`, default 60s) for the lifetime of the job; `Done` deletes it. If the pod dies mid-job the lease expires and the gateway reaper requeues the job (see Gateway). Enables crash recovery for jobs that previously stayed orphaned in the processing list forever.
 
 ### [v0.11.3] — 2026-07-28
 

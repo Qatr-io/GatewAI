@@ -218,6 +218,14 @@ var (
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",
 	}, []string{"model"})
 
+	// AsyncJobsReapedTotal counts jobs abandoned in the processing list (relay
+	// pod died, lease expired) that the reaper acted on. outcome is one of
+	// "requeued", "deadletter", or "dropped" (job record already gone/terminal).
+	AsyncJobsReapedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_async_jobs_reaped_total",
+		Help: "Total number of orphaned processing jobs handled by the lease reaper, by outcome.",
+	}, []string{"model", "outcome"})
+
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",
 		Help: "Total async jobs accepted (202) by service type and model.",
