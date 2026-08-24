@@ -31,6 +31,45 @@ type Config struct {
 	// Policies configures identity-based access control. Nil means no enforcement.
 	Policies *PoliciesConfig `yaml:"policies"`
 	Usage    UsageConfig     `yaml:"usage"`
+	Webhooks WebhookConfig   `yaml:"webhooks"`
+}
+
+// WebhookConfig tunes durable outbound webhook delivery. Retries are persisted
+// in Redis (ZSET webhook:retries + per-job task keys) so a gateway restart does
+// not drop pending retries; final failures are dead-lettered to webhook:deadletter.
+type WebhookConfig struct {
+	// MaxRetries is the total number of delivery attempts (including the first,
+	// inline one) before a webhook is dead-lettered. 0 or absent = 3.
+	MaxRetries int `yaml:"max_retries"`
+	// RetryBackoff is the base delay before the first retry; each subsequent
+	// retry doubles it, capped by MaxBackoff. Default "30s".
+	RetryBackoff string `yaml:"retry_backoff"`
+	// MaxBackoff caps the exponential backoff. Default "10m".
+	MaxBackoff string `yaml:"max_backoff"`
+}
+
+// MaxRetriesOrDefault returns the configured attempt cap, defaulting to 3.
+func (w WebhookConfig) MaxRetriesOrDefault() int {
+	if w.MaxRetries > 0 {
+		return w.MaxRetries
+	}
+	return 3
+}
+
+// RetryBackoffDuration returns the base retry backoff, defaulting to 30s.
+func (w WebhookConfig) RetryBackoffDuration() time.Duration {
+	if d := parseDuration(w.RetryBackoff); d > 0 {
+		return d
+	}
+	return 30 * time.Second
+}
+
+// MaxBackoffDuration returns the backoff cap, defaulting to 10m.
+func (w WebhookConfig) MaxBackoffDuration() time.Duration {
+	if d := parseDuration(w.MaxBackoff); d > 0 {
+		return d
+	}
+	return 10 * time.Minute
 }
 
 // PoliciesConfig controls which principals may access which services and models.

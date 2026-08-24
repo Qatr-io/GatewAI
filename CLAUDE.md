@@ -100,6 +100,8 @@ Gateway (:8080)
                                                               └── Trigger webhook (if callback_url set)
 ```
 
+**Durable webhooks** (`internal/consumer/webhook.go` + `webhook_retry.go`): `Send` makes one inline delivery attempt; on failure (5xx/network) the retry is persisted to Redis (ZSET `webhook:retries` + per-job task key `webhook:retry:{id}`) and worked by `RunRetryLoop` with exponential backoff (`webhooks.retry_backoff`→`max_backoff`), so a gateway restart never drops pending retries. Claims are atomic (Lua, visibility-timeout) so the 2 replicas don't double-send. After `webhooks.max_retries` (default 3) attempts the webhook is dead-lettered to `webhook:deadletter`. Metrics: `gatewai_webhook_deliveries_total{result}`, `gatewai_webhook_retry_queue_depth`.
+
 **Sync direct proxy** (`POST /v1/*`):
 ```
 Gateway → HTTP proxy → InferenceService URL (inference_url in config)

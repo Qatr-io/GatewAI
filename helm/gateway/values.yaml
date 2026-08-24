@@ -311,6 +311,16 @@ metricsConfig:
   # Pour des consumers dynamiques, utiliser topConsumers à la place.
   consumerLabels: false
 
+# ── Webhooks — durable outbound delivery ─────────────────────────────────────
+# One inline attempt on completion; failures are persisted to a Redis retry
+# queue (survives gateway restarts) and retried with exponential backoff. After
+# maxRetries attempts a webhook is dead-lettered to the "webhook:deadletter"
+# list (metric gatewai_webhook_deliveries_total{result="deadletter"}).
+webhooks:
+  maxRetries: 3        # total attempts (incl. the inline one) before dead-letter
+  retryBackoff: "30s"  # base backoff; doubles each retry
+  maxBackoff: "10m"    # backoff cap
+
 # ── Monitoring (Prometheus Operator) ─────────────────────────────────────
 metrics:
   serviceMonitor:

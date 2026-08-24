@@ -11,17 +11,13 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/storage"
-)
-
-const (
-	webhookMaxRetries     = 3
-	webhookInitialBackoff = 2 * time.Second
 )
 
 // S3Store is the subset of *storage.S3Client used by WebhookSender.
@@ -32,13 +28,21 @@ type S3Store interface {
 }
 
 // WebhookSender delivers job result notifications to client callback URLs.
-// It retries up to webhookMaxRetries times with exponential backoff.
-// Use NewWebhookSender to construct one; call Send in a goroutine per job.
+//
+// Delivery is durable: Send makes one inline attempt, and on failure the retry
+// is persisted to a Redis ZSET (webhook:retries) worked by RunRetryLoop, so a
+// gateway restart never drops pending retries. After MaxRetries attempts a
+// webhook is dead-lettered to the webhook:deadletter list. Construct with
+// NewWebhookSender; call Send in a goroutine per job and RunRetryLoop once.
 type WebhookSender struct {
 	redis          *storage.RedisClient
 	s3             S3Store
 	httpClient     *http.Client
 	persistsResult atomic.Bool
+
+	maxRetries  int
+	baseBackoff time.Duration
+	maxBackoff  time.Duration
 }
 
 // NewWebhookSender creates a WebhookSender.
@@ -48,6 +52,7 @@ func NewWebhookSender(
 	redis *storage.RedisClient,
 	s3 S3Store,
 	persistsResult bool,
+	cfg config.WebhookConfig,
 ) *WebhookSender {
 	ws := &WebhookSender{
 		redis: redis,
@@ -55,6 +60,9 @@ func NewWebhookSender(
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		maxRetries:  cfg.MaxRetriesOrDefault(),
+		baseBackoff: cfg.RetryBackoffDuration(),
+		maxBackoff:  cfg.MaxBackoffDuration(),
 	}
 	ws.persistsResult.Store(persistsResult)
 	return ws
@@ -77,8 +85,8 @@ type webhookPayload struct {
 }
 
 // Send delivers the webhook for job. Intended to be called in its own goroutine.
-// It fetches the result from S3 (when present and job completed), POSTs it to
-// job.CallbackURL with retry/backoff, and optionally cleans up the S3 object.
+// It renders the payload (fetching the result from S3 when present), makes one
+// inline delivery attempt, and — if that fails — enqueues a durable retry.
 func (ws *WebhookSender) Send(job *model.Job) {
 	// Restore trace context from the job so this span is a child of the original
 	// submit request even though delivery happens asynchronously.
@@ -95,6 +103,26 @@ func (ws *WebhookSender) Send(job *model.Job) {
 		))
 	defer span.End()
 
+	payload := ws.buildPayload(ctx, job)
+
+	if ok, code := ws.deliver(ctx, job.CallbackURL, payload, job.ID); ok {
+		slog.Info("webhook delivered", "job_id", job.ID, "status_code", code, "attempt", 1)
+		ws.onDelivered(job.ID, job.ResultRef)
+		return
+	}
+	slog.Warn("webhook first attempt failed, scheduling durable retry", "job_id", job.ID)
+	ws.enqueueRetry(ctx, &webhookTask{
+		JobID:       job.ID,
+		ServiceType: job.ServiceType,
+		URL:         job.CallbackURL,
+		Payload:     payload,
+		Attempt:     1,
+		ResultRef:   job.ResultRef,
+	})
+}
+
+// buildPayload renders the webhook body, inlining the S3 result when completed.
+func (ws *WebhookSender) buildPayload(ctx context.Context, job *model.Job) []byte {
 	p := webhookPayload{
 		JobID:       job.ID,
 		ServiceType: job.ServiceType,
@@ -102,57 +130,51 @@ func (ws *WebhookSender) Send(job *model.Job) {
 		Error:       job.Error,
 		CompletedAt: job.UpdatedAt,
 	}
-
 	if job.Status == model.JobStatusCompleted && job.ResultRef != "" {
-		data, err := ws.s3.GetObject(ctx, job.ResultRef)
-		if err != nil {
+		if data, err := ws.s3.GetObject(ctx, job.ResultRef); err != nil {
 			slog.Error("webhook: failed to fetch result", "job_id", job.ID, "error", err)
 		} else {
 			p.Result = json.RawMessage(data)
 		}
 	}
-
 	payload, _ := json.Marshal(p)
-	backoff := webhookInitialBackoff
+	return payload
+}
 
-	for attempt := 1; attempt <= webhookMaxRetries; attempt++ {
-		reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, job.CallbackURL, bytes.NewReader(payload))
-		if err != nil {
-			cancel()
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
-			slog.Error("webhook: building request", "job_id", job.ID, "error", err)
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Job-ID", job.ID)
+// deliver POSTs the payload once. ok is true when the endpoint acknowledged the
+// delivery — a network success with status < 500 (4xx is the client's concern,
+// not retried). A network error or a 5xx returns ok=false (retryable).
+func (ws *WebhookSender) deliver(ctx context.Context, url string, payload []byte, jobID string) (ok bool, statusCode int) {
+	reqCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		slog.Error("webhook: building request", "job_id", jobID, "error", err)
+		return false, 0
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Job-ID", jobID)
 
-		resp, err := ws.httpClient.Do(req)
-		cancel()
+	resp, err := ws.httpClient.Do(req)
+	if err != nil {
+		slog.Warn("webhook request failed", "job_id", jobID, "error", err)
+		return false, 0
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 500 {
+		slog.Warn("webhook server error", "job_id", jobID, "status_code", resp.StatusCode)
+		return false, resp.StatusCode
+	}
+	return true, resp.StatusCode
+}
 
-		if err == nil {
-			resp.Body.Close()
-			if resp.StatusCode < 500 {
-				slog.Info("webhook delivered", "job_id", job.ID, "status_code", resp.StatusCode, "attempt", attempt)
-				if !ws.persistsResult.Load() && job.ResultRef != "" {
-					if derr := ws.s3.DeleteObject(context.Background(), job.ResultRef); derr != nil {
-						slog.Error("webhook: failed to delete result file", "job_id", job.ID, "error", derr)
-					}
-				}
-				return
-			}
-			slog.Warn("webhook server error", "job_id", job.ID, "status_code", resp.StatusCode, "attempt", attempt)
-		} else {
-			slog.Warn("webhook request failed", "job_id", job.ID, "attempt", attempt, "error", err)
-		}
-
-		if attempt < webhookMaxRetries {
-			time.Sleep(backoff)
-			backoff *= 2
+// onDelivered records a successful delivery and cleans up the S3 result when the
+// retention policy says so.
+func (ws *WebhookSender) onDelivered(jobID, resultRef string) {
+	metrics.WebhookDeliveriesTotal.WithLabelValues("delivered").Inc()
+	if !ws.persistsResult.Load() && resultRef != "" {
+		if err := ws.s3.DeleteObject(context.Background(), resultRef); err != nil {
+			slog.Error("webhook: failed to delete result file", "job_id", jobID, "error", err)
 		}
 	}
-
-	span.SetStatus(codes.Error, "webhook failed after all retries")
-	slog.Error("webhook failed after all retries", "job_id", job.ID, "url", job.CallbackURL)
 }

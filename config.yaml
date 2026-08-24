@@ -159,6 +159,18 @@ lifecycle:
     orphan_min_age: "${LIFECYCLE_GC_ORPHAN_MIN_AGE:-5m}"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Webhooks — durable outbound delivery of job-completion callbacks
+# One inline attempt is made on completion; failures are persisted to a Redis
+# retry queue (survives gateway restarts) and retried with exponential backoff.
+# After max_retries attempts a webhook is dead-lettered to the Redis list
+# "webhook:deadletter" and counted by gatewai_webhook_deliveries_total{result="deadletter"}.
+# ─────────────────────────────────────────────────────────────────────────────
+webhooks:
+  max_retries: ${WEBHOOK_MAX_RETRIES:-3}      # total attempts (incl. the inline one) before dead-letter
+  retry_backoff: "${WEBHOOK_RETRY_BACKOFF:-30s}" # base backoff; doubles each retry
+  max_backoff: "${WEBHOOK_MAX_BACKOFF:-10m}"    # backoff cap
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking
 # Ces options activent un suivi fin de la consommation LLM par consumer.
 # Les deux mécanismes sont indépendants et peuvent être activés simultanément.

@@ -137,7 +137,7 @@ func (s *stubUsageTracker) UpdateRetention(time.Duration) {}
 
 func TestComplete_JobNotFound_Returns404(t *testing.T) {
 	rc, _ := newTestRedis(t)
-	h := NewRelayCompleteHandler(rc, &stubS3{}, false)
+	h := NewRelayCompleteHandler(rc, &stubS3{}, false, config.WebhookConfig{})
 
 	w := httptest.NewRecorder()
 	h.Complete(w, newCompleteRequest("missing"))
@@ -156,7 +156,7 @@ func TestComplete_DebitsAndTracksUsage(t *testing.T) {
 	}
 	seedJob(t, mr, job)
 
-	h := NewRelayCompleteHandler(rc, &stubS3{}, false)
+	h := NewRelayCompleteHandler(rc, &stubS3{}, false, config.WebhookConfig{})
 	ptLimiter := &stubProcessingTimeLimiter{}
 	tokLimiter := &stubTokenLimiter{}
 	tracker := &stubUsageTracker{}
@@ -195,7 +195,7 @@ func TestComplete_ZeroProcessingTimeAndTokens_NoDebitOrTrack(t *testing.T) {
 	}
 	seedJob(t, mr, job)
 
-	h := NewRelayCompleteHandler(rc, &stubS3{}, false)
+	h := NewRelayCompleteHandler(rc, &stubS3{}, false, config.WebhookConfig{})
 	ptLimiter := &stubProcessingTimeLimiter{}
 	tokLimiter := &stubTokenLimiter{}
 	tracker := &stubUsageTracker{}
@@ -239,7 +239,7 @@ func TestComplete_DispatchesWebhookAndDrainsViaWait(t *testing.T) {
 	}
 	seedJob(t, mr, job)
 
-	h := NewRelayCompleteHandler(rc, &stubS3{getData: []byte(`{"text":"hi"}`)}, false)
+	h := NewRelayCompleteHandler(rc, &stubS3{getData: []byte(`{"text":"hi"}`)}, false, config.WebhookConfig{})
 
 	w := httptest.NewRecorder()
 	h.Complete(w, newCompleteRequest("job-2"))

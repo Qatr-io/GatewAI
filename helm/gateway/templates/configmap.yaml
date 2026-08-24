@@ -131,6 +131,11 @@ data:
       top_consumers: {{ .Values.metricsConfig.topConsumers | default 0 }}
       consumer_labels: {{ .Values.metricsConfig.consumerLabels | default false }}
 
+    webhooks:
+      max_retries: {{ .Values.webhooks.maxRetries | default 3 | int64 }}
+      retry_backoff: "{{ .Values.webhooks.retryBackoff | default "30s" }}"
+      max_backoff: "{{ .Values.webhooks.maxBackoff | default "10m" }}"
+
     {{- if .Values.rateLimits }}
     rate_limits:
       {{- range $svcType, $userLimits := .Values.rateLimits }}
