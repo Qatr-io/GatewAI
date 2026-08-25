@@ -345,7 +345,9 @@ func main() {
 		gcInterval     atomic.Int64 // nanoseconds
 		gcOrphanMinAge atomic.Int64 // nanoseconds
 		gcMaxAge       atomic.Int64 // nanoseconds
+		gcRegistry     atomic.Pointer[service.Registry]
 	)
+	gcRegistry.Store(initialRegistry)
 
 	var reloadFn func() error
 	reloadFn = func() error {
@@ -361,6 +363,7 @@ func main() {
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
 		relayQueueDepth.UpdateRegistry(newReg)
+		gcRegistry.Store(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
@@ -469,7 +472,7 @@ func main() {
 					continue
 				}
 				lastRun = time.Now()
-				runGC(ctx, redisClient, s3Client,
+				runGC(ctx, redisClient, s3Client, gcRegistry.Load(),
 					time.Duration(gcMaxAge.Load()),
 					time.Duration(gcOrphanMinAge.Load()),
 				)

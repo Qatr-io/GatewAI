@@ -405,6 +405,70 @@ func (r *RedisClient) MarkJobCancelled(ctx context.Context, jobID, modelName str
 	return nil
 }
 
+// relayQueueStates are the Redis list suffixes a job passes through:
+// relay:{model}:pending -> relay:{model}:processing (mirrors
+// internal/metrics.relayQueueStates, which reports depth for the same lists).
+var relayQueueStates = [2]string{"pending", "processing"}
+
+// SweepOrphanedRelayQueueEntries removes job IDs from relay:{model}:pending and
+// relay:{model}:processing whose Redis job record no longer exists.
+//
+// A relay pod that exits (os.Exit) before calling DoneJob — e.g. on an infra
+// error reading the job or running inference — never removes its job ID from
+// the processing list, and one-pod-per-job scaling means no later pod picks
+// that job back up to finish the cleanup. The stale-pending sweep (phase 1)
+// has the same gap for the pending list: it marks the job record failed but
+// never LRems the queue entry. Both leave the entry stuck forever, inflating
+// gatewai_relay_queue_depth even once processing has stopped.
+//
+// Once the job's TTL expires (job absent from Redis), its queue entry is
+// unambiguously orphaned regardless of state, so this reuses the same
+// existence check as the S3 orphan sweep (phase 2) rather than inspecting
+// job status.
+type RelayQueueSweepResult struct {
+	Model string
+	State string
+	Count int
+}
+
+func (r *RedisClient) SweepOrphanedRelayQueueEntries(ctx context.Context, models []string) ([]RelayQueueSweepResult, error) {
+	var removed []RelayQueueSweepResult
+	for _, m := range models {
+		for _, state := range relayQueueStates {
+			key := "relay:" + m + ":" + state
+			ids, err := r.client.LRange(ctx, key, 0, -1).Result()
+			if err != nil {
+				return removed, fmt.Errorf("lrange %s: %w", key, err)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+
+			exists, err := r.JobsExistBatch(ctx, ids)
+			if err != nil {
+				return removed, fmt.Errorf("checking job existence for %s: %w", key, err)
+			}
+
+			count := 0
+			for _, id := range ids {
+				if exists[id] {
+					continue
+				}
+				if err := r.client.LRem(ctx, key, 1, id).Err(); err != nil {
+					slog.Warn("GC: failed to remove orphaned relay queue entry", "key", key, "job_id", id, "error", err)
+					continue
+				}
+				count++
+				slog.Info("GC: removed orphaned relay queue entry", "model", m, "state", state, "job_id", id)
+			}
+			if count > 0 {
+				removed = append(removed, RelayQueueSweepResult{Model: m, State: state, Count: count})
+			}
+		}
+	}
+	return removed, nil
+}
+
 // scanStaleJobs returns all pending jobs whose queue score (creation Unix timestamp)
 // is older than cutoff. Used by both SweepStalePendingJobs and ListStalePendingJobs
 // to avoid duplicating the queue-scan + MGet logic.

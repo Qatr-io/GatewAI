@@ -216,7 +216,7 @@ lifecycle:
 
 ### `gc`
 
-Background garbage collector — runs as a goroutine on a configurable ticker. Two phases per tick:
+Background garbage collector — runs as a goroutine on a configurable ticker. Three phases per tick:
 
 **Phase 1 — stale-pending sweep** (runs when `redis.pending_max_age` > 0):
 Marks pending jobs older than `pending_max_age` as failed and deletes their S3 input files.
@@ -224,7 +224,10 @@ Marks pending jobs older than `pending_max_age` as failed and deletes their S3 i
 **Phase 2 — S3 orphan cleanup** (runs when `gc.enabled: true`):
 Lists all S3 objects, groups by job ID (first path segment), and deletes any file whose Redis record has expired. Covers both `input_ref` and `result_ref` orphans — catches failed webhooks, `persists_result: true` jobs after TTL, and never-polled results.
 
-Safety: if Redis `Ping` or `MGET` fails before any deletion, Phase 2 is aborted entirely and an error is logged. This prevents mass deletion when Redis is temporarily unavailable.
+**Phase 3 — relay queue orphan cleanup** (runs when `gc.enabled: true`):
+Removes job IDs from `relay:<model>:pending` and `relay:<model>:processing` whose Redis job record has expired. A relay pod that exits before calling `Done` — e.g. `os.Exit(1)` on an infra error reading the job, or during inference — never removes its own entry, and with one-pod-per-job scaling no later pod picks that job back up to finish the cleanup. Left unswept, that entry inflates `gatewai_relay_queue_depth` forever, even once nothing is actually running. Swept entries are counted in `gatewai_relay_queue_orphans_swept_total{model,state}`. See [Relay queue](../set-up/queue#stale-processing-list) for the underlying failure mode and manual recovery.
+
+Safety: if Redis `Ping` or `MGET` fails before any deletion, phases 2 and 3 are aborted entirely and an error is logged. This prevents mass deletion when Redis is temporarily unavailable.
 
 All `gc` parameters are hot-reload safe.
 

@@ -25,6 +25,8 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_async_jobs_purged_total` | counter | `model` | Jobs deleted via admin purge endpoint |
 | `gatewai_async_stale_jobs_swept_total` | counter | `model` | Pending jobs marked failed by the stale-job GC |
 | `gatewai_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs submitted per consumer. Requires `metricsConfig.consumerLabels: true` |
+| `gatewai_relay_queue_depth` | gauge | `model`, `state` (`pending`\|`processing`) | Live length of each relay queue list, read from Redis on every scrape |
+| `gatewai_relay_queue_orphans_swept_total` | counter | `model`, `state` (`pending`\|`processing`) | Relay queue entries removed by GC phase 3 because their job record no longer exists |
 
 ### Rate limiting
 
