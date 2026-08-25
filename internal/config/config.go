@@ -301,6 +301,18 @@ type GCConfig struct {
 	Enabled      bool   `yaml:"enabled"`        // master switch; default false
 	Interval     string `yaml:"interval"`       // tick frequency; default "15m"
 	OrphanMinAge string `yaml:"orphan_min_age"` // min S3 object age before orphan check; default "5m"
+	// MaxReapAttempts caps how many times the processing-queue reaper requeues an
+	// abandoned job (relay pod died, lease expired) before dead-lettering it to
+	// relay:{model}:deadletter and marking it failed. 0 or absent = 3.
+	MaxReapAttempts int `yaml:"max_reap_attempts"`
+}
+
+// MaxReapAttemptsOrDefault returns the configured requeue cap, defaulting to 3.
+func (g GCConfig) MaxReapAttemptsOrDefault() int {
+	if g.MaxReapAttempts > 0 {
+		return g.MaxReapAttempts
+	}
+	return 3
 }
 
 func (g GCConfig) IntervalDuration() time.Duration     { return parseDuration(g.Interval) }

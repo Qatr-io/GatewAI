@@ -23,7 +23,7 @@ func newTestPublisher(t *testing.T, gatewayBaseURL string) (*redisPublisher, *mi
 	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	return &redisPublisher{
 		st:             store.New(rdb),
-		q:              queue.New(rdb, "whisper-large-v3"),
+		q:              queue.New(rdb, "whisper-large-v3", "test-owner", 60*time.Second),
 		gatewayBaseURL: gatewayBaseURL,
 		httpClient:     &http.Client{Timeout: 5 * time.Second},
 	}, mr

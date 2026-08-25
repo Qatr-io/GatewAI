@@ -11,13 +11,26 @@ import (
 )
 
 // runGC executes one GC cycle:
+//   - Phase 0: reap jobs abandoned in the processing list (dead relay pod)
 //   - Phase 1: sweep stale-pending jobs (skipped when maxAge == 0)
 //   - Phase 2: delete orphaned S3 objects for jobs absent from Redis
 //   - Phase 3: remove relay queue entries for jobs absent from Redis
 //
 // Phases 2 and 3 abort early if Redis is unavailable, to avoid deleting S3
 // objects or queue entries whose jobs simply couldn't be verified.
-func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3Client, reg *service.Registry, maxAge, orphanMinAge time.Duration) {
+func runGC(ctx context.Context, redis *storage.RedisClient, s3Client *storage.S3Client, reg *service.Registry, maxAge, orphanMinAge time.Duration, maxReapAttempts int) {
+	// ── Phase 0: reap orphaned processing jobs ───────────────────────────────
+	// Requeue (or dead-letter) jobs whose relay pod died mid-processing without
+	// releasing its lease (live job record). Per-outcome metrics are emitted
+	// inside the reaper. Phase 3 below handles entries whose record is already
+	// gone; the two are complementary (lease requeue vs record-gone cleanup).
+	if res, err := redis.ReapOrphanedProcessingJobs(ctx, maxReapAttempts); err != nil {
+		slog.Error("GC phase0: processing-list reaper failed", "error", err)
+	} else if res.Requeued+res.DeadLettered+res.Dropped > 0 {
+		slog.Info("GC phase0: reaped orphaned processing jobs",
+			"requeued", res.Requeued, "deadletter", res.DeadLettered, "dropped", res.Dropped)
+	}
+
 	// ── Phase 1: stale-pending sweep ─────────────────────────────────────────
 	if maxAge > 0 {
 		swept, err := redis.SweepStalePendingJobs(ctx, maxAge)

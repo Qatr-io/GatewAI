@@ -341,11 +341,12 @@ func main() {
 
 	// GC atomics — declared before reloadFn so the reload path can update them.
 	var (
-		gcEnabled      atomic.Bool
-		gcInterval     atomic.Int64 // nanoseconds
-		gcOrphanMinAge atomic.Int64 // nanoseconds
-		gcMaxAge       atomic.Int64 // nanoseconds
-		gcRegistry     atomic.Pointer[service.Registry]
+		gcEnabled         atomic.Bool
+		gcInterval        atomic.Int64 // nanoseconds
+		gcOrphanMinAge    atomic.Int64 // nanoseconds
+		gcMaxAge          atomic.Int64 // nanoseconds
+		gcMaxReapAttempts atomic.Int64
+		gcRegistry        atomic.Pointer[service.Registry]
 	)
 	gcRegistry.Store(initialRegistry)
 
@@ -372,6 +373,7 @@ func main() {
 			gcOrphanMinAge.Store(int64(oma))
 		}
 		gcMaxAge.Store(int64(newCfg.Redis.PendingMaxAgeDuration()))
+		gcMaxReapAttempts.Store(int64(newCfg.Lifecycle.GC.MaxReapAttemptsOrDefault()))
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
@@ -451,6 +453,7 @@ func main() {
 	}
 	gcOrphanMinAge.Store(int64(oma))
 	gcMaxAge.Store(int64(cfg.Redis.PendingMaxAgeDuration()))
+	gcMaxReapAttempts.Store(int64(cfg.Lifecycle.GC.MaxReapAttemptsOrDefault()))
 
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -475,6 +478,7 @@ func main() {
 				runGC(ctx, redisClient, s3Client, gcRegistry.Load(),
 					time.Duration(gcMaxAge.Load()),
 					time.Duration(gcOrphanMinAge.Load()),
+					int(gcMaxReapAttempts.Load()),
 				)
 			}
 		}

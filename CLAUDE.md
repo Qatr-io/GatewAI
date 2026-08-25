@@ -100,6 +100,8 @@ Gateway (:8080)
                                                               └── Trigger webhook (if callback_url set)
 ```
 
+**Async crash recovery (lease + reaper)**: on `BLMOVE` the relay writes a per-job lease `relay:<model>:lease:<id>` (config `lease_ttl`, default 60s) and refreshes it every `lease_ttl/3` while processing; `Done` deletes it. If the relay pod dies mid-job the lease expires and the gateway GC's reaper (`ReapOrphanedProcessingJobs`, phase 0 of `runGC`) requeues the abandoned `relay:<model>:processing` entry to `pending` — atomically re-checking the lease (Lua) so a live worker's job is never touched, and idempotently across replicas. After `lifecycle.gc.max_reap_attempts` requeues (default 3) the job is dead-lettered to `relay:<model>:deadletter` and marked failed. Metric: `gatewai_async_jobs_reaped_total{model, outcome}`.
+
 **Sync direct proxy** (`POST /v1/*`):
 ```
 Gateway → HTTP proxy → InferenceService URL (inference_url in config)

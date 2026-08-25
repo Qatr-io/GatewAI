@@ -222,6 +222,13 @@ var (
 		Name: "gatewai_relay_queue_orphans_swept_total",
 		Help: "Total relay queue entries removed by the GC because their job record no longer exists in Redis.",
 	}, []string{"model", "state"})
+	// AsyncJobsReapedTotal counts jobs abandoned in the processing list (relay
+	// pod died, lease expired) that the reaper acted on. outcome is one of
+	// "requeued", "deadletter", or "dropped" (job record already gone/terminal).
+	AsyncJobsReapedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_async_jobs_reaped_total",
+		Help: "Total number of orphaned processing jobs handled by the lease reaper, by outcome.",
+	}, []string{"model", "outcome"})
 
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",
