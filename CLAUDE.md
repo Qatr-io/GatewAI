@@ -102,6 +102,8 @@ Gateway (:8080)
 
 **Idempotency** (async submit): `POST /jobs/{type}` honours an optional `Idempotency-Key` header. The key is reserved in Redis (`idem:{consumer}:{key}`, SETNX, `jobs.idempotency_ttl` default 24h) against the new job's ID just before `SaveJob`; a repeat with the same key returns the original job (`200` + `X-Idempotent-Replay: true`) instead of a duplicate inference, or `409` if that job is gone. Metric `gatewai_idempotency_requests_total{service_type, outcome}`.
 
+**Job poll — expired vs not-found**: `GET /jobs/{type}/{id}` returns `410 Gone` + `{"status":"expired"}` when the job record TTL has passed but a long-lived tombstone (`jobmeta:{id}`, `jobs.expired_marker_ttl`, default 7d, written by `SaveJob`) proves it existed; a truly unknown id still returns `404`.
+
 **Sync direct proxy** (`POST /v1/*`):
 ```
 Gateway → HTTP proxy → InferenceService URL (inference_url in config)

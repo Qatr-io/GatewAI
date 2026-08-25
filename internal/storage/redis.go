@@ -20,8 +20,30 @@ import (
 
 // RedisClient wraps go-redis with job-specific persistence helpers.
 type RedisClient struct {
-	client    *redis.Client
-	lifecycle config.LifecycleConfig
+	client           *redis.Client
+	lifecycle        config.LifecycleConfig
+	expiredMarkerTTL time.Duration // "this job existed" tombstone TTL; default 168h
+}
+
+// SetExpiredMarkerTTL overrides how long the job-existence tombstone is kept.
+// A value ≤ 0 keeps the default (168h).
+func (r *RedisClient) SetExpiredMarkerTTL(d time.Duration) {
+	if d > 0 {
+		r.expiredMarkerTTL = d
+	}
+}
+
+func jobMetaKey(id string) string { return "jobmeta:" + id }
+
+// JobEverExisted reports whether a job with this ID was ever submitted, using
+// the long-lived tombstone written by SaveJob. Used to answer 410-expired vs
+// 404-not-found when the job record itself is gone.
+func (r *RedisClient) JobEverExisted(ctx context.Context, id string) (bool, error) {
+	n, err := r.client.Exists(ctx, jobMetaKey(id)).Result()
+	if err != nil {
+		return false, fmt.Errorf("check job tombstone: %w", err)
+	}
+	return n == 1, nil
 }
 
 func NewRedis(cfg config.RedisConfig, lc config.LifecycleConfig) (*RedisClient, error) {
@@ -38,7 +60,7 @@ func NewRedis(cfg config.RedisConfig, lc config.LifecycleConfig) (*RedisClient, 
 		return nil, fmt.Errorf("connecting to redis at %q: %w", cfg.Addr, err)
 	}
 
-	return &RedisClient{client: rdb, lifecycle: lc}, nil
+	return &RedisClient{client: rdb, lifecycle: lc, expiredMarkerTTL: 168 * time.Hour}, nil
 }
 
 // ttlForStatus returns the Redis TTL to apply when storing a job with the given status.
@@ -160,6 +182,11 @@ func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) (err error) {
 			pipe.LPush(ctx, "relay:"+job.Model+":pending", job.ID)
 		} else {
 			pipe.RPush(ctx, "relay:"+job.Model+":pending", job.ID)
+		}
+		// Long-lived tombstone so a later poll can distinguish "expired" from
+		// "never existed" after the job record's own TTL passes.
+		if r.expiredMarkerTTL > 0 {
+			pipe.Set(ctx, jobMetaKey(job.ID), job.ServiceType, r.expiredMarkerTTL)
 		}
 		return nil
 	})

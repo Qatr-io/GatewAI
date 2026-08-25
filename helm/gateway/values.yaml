@@ -309,6 +309,10 @@ jobs:
   # with the same key (per consumer) returns the original job instead of starting
   # a duplicate inference. Default "24h".
   idempotencyTtl: "24h"
+  # How long a "this job existed" tombstone is kept. While it lives, polling a job
+  # whose record TTL passed returns 410 (status "expired") instead of 404. Should
+  # exceed the job record TTL. Default "168h" (7 days).
+  expiredMarkerTtl: "168h"
 
 metricsConfig:
   # Nombre de top consumers à exposer dans Prometheus (Redis sorted set, refresh 60s).
