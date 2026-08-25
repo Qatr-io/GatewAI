@@ -309,6 +309,7 @@ services:
 | `token_limits` | no | `{}` | Per-user-type token budgets for LLM requests — see [Rate limiting](../configure/rate-limiting#token-budget-limiting) |
 | `swagger_url` | no | `""` | URL to fetch an OpenAPI spec from |
 | `swagger_headers` | no | `{}` | HTTP headers for `swagger_url` fetch |
+| `deprecated` | no | `false` | Marks the model deprecated in `GET /v1/models` and the OpenAPI spec — see [Deprecating a model](../configure/service-registry#deprecating-a-model-deprecated). Informational only. |
 
 ### `backends`
 

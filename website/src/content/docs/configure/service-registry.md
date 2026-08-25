@@ -31,6 +31,25 @@ services:
       Authorization: "Bearer ${WHISPER_API_KEY}"
 ```
 
+## Deprecating a model (`deprecated`)
+
+```yaml
+services:
+  - type: audio
+    model: "whisper-large-v2"
+    deprecated: true                    # informational only — routing is unaffected
+```
+
+Setting `deprecated: true` on a service entry doesn't change routing or availability — it's purely a signal to API consumers, surfaced two ways:
+
+- `GET /v1/models` returns `capabilities.deprecated: true` for that model.
+- The generated OpenAPI spec (`/openapi.yaml`, `/docs`) marks the relevant operation with the standard [`deprecated: true`](https://swagger.io/docs/specification/v3_0/paths-and-operations/#deprecated-operations) field, which Swagger UI renders with a strikethrough.
+
+Deprecation is applied at the finest granularity the spec allows:
+
+- The per-model swagger doc served at `/swagger/{type}/{model}` (when `swagger_url` is configured) always marks its operations deprecated.
+- A sync path shared by multiple models (e.g. several models behind the same `/v1/*` route) is only marked `deprecated: true` at the operation level once **every** model on that path is deprecated — otherwise still-active models on the same path would inherit a misleading warning. Until then, the deprecated model(s) are called out by name in the `model` field's description instead.
+
 ## Model resolution order
 
 When a request omits the `model` field:

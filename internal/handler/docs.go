@@ -302,10 +302,14 @@ func healthPathItem() map[string]any {
 func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]any {
 	// Collect models and operations per service type.
 	modelsByType := map[string][]string{}
+	deprecatedModels := map[string]bool{}
 	allOps := []string{}
 	for _, def := range reg.All() {
 		if def.Model != "" {
 			modelsByType[def.Type] = uniqueSorted(append(modelsByType[def.Type], def.Model))
+			if def.Deprecated {
+				deprecatedModels[def.Model] = true
+			}
 		}
 		for opName := range def.Operations {
 			allOps = appendUniq(allOps, opName)
@@ -313,12 +317,26 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 	}
 	sort.Strings(allOps)
 
-	// Build a readable description of models per type.
+	// Build a readable description of models per type. This path is shared
+	// across every model of a type (routed via the "model" body field), so an
+	// individual model's deprecation can only be called out inline here —
+	// see syncPathItems / the per-model swagger overlay for cases where the
+	// whole OpenAPI `deprecated: true` operation flag applies cleanly.
 	typeParts := make([]string, 0, len(serviceTypes))
 	for _, t := range serviceTypes {
-		if models := modelsByType[t]; len(models) > 0 {
-			typeParts = append(typeParts, fmt.Sprintf("**%s**: %s", t, strings.Join(models, ", ")))
+		models := modelsByType[t]
+		if len(models) == 0 {
+			continue
 		}
+		labeled := make([]string, len(models))
+		for i, m := range models {
+			if deprecatedModels[m] {
+				labeled[i] = m + " (deprecated)"
+			} else {
+				labeled[i] = m
+			}
+		}
+		typeParts = append(typeParts, fmt.Sprintf("**%s**: %s", t, strings.Join(labeled, ", ")))
 	}
 
 	schemaProps := map[string]any{
@@ -669,11 +687,12 @@ func listModelsPathItem() map[string]any {
 // service definitions. Pattern paths (containing {model}) get a path parameter.
 func syncPathItems(reg *service.Registry) map[string]any {
 	type entry struct {
-		serviceType string
-		models      []string
-		opNames     []string
-		exts        []string
-		isPattern   bool
+		serviceType      string
+		models           []string
+		deprecatedModels map[string]bool
+		opNames          []string
+		exts             []string
+		isPattern        bool
 	}
 
 	byPath := map[string]*entry{}
@@ -690,13 +709,17 @@ func syncPathItems(reg *service.Registry) map[string]any {
 				e := byPath[p]
 				if e == nil {
 					e = &entry{
-						serviceType: def.Type,
-						isPattern:   strings.Contains(p, "{model}"),
+						serviceType:      def.Type,
+						isPattern:        strings.Contains(p, "{model}"),
+						deprecatedModels: map[string]bool{},
 					}
 					byPath[p] = e
 				}
 				e.models = appendUniq(e.models, def.Model)
 				e.opNames = appendUniq(e.opNames, opName)
+				if def.Deprecated {
+					e.deprecatedModels[def.Model] = true
+				}
 				for ext := range def.AcceptedExts {
 					e.exts = appendUniq(e.exts, ext)
 				}
@@ -714,11 +737,24 @@ func syncPathItems(reg *service.Registry) map[string]any {
 		schemaProps := map[string]any{}
 		required := []string{}
 
+		allDeprecated := len(e.models) > 0
+		for _, m := range e.models {
+			if !e.deprecatedModels[m] {
+				allDeprecated = false
+				break
+			}
+		}
+
 		if !e.isPattern {
 			modelField := map[string]any{"type": "string"}
 			if len(e.models) > 0 {
 				modelField["enum"] = e.models
 				modelField["example"] = e.models[0]
+				if !allDeprecated {
+					if deprecated := deprecatedModelNames(e.models, e.deprecatedModels); deprecated != "" {
+						modelField["description"] = "Deprecated: " + deprecated
+					}
+				}
 			}
 			schemaProps["model"] = modelField
 			if len(e.models) > 1 {
@@ -781,6 +817,13 @@ func syncPathItems(reg *service.Registry) map[string]any {
 				"504": map[string]any{"$ref": "#/components/responses/GatewayTimeout"},
 				"502": map[string]any{"$ref": "#/components/responses/BadGateway"},
 			},
+		}
+
+		// Only mark the whole operation deprecated when every model sharing
+		// this path is deprecated — otherwise callers of the still-active
+		// models would see a misleading deprecation warning in Swagger UI.
+		if allDeprecated {
+			op["deprecated"] = true
 		}
 
 		if e.isPattern {
@@ -1018,6 +1061,18 @@ func specComponents() map[string]any {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+// deprecatedModelNames returns a sorted, comma-joined list of the models in
+// models that are marked deprecated, or "" if none are.
+func deprecatedModelNames(models []string, deprecated map[string]bool) string {
+	var out []string
+	for _, m := range models {
+		if deprecated[m] {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, ", ")
+}
 
 func appendUniq(slice []string, s string) []string {
 	for _, v := range slice {

@@ -165,6 +165,13 @@ encryption:
 #   acceptedExts / maxFileSizeMB
 #   En async, spécifier l'opération via le champ de formulaire "operation"
 #   si le modèle en propose plusieurs.
+#
+#   deprecated — true marque ce modèle comme déprécié : visible dans
+#                GET /v1/models (capabilities.deprecated) et comme
+#                `deprecated: true` dans le spec OpenAPI (par-modèle dans le
+#                swagger dédié ; sur un endpoint sync partagé uniquement si
+#                tous les modèles de ce chemin le sont). Purement informatif,
+#                n'affecte ni le routage ni la disponibilité.
 services:
   - type: audio
     # Sync / OpenAI-compatible
