@@ -151,6 +151,8 @@ services:
 | `provider` | Activates LLM proxy mode: `openai`, `anthropic`, `ollama`, `passthrough`. Absent = legacy direct proxy. |
 | `backendModel` | Default model name sent to the backend (rewrites the `model` field in the request body). Overridden by `backends[].model`. |
 | `responseCacheTTL` | Redis response cache TTL in seconds. `0` = disabled. LLM proxy only. |
+| `maxConcurrentSync` | Max simultaneous sync requests for this model across all replicas. `0` = unlimited. Returns `503` when full. |
+| `priorityReservedSync` | Slots of `maxConcurrentSync` reserved for requests carrying `server.priorityHeader`. `0` = no reservation. |
 | `swaggerURL` | Optional URL to an OpenAPI JSON spec for this service. Fetched once at startup; served at `GET /swagger/{type}/{model}`. Failures are logged and skipped. |
 | `swaggerHeaders` | Optional map of HTTP headers sent when fetching `swaggerURL`. Values support `${VAR}` env expansion. |
 

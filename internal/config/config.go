@@ -438,6 +438,12 @@ type ServiceConfig struct {
 	// MaxConcurrentSync limits the number of simultaneous sync proxy calls for this model.
 	// 0 (default) means no limit. When exceeded, the handler returns 503.
 	MaxConcurrentSync int `yaml:"max_concurrent_sync"`
+	// PriorityReservedSync reserves this many of MaxConcurrentSync's slots
+	// exclusively for requests carrying server.priority_header. The remainder
+	// is the shared pool used by everyone (priority requests fall back to it
+	// too, once their reserved slots are full). 0 (default) = no reservation;
+	// priority requests compete in the shared pool like everyone else.
+	PriorityReservedSync int `yaml:"priority_reserved_sync"`
 	// SwaggerURL is an optional URL to an OpenAPI JSON spec for this service.
 	// Fetched once at startup; served at GET /swagger/{type}/{model}.
 	// Failures are logged as warnings and do not block startup.

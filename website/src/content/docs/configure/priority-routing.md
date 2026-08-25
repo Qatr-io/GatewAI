@@ -26,6 +26,10 @@ server:
 
 When the header is present in a `POST /jobs/{service_type}` request, the job is marked `priority: true` and inserted at the head of the queue. Leave the field empty to disable priority routing.
 
+## Sync requests
+
+`server.priority_header` also gates access to a **reserved sync concurrency pool** via `priority_reserved_sync` (per service, see [Service registry](service-registry.md#reserving-capacity-for-priority-requests-priority_reserved_sync)). This is a distinct mechanism from the async queue-jump above — sync requests have no queue to jump, so priority instead reserves part of the model's `max_concurrent_sync` capacity exclusively for requests carrying the header, rather than reordering anything. Both mechanisms are triggered by the same header, so a single upstream signal (e.g. an APISIX plugin setting `X-Priority` based on the caller's role) drives priority behavior across both the async and sync paths.
+
 ## Single-deployment model
 
 Unlike the previous Kafka-based approach (which required a dedicated relay Deployment consuming a separate topic), the Redis LPUSH mechanism works within the **same relay Deployment**. No second relay is needed — the head-of-queue position is sufficient to ensure priority pick-up.

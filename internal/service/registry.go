@@ -35,6 +35,9 @@ type Def struct {
 	// (i.e. AcceptedExts is explicitly set in the config).
 	SupportsAsync     bool
 	MaxConcurrentSync int // max simultaneous sync calls; 0 = unlimited
+	// PriorityReservedSync reserves this many MaxConcurrentSync slots exclusively
+	// for requests carrying server.priority_header. 0 = no reservation.
+	PriorityReservedSync int
 
 	// Sync / OpenAI-compatible mode (optional).
 	InferenceURL     string              // primary backend URL (derived from Backends; kept for compatibility)
@@ -207,22 +210,23 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			primaryURL = backends[0].URL
 		}
 		def := &Def{
-			Type:              cfg.Type,
-			Model:             cfg.Model,
-			AcceptedExts:      exts,
-			MaxFileSizeMB:     cfg.MaxFileSizeMB,
-			SupportsAsync:     len(cfg.AcceptedExts) > 0,
-			MaxConcurrentSync: cfg.MaxConcurrentSync,
-			InferenceURL:      primaryURL,
-			Backends:          backends,
-			Operations:        cfg.Operations,
-			InferenceHeaders:  cfg.InferenceHeaders,
-			Provider:          cfg.Provider,
-			BackendModel:      cfg.BackendModel,
-			ResponseCacheTTL:  time.Duration(cfg.ResponseCacheTTL) * time.Second,
-			Retries:           cfg.Retries,
-			Guardrails:        resolveGuardrails(cfg.Guardrails),
-			HealthCheck:       cfg.Health,
+			Type:                 cfg.Type,
+			Model:                cfg.Model,
+			AcceptedExts:         exts,
+			MaxFileSizeMB:        cfg.MaxFileSizeMB,
+			SupportsAsync:        len(cfg.AcceptedExts) > 0,
+			MaxConcurrentSync:    cfg.MaxConcurrentSync,
+			PriorityReservedSync: cfg.PriorityReservedSync,
+			InferenceURL:         primaryURL,
+			Backends:             backends,
+			Operations:           cfg.Operations,
+			InferenceHeaders:     cfg.InferenceHeaders,
+			Provider:             cfg.Provider,
+			BackendModel:         cfg.BackendModel,
+			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
+			Retries:              cfg.Retries,
+			Guardrails:           resolveGuardrails(cfg.Guardrails),
+			HealthCheck:          cfg.Health,
 			Deprecated:        cfg.Deprecated,
 		}
 
