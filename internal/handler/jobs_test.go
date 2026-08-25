@@ -51,7 +51,7 @@ type mockAsyncStore struct {
 	saved           bool
 	updateCalled    bool
 	deleteJobCalled bool
-	job             *model.Job   // returned by GetJob
+	job             *model.Job // returned by GetJob
 	getJobErr       error
 	jobs            []*model.Job // returned by ListJobsByConsumer
 	jobsTotal       int64
@@ -59,6 +59,7 @@ type mockAsyncStore struct {
 	queuePosFound   bool
 	staleJobs       []*model.Job // returned by ListStalePendingJobs
 	staleJobsErr    error
+	idem            map[string]string // idempotency key → jobID (SETNX semantics)
 }
 
 func (m *mockAsyncStore) SaveJob(_ context.Context, _ *model.Job) error {
@@ -87,6 +88,24 @@ func (m *mockAsyncStore) GetQueuePosition(_ context.Context, _, _ string) (int64
 }
 func (m *mockAsyncStore) ListStalePendingJobs(_ context.Context, _ time.Duration) ([]*model.Job, error) {
 	return m.staleJobs, m.staleJobsErr
+}
+func (m *mockAsyncStore) ReserveIdempotencyKey(_ context.Context, consumer, key, jobID string, _ time.Duration) (bool, error) {
+	if m.idem == nil {
+		m.idem = map[string]string{}
+	}
+	k := consumer + ":" + key
+	if _, exists := m.idem[k]; exists {
+		return false, nil
+	}
+	m.idem[k] = jobID
+	return true, nil
+}
+func (m *mockAsyncStore) GetIdempotencyKey(_ context.Context, consumer, key string) (string, error) {
+	return m.idem[consumer+":"+key], nil
+}
+func (m *mockAsyncStore) ReleaseIdempotencyKey(_ context.Context, consumer, key string) error {
+	delete(m.idem, consumer+":"+key)
+	return nil
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -208,6 +227,42 @@ func TestSubmit_NominalPath(t *testing.T) {
 	}
 	if !store.saved {
 		t.Error("Redis save should have been called")
+	}
+}
+
+// TestSubmit_IdempotencyKey_ReplaysExistingJob verifies that a second submission
+// carrying the same Idempotency-Key returns the original job (200 + replay
+// header) without saving a duplicate — i.e. no second inference is enqueued.
+func TestSubmit_IdempotencyKey_ReplaysExistingJob(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{job: &model.Job{ID: "orig-123", ServiceType: "transcription", Model: "faster-whisper", Status: model.JobStatusPending}}
+	reg := singleOpRegistry()
+
+	req1 := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	req1.Header.Set("Idempotency-Key", "abc-key")
+	w1 := httptest.NewRecorder()
+	newAsyncHandler(reg, s3, store).Submit(w1, req1)
+	if w1.Code != http.StatusAccepted {
+		t.Fatalf("first submit: expected 202, got %d: %s", w1.Code, w1.Body.String())
+	}
+	if !store.saved {
+		t.Fatal("first submit should have saved the job")
+	}
+
+	store.saved = false // reset to detect a duplicate save
+	req2 := submitReq(t, "transcription", "faster-whisper", "", "audio.wav", []byte("data"))
+	req2.Header.Set("Idempotency-Key", "abc-key")
+	w2 := httptest.NewRecorder()
+	newAsyncHandler(reg, s3, store).Submit(w2, req2)
+
+	if w2.Code != http.StatusOK {
+		t.Fatalf("replay: expected 200, got %d: %s", w2.Code, w2.Body.String())
+	}
+	if w2.Header().Get("X-Idempotent-Replay") != "true" {
+		t.Error("replay: expected X-Idempotent-Replay: true")
+	}
+	if store.saved {
+		t.Error("replay must NOT save a second job (no duplicate inference)")
 	}
 }
 
@@ -431,7 +486,7 @@ func TestListJobs_PendingJobsHaveQueuePosition(t *testing.T) {
 			},
 			{
 				ID: "j2", ServiceType: "transcription", Model: "faster-whisper",
-				Status: model.JobStatusCompleted,
+				Status:    model.JobStatusCompleted,
 				CreatedAt: now, UpdatedAt: now,
 			},
 		},

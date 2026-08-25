@@ -724,3 +724,40 @@ func (r *RedisClient) ReapOrphanedProcessingJobs(ctx context.Context, maxAttempt
 	}
 	return res, nil
 }
+
+func idempotencyKey(consumer, key string) string {
+	return "idem:" + consumer + ":" + key
+}
+
+// ReserveIdempotencyKey atomically claims an idempotency key for jobID (SET NX).
+// Returns true if this caller won the claim (no prior submission with this key),
+// false if the key was already taken. Scoped per consumer.
+func (r *RedisClient) ReserveIdempotencyKey(ctx context.Context, consumer, key, jobID string, ttl time.Duration) (bool, error) {
+	ok, err := r.client.SetNX(ctx, idempotencyKey(consumer, key), jobID, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	return ok, nil
+}
+
+// GetIdempotencyKey returns the job ID previously stored for an idempotency key,
+// or "" if the key is absent.
+func (r *RedisClient) GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error) {
+	v, err := r.client.Get(ctx, idempotencyKey(consumer, key)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get idempotency key: %w", err)
+	}
+	return v, nil
+}
+
+// ReleaseIdempotencyKey deletes an idempotency-key claim, letting a corrected
+// retry proceed. Called when the reserved submission fails before the job is saved.
+func (r *RedisClient) ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error {
+	if err := r.client.Del(ctx, idempotencyKey(consumer, key)).Err(); err != nil {
+		return fmt.Errorf("release idempotency key: %w", err)
+	}
+	return nil
+}
