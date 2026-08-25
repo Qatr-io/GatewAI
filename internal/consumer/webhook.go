@@ -3,9 +3,13 @@ package consumer
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync/atomic"
 	"time"
 
@@ -40,9 +44,10 @@ type WebhookSender struct {
 	httpClient     *http.Client
 	persistsResult atomic.Bool
 
-	maxRetries  int
-	baseBackoff time.Duration
-	maxBackoff  time.Duration
+	maxRetries    int
+	baseBackoff   time.Duration
+	maxBackoff    time.Duration
+	signingSecret string // empty = unsigned
 }
 
 // NewWebhookSender creates a WebhookSender.
@@ -60,9 +65,10 @@ func NewWebhookSender(
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
-		maxRetries:  cfg.MaxRetriesOrDefault(),
-		baseBackoff: cfg.RetryBackoffDuration(),
-		maxBackoff:  cfg.MaxBackoffDuration(),
+		maxRetries:    cfg.MaxRetriesOrDefault(),
+		baseBackoff:   cfg.RetryBackoffDuration(),
+		maxBackoff:    cfg.MaxBackoffDuration(),
+		signingSecret: cfg.SigningSecret,
 	}
 	ws.persistsResult.Store(persistsResult)
 	return ws
@@ -154,6 +160,9 @@ func (ws *WebhookSender) deliver(ctx context.Context, url string, payload []byte
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Job-ID", jobID)
+	if ws.signingSecret != "" {
+		req.Header.Set("X-Gatewai-Signature", signWebhook(ws.signingSecret, payload))
+	}
 
 	resp, err := ws.httpClient.Do(req)
 	if err != nil {
@@ -166,6 +175,25 @@ func (ws *WebhookSender) deliver(ctx context.Context, url string, payload []byte
 		return false, resp.StatusCode
 	}
 	return true, resp.StatusCode
+}
+
+// signWebhook returns the X-Gatewai-Signature header value for payload, using a
+// fresh timestamp per call so consumers can reject replays. The signed content
+// is "<unix_seconds>.<body>"; v1 is its HMAC-SHA256, hex-encoded.
+//
+// Consumer verification (pseudocode):
+//
+//	t, v1 = parse("t=…,v1=…")
+//	reject if abs(now - t) > tolerance          # replay protection
+//	expected = hex(hmac_sha256(secret, f"{t}.{raw_body}"))
+//	accept if hmac_equal(expected, v1)
+func signWebhook(secret string, payload []byte) string {
+	ts := strconv.FormatInt(time.Now().Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts))
+	mac.Write([]byte("."))
+	mac.Write(payload)
+	return "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
 }
 
 // onDelivered records a successful delivery and cleans up the S3 result when the

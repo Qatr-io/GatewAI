@@ -135,6 +135,9 @@ data:
       max_retries: {{ .Values.webhooks.maxRetries | default 3 | int64 }}
       retry_backoff: "{{ .Values.webhooks.retryBackoff | default "30s" }}"
       max_backoff: "{{ .Values.webhooks.maxBackoff | default "10m" }}"
+      {{- if .Values.webhooks.signingSecret }}
+      signing_secret: "{{ .Values.webhooks.signingSecret }}"
+      {{- end }}
 
     {{- if .Values.rateLimits }}
     rate_limits:

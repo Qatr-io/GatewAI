@@ -169,6 +169,10 @@ webhooks:
   max_retries: ${WEBHOOK_MAX_RETRIES:-3}      # total attempts (incl. the inline one) before dead-letter
   retry_backoff: "${WEBHOOK_RETRY_BACKOFF:-30s}" # base backoff; doubles each retry
   max_backoff: "${WEBHOOK_MAX_BACKOFF:-10m}"    # backoff cap
+  # signing_secret: when set, every webhook carries an HMAC-SHA256 header
+  #   X-Gatewai-Signature: t=<unix>,v1=<hex over "<t>.<body>">
+  # so consumers can verify authenticity and reject replays (stale t). Empty = unsigned.
+  signing_secret: "${WEBHOOK_SIGNING_SECRET:-}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking

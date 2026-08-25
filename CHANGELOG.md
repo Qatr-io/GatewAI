@@ -18,6 +18,10 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+#### Added
+
+- **HMAC-signed webhooks**: when `webhooks.signing_secret` is set, every outbound webhook carries an `X-Gatewai-Signature: t=<unix>,v1=<hex>` header, where `v1 = HMAC-SHA256(secret, "<t>.<body>")`. Consumers verify the HMAC and reject stale timestamps for replay protection. Empty secret = unsigned (unchanged behaviour). Helm: `webhooks.signingSecret`.
+
 #### Changed
 
 - **Durable webhook delivery**: outbound job-completion webhooks now persist their retry state in Redis instead of an in-memory retry goroutine. `Send` makes one inline attempt; on failure the retry is stored in a ZSET (`webhook:retries`) plus a per-job task key and worked by a background loop with exponential backoff — so a gateway restart no longer silently drops pending retries. After `webhooks.max_retries` attempts (default 3) a webhook is **dead-lettered** to the `webhook:deadletter` Redis list. New metrics `gatewai_webhook_deliveries_total{result}` (`delivered`/`deadletter`) and `gatewai_webhook_retry_queue_depth`. New config block `webhooks` (`max_retries`, `retry_backoff`, `max_backoff`); Helm `webhooks.*`.

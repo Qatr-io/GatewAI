@@ -46,6 +46,11 @@ type WebhookConfig struct {
 	RetryBackoff string `yaml:"retry_backoff"`
 	// MaxBackoff caps the exponential backoff. Default "10m".
 	MaxBackoff string `yaml:"max_backoff"`
+	// SigningSecret, when set, signs every outbound webhook with an HMAC-SHA256
+	// header `X-Gatewai-Signature: t=<unix>,v1=<hex>` computed over "<t>.<body>",
+	// letting consumers verify authenticity and reject replays (stale t).
+	// Supports ${VAR} expansion. Empty = unsigned (backward compatible).
+	SigningSecret string `yaml:"signing_secret"`
 }
 
 // MaxRetriesOrDefault returns the configured attempt cap, defaulting to 3.
