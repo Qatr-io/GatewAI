@@ -127,6 +127,9 @@ data:
         interval: "{{ .Values.lifecycle.gc.interval | default "15m" }}"
         orphan_min_age: "{{ .Values.lifecycle.gc.orphanMinAge | default "5m" }}"
 
+    jobs:
+      idempotency_ttl: "{{ .Values.jobs.idempotencyTtl | default "24h" }}"
+
     metrics:
       top_consumers: {{ .Values.metricsConfig.topConsumers | default 0 }}
       consumer_labels: {{ .Values.metricsConfig.consumerLabels | default false }}

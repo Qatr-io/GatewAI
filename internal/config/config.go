@@ -31,6 +31,23 @@ type Config struct {
 	// Policies configures identity-based access control. Nil means no enforcement.
 	Policies *PoliciesConfig `yaml:"policies"`
 	Usage    UsageConfig     `yaml:"usage"`
+	Jobs     JobsConfig      `yaml:"jobs"`
+}
+
+// JobsConfig tunes async job submission behaviour.
+type JobsConfig struct {
+	// IdempotencyTTL is how long an Idempotency-Key → job mapping is remembered,
+	// so a client retry with the same key returns the original job instead of
+	// starting a duplicate inference. 0 or absent = 24h.
+	IdempotencyTTL string `yaml:"idempotency_ttl"`
+}
+
+// IdempotencyTTLDuration returns the idempotency-key retention, defaulting to 24h.
+func (j JobsConfig) IdempotencyTTLDuration() time.Duration {
+	if d := parseDuration(j.IdempotencyTTL); d > 0 {
+		return d
+	}
+	return 24 * time.Hour
 }
 
 // PoliciesConfig controls which principals may access which services and models.

@@ -303,6 +303,13 @@ lifecycle:
     # orphanMinAge: S3 objects younger than this are never treated as orphans. Default "5m".
     orphanMinAge: "5m"
 
+# ── Async jobs ───────────────────────────────────────────────────────────────
+jobs:
+  # How long an "Idempotency-Key" → job mapping is kept. A repeat POST /jobs/{type}
+  # with the same key (per consumer) returns the original job instead of starting
+  # a duplicate inference. Default "24h".
+  idempotencyTtl: "24h"
+
 metricsConfig:
   # Nombre de top consumers à exposer dans Prometheus (Redis sorted set, refresh 60s).
   # 0 = désactivé. Recommandé : 20–50.

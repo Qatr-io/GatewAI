@@ -218,6 +218,14 @@ var (
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",
 	}, []string{"model"})
 
+	// IdempotencyRequestsTotal counts async submissions carrying an
+	// Idempotency-Key, by outcome: "created" (new job), "replayed" (returned an
+	// existing job), or "conflict" (key reused but the job is gone → 409).
+	IdempotencyRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_idempotency_requests_total",
+		Help: "Async submissions with an Idempotency-Key, by outcome (created|replayed|conflict).",
+	}, []string{"service_type", "outcome"})
+
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",
 		Help: "Total async jobs accepted (202) by service type and model.",

@@ -159,6 +159,15 @@ lifecycle:
     orphan_min_age: "${LIFECYCLE_GC_ORPHAN_MIN_AGE:-5m}"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Async jobs
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  # idempotency_ttl: how long an "Idempotency-Key" header → job mapping is kept.
+  # A repeat POST /jobs/{type} with the same key (per consumer) returns the
+  # original job instead of starting a duplicate inference. Default 24h.
+  idempotency_ttl: "${JOBS_IDEMPOTENCY_TTL:-24h}"
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking
 # Ces options activent un suivi fin de la consommation LLM par consumer.
 # Les deux mécanismes sont indépendants et peuvent être activés simultanément.

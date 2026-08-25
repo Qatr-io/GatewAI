@@ -119,7 +119,8 @@ func buildRouter(
 	usageHTTPHandler *usage.UsageHandler,
 	relayCompleteHandler *handler.RelayCompleteHandler,
 ) *chi.Mux {
-	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
+	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle).
+		WithIdempotencyTTL(cfg.Jobs.IdempotencyTTLDuration())
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
