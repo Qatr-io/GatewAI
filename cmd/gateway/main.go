@@ -311,6 +311,7 @@ func main() {
 	if usageTracker != nil {
 		llmHandler.WithUsageTracker(usageTracker)
 	}
+	llmHandler.WithLangfuse(cfg.Otel.Enabled && cfg.Otel.Traces.Enabled && cfg.Otel.Traces.Langfuse.Enabled)
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -400,6 +401,7 @@ func main() {
 		if usageTracker != nil {
 			llmHandler.WithUsageTracker(usageTracker)
 		}
+		llmHandler.WithLangfuse(newCfg.Otel.Enabled && newCfg.Otel.Traces.Enabled && newCfg.Otel.Traces.Langfuse.Enabled)
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine

@@ -449,6 +449,12 @@ services:
 #     #   - /metrics
 #     #   - /docs
 #     #   - /openapi.yaml
+#     # langfuse.enabled: attach prompt/completion content and gen_ai.usage.*
+#     # to LLM request spans (for a Langfuse-consuming pipeline downstream).
+#     # Independent of traces.enabled so you can send generic traces without
+#     # also forwarding prompt content to Langfuse.
+#     langfuse:
+#       enabled: false
 #
 #   # OTLP metrics push (useful for short-lived processes or when Prometheus
 #   # scrape is not available, e.g. relay running as a Kubernetes Job).

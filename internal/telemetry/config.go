@@ -31,7 +31,16 @@ type TracesConfig struct {
 	// IgnorePaths lists path prefixes that are excluded from tracing.
 	// A request is skipped when its path equals an entry or starts with entry + "/".
 	// Defaults to ["/health", "/metrics", "/docs", "/openapi.yaml"] when unset.
-	IgnorePaths []string `yaml:"ignore_paths"`
+	IgnorePaths []string       `yaml:"ignore_paths"`
+	Langfuse    LangfuseConfig `yaml:"langfuse"`
+}
+
+// LangfuseConfig controls whether Langfuse-specific span attributes
+// (prompt/completion content, gen_ai.usage.*) are attached to LLM request
+// spans. Independent from Traces.Enabled so tracing can be sent elsewhere
+// (e.g. Tempo) without also forwarding prompt content to Langfuse.
+type LangfuseConfig struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 // MetricsConfig configures OTLP metrics push.

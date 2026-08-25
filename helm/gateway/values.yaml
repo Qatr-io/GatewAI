@@ -470,6 +470,12 @@ opentelemetry:
     # ignorePaths: path prefixes excluded from tracing (prefix-based).
     # Defaults: ["/health", "/metrics", "/docs", "/openapi.yaml"]
     ignorePaths: []
+    # langfuse.enabled: attach prompt/completion content and gen_ai.usage.*
+    # to LLM request spans, for a Langfuse-consuming pipeline downstream.
+    # Independent of traces.enabled — lets you keep generic tracing on
+    # without also forwarding prompt content to Langfuse.
+    langfuse:
+      enabled: false
   metrics:
     enabled: false
     interval: "60s"

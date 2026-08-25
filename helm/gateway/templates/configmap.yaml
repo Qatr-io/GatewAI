@@ -189,6 +189,8 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
+        langfuse:
+          enabled: {{ .Values.opentelemetry.traces.langfuse.enabled | default false }}
       metrics:
         enabled: {{ .Values.opentelemetry.metrics.enabled | default false }}
         interval: {{ .Values.opentelemetry.metrics.interval | default "60s" | quote }}
