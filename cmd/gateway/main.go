@@ -272,7 +272,7 @@ func main() {
 
 	manager := consumer.NewManager(redisClient)
 
-	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
+	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult, cfg.Webhooks)
 	if limiter != nil {
 		relayCompleteHandler.WithProcessingTimeLimiter(limiter)
 		relayCompleteHandler.WithTokenLimiter(limiter)
@@ -438,6 +438,7 @@ func main() {
 
 	manager.Start(ctx, initialRegistry)
 	go healthChecker.Start(ctx)
+	relayCompleteHandler.StartRetryLoop(ctx)
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.

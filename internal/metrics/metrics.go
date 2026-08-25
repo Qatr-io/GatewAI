@@ -229,6 +229,19 @@ var (
 		Name: "gatewai_async_jobs_reaped_total",
 		Help: "Total number of orphaned processing jobs handled by the lease reaper, by outcome.",
 	}, []string{"model", "outcome"})
+	// WebhookDeliveriesTotal counts terminal webhook outcomes. result is
+	// "delivered" (2xx–4xx received) or "deadletter" (failed after all retries).
+	WebhookDeliveriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_webhook_deliveries_total",
+		Help: "Total webhook deliveries by terminal outcome (delivered|deadletter).",
+	}, []string{"result"})
+
+	// WebhookRetryQueueDepth is the number of webhooks pending retry in the
+	// persistent Redis retry queue (ZSET webhook:retries).
+	WebhookRetryQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gatewai_webhook_retry_queue_depth",
+		Help: "Number of webhooks currently scheduled for retry in Redis.",
+	})
 
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",

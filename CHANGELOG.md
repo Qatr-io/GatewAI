@@ -22,6 +22,10 @@ Versioning: each component is versioned independently — see tag conventions be
 
 - **Processing-queue crash recovery (lease reaper)**: a new GC phase (`ReapOrphanedProcessingJobs`) requeues async jobs abandoned in `relay:{model}:processing` by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing its lease. Jobs with no live lease are requeued to `relay:{model}:pending` up to `lifecycle.gc.max_reap_attempts` times (default 3), then **dead-lettered** to `relay:{model}:deadletter` and marked failed; entries whose job record is already gone/terminal are dropped. The lease check is atomic with the reclaim (Lua), so a healthy worker's job is never requeued, and it is idempotent across gateway replicas. New metric `gatewai_async_jobs_reaped_total{model, outcome}` (`requeued`/`deadletter`/`dropped`). Runs in the existing GC loop; requires `lifecycle.gc.enabled`. Helm: `lifecycle.gc.maxReapAttempts`.
 
+#### Changed
+
+- **Durable webhook delivery**: outbound job-completion webhooks now persist their retry state in Redis instead of an in-memory retry goroutine. `Send` makes one inline attempt; on failure the retry is stored in a ZSET (`webhook:retries`) plus a per-job task key and worked by a background loop with exponential backoff — so a gateway restart no longer silently drops pending retries. After `webhooks.max_retries` attempts (default 3) a webhook is **dead-lettered** to the `webhook:deadletter` Redis list. New metrics `gatewai_webhook_deliveries_total{result}` (`delivered`/`deadletter`) and `gatewai_webhook_retry_queue_depth`. New config block `webhooks` (`max_retries`, `retry_backoff`, `max_backoff`); Helm `webhooks.*`.
+
 ### [v0.20.2] — 2026-07-31
 
 #### Added
