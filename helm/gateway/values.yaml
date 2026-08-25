@@ -281,7 +281,20 @@ redis-ha:
     replicas: 2
   redis:
     masterGroupName: "mymaster"
+    # Durability for in-flight async state (job records, relay pending/processing
+    # queues, per-job leases, and the webhook retry queue). Without persistence a
+    # Redis master crash or failover can lose recently-enqueued jobs and their
+    # lease/webhook state. AOF (append-only, fsync every second) bounds loss to
+    # ~1s; RDB snapshots give faster restarts. Merged over the subchart defaults.
+    config:
+      appendonly: "yes"
+      appendfsync: "everysec"
+      save: "900 1 300 10 60 10000"
   replicas: 3
+  # AOF/RDB files must live on a PersistentVolume to survive pod restarts.
+  persistentVolume:
+    enabled: true
+    size: 10Gi
 
 # ── Lifecycle — job record and S3 result retention ───────────────────────────
 lifecycle:
