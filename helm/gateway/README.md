@@ -382,6 +382,11 @@ The chart includes [redis-ha](https://github.com/DandyDeveloper/charts/tree/mast
 | `redis-ha.enabled` | Deploy Redis HA | `true` |
 | `redis-ha.haproxy.enabled` | Enable HAProxy frontend | `true` |
 | `redis-ha.replicas` | Redis replica count | `3` |
+| `redis-ha.redis.config.appendonly` | AOF persistence | `"yes"` |
+| `redis-ha.redis.config.appendfsync` | AOF fsync policy | `"everysec"` |
+| `redis-ha.persistentVolume.enabled` | PVC for AOF/RDB files | `true` |
+
+**Durability:** async state lives entirely in Redis — job records, the relay `pending`/`processing` queues, per-job leases, and the webhook retry queue. The chart enables **AOF** (`appendfsync everysec`, ≤1s loss window) and **RDB** snapshots on a PersistentVolume so this state survives a Redis pod restart or master failover. Without persistence, a master crash can lose recently-enqueued jobs and their lease/webhook state. Disable only for ephemeral/dev clusters.
 
 ## API reference
 

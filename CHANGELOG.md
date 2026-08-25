@@ -16,6 +16,12 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+#### Changed
+
+- **Redis persistence enabled by default (Helm)**: the bundled `redis-ha` subchart now runs with **AOF** (`appendonly yes`, `appendfsync everysec`) + **RDB** snapshots on a PersistentVolume. Async state (job records, relay `pending`/`processing` queues, per-job leases, webhook retry queue) now survives a Redis pod restart or master failover instead of being lost — bounding data loss to ~1s. Values: `redis-ha.redis.config.appendonly`/`appendfsync`, `redis-ha.persistentVolume.enabled`.
+
 ### [v0.20.2] — 2026-07-31
 
 #### Added
