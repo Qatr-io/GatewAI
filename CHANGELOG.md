@@ -21,6 +21,7 @@ Versioning: each component is versioned independently — see tag conventions be
 #### Added
 
 - **Processing-queue crash recovery (lease reaper)**: a new GC phase (`ReapOrphanedProcessingJobs`) requeues async jobs abandoned in `relay:{model}:processing` by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing its lease. Jobs with no live lease are requeued to `relay:{model}:pending` up to `lifecycle.gc.max_reap_attempts` times (default 3), then **dead-lettered** to `relay:{model}:deadletter` and marked failed; entries whose job record is already gone/terminal are dropped. The lease check is atomic with the reclaim (Lua), so a healthy worker's job is never requeued, and it is idempotent across gateway replicas. New metric `gatewai_async_jobs_reaped_total{model, outcome}` (`requeued`/`deadletter`/`dropped`). Runs in the existing GC loop; requires `lifecycle.gc.enabled`. Helm: `lifecycle.gc.maxReapAttempts`.
+- **HMAC-signed webhooks**: when `webhooks.signing_secret` is set, every outbound webhook carries an `X-Gatewai-Signature: t=<unix>,v1=<hex>` header, where `v1 = HMAC-SHA256(secret, "<t>.<body>")`. Consumers verify the HMAC and reject stale timestamps for replay protection. Empty secret = unsigned (unchanged behaviour). Helm: `webhooks.signingSecret`.
 
 #### Changed
 

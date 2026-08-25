@@ -324,6 +324,10 @@ webhooks:
   maxRetries: 3        # total attempts (incl. the inline one) before dead-letter
   retryBackoff: "30s"  # base backoff; doubles each retry
   maxBackoff: "10m"    # backoff cap
+  # signingSecret: HMAC secret for the X-Gatewai-Signature header (empty = unsigned).
+  # Prefer an env reference resolved from a Secret (e.g. "${WEBHOOK_SIGNING_SECRET}"
+  # injected via extraEnvVars) over a plaintext value here.
+  signingSecret: ""
 
 # ── Monitoring (Prometheus Operator) ─────────────────────────────────────
 metrics:
