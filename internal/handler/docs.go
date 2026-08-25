@@ -376,6 +376,11 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 					"schema":  map[string]any{"type": "string", "enum": serviceTypes},
 					"example": serviceTypes[0],
 				},
+				map[string]any{
+					"name": "Idempotency-Key", "in": "header", "required": false,
+					"schema":      map[string]any{"type": "string"},
+					"description": "Optional. A repeat submission with the same key (scoped per consumer) returns the original job (200 + `X-Idempotent-Replay: true`) instead of starting a duplicate inference. If the key was reused but its job is gone, returns 409.",
+				},
 			},
 			"requestBody": map[string]any{
 				"required": true,
@@ -398,8 +403,17 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 						},
 					},
 				},
+				"200": map[string]any{
+					"description": "Idempotent replay — an existing job with the same Idempotency-Key is returned (header `X-Idempotent-Replay: true`); no new inference is started",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/JobSubmitResponse"},
+						},
+					},
+				},
 				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
 				"404": map[string]any{"$ref": "#/components/responses/NotFound"},
+				"409": map[string]any{"description": "Idempotency-Key was reused but its job is no longer available; retry with a new key"},
 				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
 			},
 		},
@@ -436,6 +450,7 @@ func jobByIDPathItem(serviceTypes []string) map[string]any {
 					},
 				},
 				"404": map[string]any{"$ref": "#/components/responses/NotFound"},
+				"410": map[string]any{"description": "The job existed but its retention TTL has passed — body `{\"status\":\"expired\"}`. Distinguishes a timed-out/cleaned-up job from one that never existed (404)."},
 			},
 		},
 		"delete": map[string]any{

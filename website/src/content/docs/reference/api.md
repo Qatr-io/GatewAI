@@ -23,13 +23,22 @@ Accepts a multipart form. Returns `202 Accepted` with a job ID.
 | `file` | yes | Input file |
 | `model` | no | Target model. Auto-selected if only one is registered for the type |
 | `operation` | no | Operation name (e.g. `transcription`). Required if the model has multiple operations |
-| `callback_url` | no | Webhook URL called on completion |
+| `callback_url` | no | Webhook URL called on completion (see [Webhooks](#webhooks)) |
+
+**Headers**
+
+| Header | Description |
+|--------|-------------|
+| `Idempotency-Key` | Optional. A repeat submission with the same key (scoped per consumer) returns the original job instead of starting a duplicate inference. See [Idempotency](../configure/configuration#idempotency). |
 
 **Response**
 
 ```json
-{ "job_id": "01HXYZ..." }
+{ "job_id": "01HXYZ...", "service_type": "audio", "model": "whisper", "status": "pending" }
 ```
+
+- `200 OK` + `X-Idempotent-Replay: true` — a job with this `Idempotency-Key` already exists; the original is returned (no new inference).
+- `409 Conflict` — the `Idempotency-Key` was reused but its job is no longer available; retry with a new key.
 
 ---
 
@@ -52,6 +61,12 @@ Returns the job record. When status is `completed`, the `result` field contains 
 | `result` | Inference result (only when `completed`) |
 | `error` | Error message (only when `failed`) |
 | `created_at` | ISO 8601 timestamp |
+
+**Status codes**
+
+- `200 OK` — the job record (any non-terminal or terminal status above).
+- `410 Gone` + `{"status":"expired"}` — the job **existed** but its retention TTL has passed and the record is gone. Distinguishes "timed out / cleaned up" from "never existed".
+- `404 Not Found` — no job with this ID was ever submitted (or ownership check failed).
 
 If `server.consumer_header` is configured and the header is present, ownership is enforced: a consumer can only access their own jobs.
 
@@ -81,6 +96,34 @@ Lists the caller's jobs across all service types. Requires `server.consumer_head
 |-----------|-------------|
 | `service_type` | Filter by service type (optional) |
 | `status` | Filter by status (optional) |
+
+---
+
+## Webhooks
+
+If a job was submitted with `callback_url`, the gateway `POST`s a JSON notification there when the job reaches a terminal state. Delivery is durable — one inline attempt, then Redis-backed retries with exponential backoff, then a dead-letter list. See [Configuration — Webhooks](../configure/configuration#webhooks) for `max_retries` / `retry_backoff` / `max_backoff` / `signing_secret`.
+
+**Request headers**
+
+| Header | Description |
+|--------|-------------|
+| `X-Job-ID` | The job ID |
+| `X-Gatewai-Signature` | Present when `webhooks.signing_secret` is set: `t=<unix>,v1=<hex>` where `v1 = HMAC-SHA256(secret, "<t>.<raw_body>")`. Verify it and reject stale `t` for replay protection. |
+
+**Body**
+
+```json
+{
+  "job_id": "01HXYZ...",
+  "service_type": "audio",
+  "status": "completed",
+  "result": { },
+  "error": "",
+  "completed_at": "2026-08-25T10:00:00Z"
+}
+```
+
+A `2xx`–`4xx` response is treated as delivered; a `5xx` or a network error is retried. After `webhooks.max_retries` attempts the delivery is dead-lettered to the `webhook:deadletter` Redis list.
 
 ---
 
