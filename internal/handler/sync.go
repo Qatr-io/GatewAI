@@ -49,6 +49,7 @@ type SyncHandler struct {
 	authz             *authz.Engine      // nil = no enforcement
 	usageTracker      usage.UsageTracker // nil = no usage tracking
 	maxBodyBytes      int64              // max request body on the JSON path; default 1 MiB
+	priorityHeader    string             // HTTP header that grants access to the reserved sync capacity pool (e.g. "X-Priority")
 }
 
 // defaultMaxBodyBytes caps the sync JSON request body when max_body_mb is unset.
@@ -85,6 +86,14 @@ func (h *SyncHandler) WithMaxBodyMB(mb int) *SyncHandler {
 // WithSemaphore sets the per-model concurrency limiter for sync calls.
 func (h *SyncHandler) WithSemaphore(s *concurrency.ModelSemaphore) *SyncHandler {
 	h.semaphore = s
+	return h
+}
+
+// WithPriorityHeader sets the HTTP header that grants access to a model's
+// reserved sync capacity pool (see service.Def.PriorityReservedSync).
+// Mirrors the header used by the async job handler for queue-jump priority.
+func (h *SyncHandler) WithPriorityHeader(header string) *SyncHandler {
+	h.priorityHeader = header
 	return h
 }
 
@@ -227,11 +236,13 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.semaphore != nil {
-		if !h.semaphore.TryAcquire(def.Model) {
+		isPriority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
+		acquired, usedReserved := h.semaphore.TryAcquire(def.Model, isPriority)
+		if !acquired {
 			writeError(w, http.StatusServiceUnavailable, "model too busy, retry later")
 			return
 		}
-		defer h.semaphore.Release(def.Model)
+		defer h.semaphore.Release(def.Model, usedReserved)
 	}
 
 	bodyRC, contentType, err := reconstructMultipart(r)
@@ -327,11 +338,13 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if h.semaphore != nil {
-		if !h.semaphore.TryAcquire(def.Model) {
+		isPriority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
+		acquired, usedReserved := h.semaphore.TryAcquire(def.Model, isPriority)
+		if !acquired {
 			writeError(w, http.StatusServiceUnavailable, "model too busy, retry later")
 			return
 		}
-		defer h.semaphore.Release(def.Model)
+		defer h.semaphore.Release(def.Model, usedReserved)
 	}
 
 	// JSON requests: route through LLM proxy if configured, else direct proxy.

@@ -306,6 +306,7 @@ services:
 | `backend_model` | no | `""` | Backend model name — gateway rewrites the `model` field in the request |
 | `response_cache_ttl` | no | `0` | Redis response cache TTL in seconds; `0` = disabled |
 | `max_concurrent_sync` | no | `0` | Max simultaneous sync requests for this model across all replicas; `0` = unlimited. Returns `503` when full. |
+| `priority_reserved_sync` | no | `0` | Slots of `max_concurrent_sync` reserved for requests carrying `server.priority_header` — see [Service registry](../configure/service-registry#reserving-capacity-for-priority-requests-priority_reserved_sync) |
 | `token_limits` | no | `{}` | Per-user-type token budgets for LLM requests — see [Rate limiting](../configure/rate-limiting#token-budget-limiting) |
 | `swagger_url` | no | `""` | URL to fetch an OpenAPI spec from |
 | `swagger_headers` | no | `{}` | HTTP headers for `swagger_url` fetch |

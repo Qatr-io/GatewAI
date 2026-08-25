@@ -172,6 +172,23 @@ The limit is enforced by a **shared Redis semaphore** (`gateway:semaphore:sync:{
 
 The semaphore TTL is 30 minutes — a safety net that resets the counter if a gateway replica crashes while holding a slot.
 
+### Reserving capacity for priority requests (`priority_reserved_sync`)
+
+`priority_reserved_sync` carves out part of `max_concurrent_sync` exclusively for requests carrying the `server.priority_header` (the same header used for async queue-jump priority — see [priority routing](priority-routing.md)):
+
+```yaml
+services:
+  - type: llm
+    model: "gpt-4o"
+    max_concurrent_sync: 10
+    priority_reserved_sync: 3   # 3 of the 10 slots are reserved for priority requests
+```
+
+- `0` (default) — no reservation; priority requests compete in the shared pool like everyone else
+- Non-priority requests only ever draw from the shared pool (`10 - 3 = 7` slots here)
+- Priority requests try the reserved pool (`gateway:semaphore:sync:{model}:priority`) first, then fall back to the shared pool once the reserved pool is full — so a priority request is never worse off than a normal one
+- This is capacity reservation, not queuing: a request still gets an immediate `200`/`503`, it just has a better chance of the former
+
 ## Hot reload
 
 The service registry is reloaded atomically via `POST /-/reload`. The HTTP router is swapped with the new registry. Infrastructure (S3, Redis) is not re-initialised.

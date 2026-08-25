@@ -250,6 +250,9 @@ data:
         {{- if .maxConcurrentSync }}
         max_concurrent_sync: {{ .maxConcurrentSync }}
         {{- end }}
+        {{- if .priorityReservedSync }}
+        priority_reserved_sync: {{ .priorityReservedSync }}
+        {{- end }}
         {{- if .guardrails }}
         guardrails:
           {{- if .guardrails.action }}
