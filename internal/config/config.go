@@ -84,6 +84,19 @@ type JobsConfig struct {
 	// so a client retry with the same key returns the original job instead of
 	// starting a duplicate inference. 0 or absent = 24h.
 	IdempotencyTTL string `yaml:"idempotency_ttl"`
+	// ExpiredMarkerTTL is how long a lightweight "this job existed" tombstone is
+	// kept after submission. While it lives, polling a job whose record TTL has
+	// passed returns 410 (status "expired") instead of 404. Should exceed the
+	// job record TTL. 0 or absent = 168h (7 days).
+	ExpiredMarkerTTL string `yaml:"expired_marker_ttl"`
+}
+
+// ExpiredMarkerTTLDuration returns the job-existence tombstone TTL, default 168h.
+func (j JobsConfig) ExpiredMarkerTTLDuration() time.Duration {
+	if d := parseDuration(j.ExpiredMarkerTTL); d > 0 {
+		return d
+	}
+	return 168 * time.Hour
 }
 
 // IdempotencyTTLDuration returns the idempotency-key retention, defaulting to 24h.

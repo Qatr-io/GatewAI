@@ -60,6 +60,7 @@ type mockAsyncStore struct {
 	staleJobs       []*model.Job // returned by ListStalePendingJobs
 	staleJobsErr    error
 	idem            map[string]string // idempotency key → jobID (SETNX semantics)
+	everExisted     bool              // returned by JobEverExisted
 }
 
 func (m *mockAsyncStore) SaveJob(_ context.Context, _ *model.Job) error {
@@ -106,6 +107,9 @@ func (m *mockAsyncStore) GetIdempotencyKey(_ context.Context, consumer, key stri
 func (m *mockAsyncStore) ReleaseIdempotencyKey(_ context.Context, consumer, key string) error {
 	delete(m.idem, consumer+":"+key)
 	return nil
+}
+func (m *mockAsyncStore) JobEverExisted(_ context.Context, _ string) (bool, error) {
+	return m.everExisted, nil
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -467,6 +471,28 @@ func TestGetStatus_NotFound(t *testing.T) {
 
 	if w.Code != http.StatusNotFound {
 		t.Errorf("expected 404, got %d", w.Code)
+	}
+}
+
+// TestGetStatus_Expired_Returns410 verifies that a job whose record is gone but
+// that provably existed (tombstone present) returns 410 with status "expired",
+// distinguishing it from a never-existed 404.
+func TestGetStatus_Expired_Returns410(t *testing.T) {
+	store := &mockAsyncStore{getJobErr: fmt.Errorf("job not found"), everExisted: true}
+
+	w := httptest.NewRecorder()
+	newHandlerWithConsumer(singleOpRegistry(), &mockJobS3{}, store).
+		GetStatus(w, statusReq(t, "transcription", "abc"))
+
+	if w.Code != http.StatusGone {
+		t.Fatalf("expected 410, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("bad body: %v", err)
+	}
+	if body["status"] != "expired" {
+		t.Errorf("expected status \"expired\", got %q", body["status"])
 	}
 }
 

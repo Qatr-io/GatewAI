@@ -104,6 +104,8 @@ Gateway (:8080)
 **Durable webhooks** (`internal/consumer/webhook.go` + `webhook_retry.go`): `Send` makes one inline delivery attempt; on failure (5xx/network) the retry is persisted to Redis (ZSET `webhook:retries` + per-job task key `webhook:retry:{id}`) and worked by `RunRetryLoop` with exponential backoff (`webhooks.retry_backoff`→`max_backoff`), so a gateway restart never drops pending retries. Claims are atomic (Lua, visibility-timeout) so the 2 replicas don't double-send. After `webhooks.max_retries` (default 3) attempts the webhook is dead-lettered to `webhook:deadletter`. Metrics: `gatewai_webhook_deliveries_total{result}`, `gatewai_webhook_retry_queue_depth`. When `webhooks.signing_secret` is set, each delivery carries `X-Gatewai-Signature: t=<unix>,v1=HMAC-SHA256(secret,"<t>.<body>")` for authenticity + replay protection.
 **Idempotency** (async submit): `POST /jobs/{type}` honours an optional `Idempotency-Key` header. The key is reserved in Redis (`idem:{consumer}:{key}`, SETNX, `jobs.idempotency_ttl` default 24h) against the new job's ID just before `SaveJob`; a repeat with the same key returns the original job (`200` + `X-Idempotent-Replay: true`) instead of a duplicate inference, or `409` if that job is gone. Metric `gatewai_idempotency_requests_total{service_type, outcome}`.
 
+**Job poll — expired vs not-found**: `GET /jobs/{type}/{id}` returns `410 Gone` + `{"status":"expired"}` when the job record TTL has passed but a long-lived tombstone (`jobmeta:{id}`, `jobs.expired_marker_ttl`, default 7d, written by `SaveJob`) proves it existed; a truly unknown id still returns `404`.
+
 **Sync direct proxy** (`POST /v1/*`):
 ```
 Gateway → HTTP proxy → InferenceService URL (inference_url in config)

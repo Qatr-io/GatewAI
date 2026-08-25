@@ -187,6 +187,11 @@ jobs:
   # A repeat POST /jobs/{type} with the same key (per consumer) returns the
   # original job instead of starting a duplicate inference. Default 24h.
   idempotency_ttl: "${JOBS_IDEMPOTENCY_TTL:-24h}"
+  # expired_marker_ttl: how long a lightweight "this job existed" tombstone is
+  # kept after submission. While it lives, polling a job whose record TTL has
+  # passed returns 410 (status "expired") instead of 404. Should exceed the job
+  # record TTL. Default 168h (7 days).
+  expired_marker_ttl: "${JOBS_EXPIRED_MARKER_TTL:-168h}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking

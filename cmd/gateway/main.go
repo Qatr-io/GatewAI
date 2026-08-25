@@ -259,6 +259,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer redisClient.Close()
+	redisClient.SetExpiredMarkerTTL(cfg.Jobs.ExpiredMarkerTTLDuration())
 
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter

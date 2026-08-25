@@ -49,6 +49,7 @@ type asyncJobStore interface {
 	ReserveIdempotencyKey(ctx context.Context, consumer, key, jobID string, ttl time.Duration) (bool, error)
 	GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error)
 	ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error
+	JobEverExisted(ctx context.Context, id string) (bool, error)
 }
 
 // reservedJobFields are multipart form fields consumed by the gateway
@@ -489,6 +490,21 @@ func writeSubmitResponse(w http.ResponseWriter, status int, jobID, serviceType, 
 	})
 }
 
+// writeExpiredResponse returns 410 Gone for a job that provably existed but
+// whose record TTL has passed, so clients can tell "timed out / cleaned up"
+// apart from "never existed" (404).
+func writeExpiredResponse(w http.ResponseWriter, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(map[string]string{
+		"job_id": id,
+		"status": string(model.JobStatusExpired),
+		"error":  "job result expired (retention TTL passed) and is no longer available",
+	})
+}
+
 // GetStatus handles GET /jobs/{service_type}/{id}.
 // When the job is complete the result is inlined in the response body.
 //
@@ -502,6 +518,12 @@ func (h *JobHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.redis.GetJob(r.Context(), id)
 	if err != nil {
+		// Distinguish a job whose record TTL has passed (410 "expired") from one
+		// that never existed (404), using the long-lived submission tombstone.
+		if existed, eerr := h.redis.JobEverExisted(r.Context(), id); eerr == nil && existed {
+			writeExpiredResponse(w, id)
+			return
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", id))
 		return
 	}
