@@ -50,6 +50,44 @@ secrets:
 
 The chart deploys Redis with Redis-HA (HAProxy front-end) by default. Redis is required for job state, rate limiting, and result caching.
 
+**Persistence.** All in-flight async state lives in Redis — job records, the relay `pending`/`processing` queues, per-job leases, and the webhook retry queue. The chart enables **AOF** (`appendfsync everysec`, ≤1s loss window) + **RDB** snapshots on a PersistentVolume so this survives a Redis pod restart or master failover:
+
+```yaml
+redis-ha:
+  redis:
+    config:
+      appendonly: "yes"
+      appendfsync: "everysec"
+      save: "900 1 300 10 60 10000"
+  persistentVolume:
+    enabled: true
+    size: 10Gi
+```
+
+Disable only for ephemeral/dev clusters. On an existing cluster, turning this on adds a PVC per Redis replica — roll out during a maintenance window.
+
+## Async hardening values
+
+The reaper, durable webhooks, and idempotency features expose these chart values (rendered into `config.yaml`):
+
+```yaml
+lifecycle:
+  gc:
+    maxReapAttempts: 3        # requeues before dead-lettering a lease-expired job
+
+webhooks:
+  maxRetries: 3               # webhook attempts before dead-letter
+  retryBackoff: "30s"
+  maxBackoff: "10m"
+  signingSecret: ""           # HMAC secret; prefer "${WEBHOOK_SIGNING_SECRET}" via extraEnvVars
+
+jobs:
+  idempotencyTtl: "24h"       # Idempotency-Key → job mapping retention
+  expiredMarkerTtl: "168h"    # "job existed" tombstone (410 vs 404 on poll)
+```
+
+The relay's lease TTL is set in the relay config, not the gateway chart: `lease_ttl` (default `60s`) — see [Async processing](../relay/async).
+
 ## ConfigMap hot reload
 
 The chart supports `configmap-reload` sidecar to trigger `POST /-/reload` automatically when the ConfigMap changes:

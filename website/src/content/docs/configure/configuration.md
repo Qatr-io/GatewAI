@@ -216,7 +216,10 @@ lifecycle:
 
 ### `gc`
 
-Background garbage collector — runs as a goroutine on a configurable ticker. Three phases per tick:
+Background garbage collector — runs as a goroutine on a configurable ticker. Four phases per tick:
+
+**Phase 0 — processing-queue reaper** (runs when `gc.enabled: true`):
+Requeues async jobs abandoned in `relay:<model>:processing` by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing its **lease**. Each job the relay pops carries a short-lived lease key (`relay:<model>:lease:<id>`, TTL `lease_ttl`, refreshed every `lease_ttl/3`); when the pod dies the lease expires. For each processing entry with no live lease and a still-valid job record, the reaper requeues it to `relay:<model>:pending` (up to `gc.max_reap_attempts` times, then **dead-letters** it to `relay:<model>:deadletter` and marks the job failed). The lease check is atomic with the reclaim (Lua), so a healthy worker's job is never requeued, and it is idempotent across gateway replicas. Counted in `gatewai_async_jobs_reaped_total{model,outcome}`. This complements Phase 3: Phase 0 handles orphans whose record is still live (crash recovery), Phase 3 removes orphans whose record is already gone (cleanup). See [Relay queue](../set-up/queue#crash-recovery).
 
 **Phase 1 — stale-pending sweep** (runs when `redis.pending_max_age` > 0):
 Marks pending jobs older than `pending_max_age` as failed and deletes their S3 input files.
@@ -236,6 +239,70 @@ All `gc` parameters are hot-reload safe.
 | `gc.enabled` | `false` | Master switch — GC is off by default |
 | `gc.interval` | `"15m"` | How often the GC runs |
 | `gc.orphan_min_age` | `"5m"` | Minimum object age before orphan check — avoids deleting objects from in-flight uploads not yet registered in Redis |
+| `gc.max_reap_attempts` | `3` | Phase 0: times a lease-expired processing job is requeued before it is dead-lettered to `relay:<model>:deadletter` |
+
+## Webhooks
+
+Durable delivery of job-completion callbacks (`callback_url`). On completion the gateway makes one inline `POST`; on failure (network error or `5xx`) the retry is **persisted in Redis** (a `webhook:retries` sorted set plus a per-job task key) and worked by a background loop with exponential backoff — so a gateway restart never drops pending retries. After `max_retries` attempts the webhook is **dead-lettered** to the `webhook:deadletter` list. A `4xx` response counts as delivered (the consumer received it) and is not retried.
+
+```yaml
+webhooks:
+  max_retries: 3          # total attempts (incl. the inline one) before dead-letter
+  retry_backoff: "30s"    # base backoff; doubles each retry
+  max_backoff: "10m"      # backoff cap
+  signing_secret: ""      # HMAC secret; empty = unsigned
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `max_retries` | `3` | Total delivery attempts (including the first inline attempt) before dead-lettering |
+| `retry_backoff` | `"30s"` | Base delay before the first retry; doubles on each subsequent retry |
+| `max_backoff` | `"10m"` | Upper bound on the exponential backoff |
+| `signing_secret` | `""` | When set, signs every webhook — see [signing](#webhook-signing). Supports `${VAR}`. Empty = unsigned |
+
+### Webhook signing
+
+When `signing_secret` is set, every delivery carries an `X-Gatewai-Signature` header so consumers can verify authenticity and reject replays:
+
+```
+X-Gatewai-Signature: t=<unix_seconds>,v1=<hex>
+```
+
+where `v1 = HMAC-SHA256(secret, "<t>.<raw_body>")`. The timestamp is fresh per attempt. Consumer verification:
+
+```
+t, v1 = parse(header)
+reject if abs(now - t) > tolerance          # replay protection
+expected = hex(hmac_sha256(secret, f"{t}.{raw_body}"))
+accept if hmac_equal(expected, v1)
+```
+
+Metrics: `gatewai_webhook_deliveries_total{result}` (`delivered`|`deadletter`) and `gatewai_webhook_retry_queue_depth`.
+
+## Jobs
+
+Async submission behaviour (`POST /jobs/{service_type}`).
+
+```yaml
+jobs:
+  idempotency_ttl: "24h"       # Idempotency-Key → job mapping retention
+  expired_marker_ttl: "168h"   # "job existed" tombstone TTL (410 vs 404 on poll)
+```
+
+| Field | Default | Description |
+|---|---|---|
+| `idempotency_ttl` | `"24h"` | How long an `Idempotency-Key` → job mapping is remembered. A repeat submission with the same key (scoped per consumer) returns the original job instead of starting a duplicate inference — see [Idempotency](#idempotency) |
+| `expired_marker_ttl` | `"168h"` | How long a lightweight `jobmeta:<id>` tombstone is kept. While it lives, polling a job whose record TTL has passed returns `410` (status `expired`) instead of `404`. Should exceed the job record TTL |
+
+### Idempotency
+
+Send an optional `Idempotency-Key` header on `POST /jobs/{service_type}`. The key is reserved in Redis (`idem:{consumer}:{key}`, `SETNX`) against the new job's ID just before the record is saved:
+
+- **New key** → the job is created (`202`).
+- **Repeat key, job still available** → the original job is returned (`200` + `X-Idempotent-Replay: true`), with **no** second inference.
+- **Repeat key, job gone** (expired / its save failed) → `409`.
+
+Scoped per consumer, so distinct or absent keys never collide — dedup only fires on a *reused* key (a client retry of one request). Metric: `gatewai_idempotency_requests_total{service_type,outcome}` (`created`|`replayed`|`conflict`).
 
 ## Services
 
