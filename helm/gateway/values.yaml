@@ -172,6 +172,12 @@ encryption:
 #                swagger dédié ; sur un endpoint sync partagé uniquement si
 #                tous les modèles de ce chemin le sont). Purement informatif,
 #                n'affecte ni le routage ni la disponibilité.
+#
+#   backendModel — vrai nom de modèle envoyé au backend (réécrit l'alias public).
+#                  Exposé comme `backend_model` dans GET /v1/models.
+#   visibility  — restreint le modèle à une audience (userTypes / groups) : masqué
+#                 de GET /v1/models et 404 sur /v1/* + /jobs hors audience.
+#                 Voir l'exemple commenté plus bas.
 services:
   - type: audio
     # Sync / OpenAI-compatible
@@ -259,6 +265,33 @@ services:
   #         Authorization: "Bearer ${CANARY_API_KEY}"
   #     - url: "http://backend-fallback.svc"
   #       weight: 0    # last resort
+
+  # ── Alias de modèle + visibilité : beta-test via la même API ─────────────
+  # backendModel réécrit le nom du modèle avant transfert : les clients gardent
+  # un alias public stable pendant que le vrai modèle change derrière. Il est
+  # exposé (`backend_model`) dans GET /v1/models pour que les développeurs voient
+  # ce qui tourne derrière chaque alias.
+  #
+  # visibility restreint un modèle à une audience. Un modèle restreint est masqué
+  # de GET /v1/models — et renvoie 404 sur /v1/* et /jobs — pour les appelants
+  # hors audience (un modèle caché est indistinguable d'un modèle inexistant).
+  # Permet de beta-tester un nouveau modèle via la même API avant ouverture.
+  #   userTypes — comparé à server.userTypeHeader (ex : sa, user, beta)
+  #   groups    — comparé aux groupes du Principal authentifié (auth requise)
+  # Public (sans bloc visibility) = visible par tous. Se combine avec `policies` :
+  # l'appelant doit passer À LA FOIS la visibilité et une règle d'autorisation.
+  #
+  # - type: llm
+  #   model: "next-gen"                 # alias public stable
+  #   provider: passthrough
+  #   backendModel: "llama-3.3-70b"     # vrai modèle exposé dans GET /v1/models
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  #   inferenceURL: "http://vllm.svc"
+  #   visibility:                       # omettre ce bloc = modèle public
+  #     userTypes: ["beta"]             # seuls les appelants X-User-Type: beta le voient
+  #     groups: ["ai-team"]             # OU les membres du groupe ai-team
 
   # Exemple de service sync-direct uniquement (sans Kafka).
   # Les requêtes POST /v1/* sont proxifiées directement vers inferenceURL.

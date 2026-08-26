@@ -240,6 +240,10 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkModelVisible(w, r, def, h.userTypeHeader) {
+		return
+	}
+
 	// Sync-direct services do not accept file uploads and cannot be used asynchronously.
 	if !def.SupportsAsync {
 		writeError(w, http.StatusMethodNotAllowed, fmt.Sprintf("service %q only supports sync requests (POST /v1/*)", def.Model))

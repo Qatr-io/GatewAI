@@ -14,6 +14,7 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 |--------|------|--------|-------------|
 | `gatewai_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Total requests handled by the gateway |
 | `gatewai_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | End-to-end request duration. Buckets: 0.1s–300s |
+| `gatewai_model_hidden_total` | counter | `service_type`, `model` | Requests rejected (404) because the model is gated by `services[].visibility` and the caller is outside its audience |
 
 ### Async jobs
 

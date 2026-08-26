@@ -241,6 +241,15 @@ data:
         {{- if .backendModel }}
         backend_model:     {{ .backendModel | quote }}
         {{- end }}
+        {{- if .visibility }}
+        visibility:
+          {{- if .visibility.userTypes }}
+          user_types: [{{ range $i, $ut := .visibility.userTypes }}{{ if $i }}, {{ end }}{{ $ut | quote }}{{ end }}]
+          {{- end }}
+          {{- if .visibility.groups }}
+          groups: [{{ range $i, $g := .visibility.groups }}{{ if $i }}, {{ end }}{{ $g | quote }}{{ end }}]
+          {{- end }}
+        {{- end }}
         {{- if .responseCacheTTL }}
         response_cache_ttl: {{ .responseCacheTTL }}
         {{- end }}

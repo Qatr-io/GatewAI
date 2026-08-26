@@ -218,6 +218,13 @@ var (
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",
 	}, []string{"model"})
 
+	// ModelHiddenTotal counts requests that targeted a visibility-gated model the
+	// caller isn't in the audience for — returned as 404 (hidden), by model.
+	ModelHiddenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_model_hidden_total",
+		Help: "Requests to a visibility-restricted model rejected as 404 (not in audience).",
+	}, []string{"service_type", "model"})
+
 	RelayQueueOrphansSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_relay_queue_orphans_swept_total",
 		Help: "Total relay queue entries removed by the GC because their job record no longer exists in Redis.",

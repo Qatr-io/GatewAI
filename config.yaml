@@ -369,6 +369,33 @@ services:
   #         Authorization: "Bearer ${CANARY_API_KEY}"
   #     - url: "http://vllm-fallback.default.svc.cluster.local:8000"
   #       weight: 0    # only used if both stable and canary return 5xx
+  #
+  # ── Model aliasing + visibility : beta-testing through the same API ───────────
+  # backend_model rewrites the model name before forwarding, so clients keep using
+  # a stable public alias while you swap the real model behind it. It is surfaced
+  # (as `backend_model`) in GET /v1/models so developers can see what runs behind
+  # each alias.
+  #
+  # visibility gates a model to specific audiences. A restricted model is filtered
+  # out of GET /v1/models — and returns 404 on /v1/* and /jobs — for callers outside
+  # its audience, so a hidden model is indistinguishable from a non-existent one.
+  # This lets you beta-test a new model through the same API before general release.
+  #   user_types — matched against server.user_type_header (e.g. sa, user, beta)
+  #   groups     — matched against the authenticated Principal's groups (auth required)
+  # Public (no visibility block) = visible to everyone. Composes with `policies`
+  # access control: a caller must pass BOTH visibility and any authz allow-rule.
+  #
+  # - type: llm
+  #   model: "next-gen"                 # stable public alias
+  #   provider: passthrough
+  #   backend_model: "llama-3.3-70b"    # real model surfaced in GET /v1/models
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  #   inference_url: "http://vllm.default.svc.cluster.local:8000"
+  #   visibility:                       # omit this block to make the model public
+  #     user_types: ["beta"]            # only callers with X-User-Type: beta see/use it
+  #     groups: ["ai-team"]             # OR members of the ai-team group
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rate limiting

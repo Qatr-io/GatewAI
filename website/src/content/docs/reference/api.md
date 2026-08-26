@@ -145,7 +145,30 @@ Proxies the request to the configured `inference_url`. Handles both JSON and mul
 GET /v1/models
 ```
 
-Returns an OpenAI-compatible model list for all registered services with a `model` field set.
+Returns an OpenAI-compatible model list for all registered services with a `model` field set. Each entry carries GatewAI capability metadata and, when the alias rewrites the model name, a `backend_model` field exposing the real model that runs behind it:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "next-gen",
+      "object": "model",
+      "owned_by": "gatewai",
+      "service_type": "llm",
+      "provider": "passthrough",
+      "backend_model": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "capabilities": { "supports_sync": true, "supports_streaming": true }
+    }
+  ]
+}
+```
+
+`backend_model` is omitted when the alias is forwarded unchanged. If the backends behind one alias serve distinct real models, a `backend_models` array lists all of them (the first matches `backend_model`).
+
+**Backend passthrough** — `GET /v1/models?model=<name>` proxies to that model's backend and returns its native model info (context size, etc.).
+
+**Visibility** — models gated via `services[].visibility` are filtered by caller audience: a restricted model is omitted from the list and returns `404` on `?model=` for callers outside its audience, so a hidden model is indistinguishable from a non-existent one. See [Service registry → Model visibility](../configure/service-registry.md#model-visibility-visibility).
 
 ---
 

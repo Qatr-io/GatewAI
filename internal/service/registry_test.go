@@ -489,3 +489,78 @@ func TestResolveGuardrails_OutputDisabledWhenNil(t *testing.T) {
 		t.Error("expected Output.Enabled=false when output config is nil")
 	}
 }
+
+// ── Visibility & backend-model helpers ─────────────────────────────────────────
+
+func TestDef_VisibleTo(t *testing.T) {
+	cfg := baseServiceConfig()
+	cfg.Visibility = config.VisibilityConfig{
+		UserTypes: []string{"beta", "internal"},
+		Groups:    []string{"ai-team"},
+	}
+	reg := service.NewRegistry([]config.ServiceConfig{cfg})
+	def := reg.Models()[0]
+
+	if !def.IsRestricted() {
+		t.Fatal("expected IsRestricted=true when visibility is set")
+	}
+	cases := []struct {
+		name     string
+		userType string
+		groups   []string
+		want     bool
+	}{
+		{"matching user type", "beta", nil, true},
+		{"other matching user type", "internal", nil, true},
+		{"matching group", "", []string{"ai-team"}, true},
+		{"user type and group both miss", "user", []string{"other"}, false},
+		{"no identity", "", nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := def.VisibleTo(tc.userType, tc.groups); got != tc.want {
+				t.Errorf("VisibleTo(%q, %v) = %v, want %v", tc.userType, tc.groups, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestDef_PublicModelAlwaysVisible(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{baseServiceConfig()})
+	def := reg.Models()[0]
+	if def.IsRestricted() {
+		t.Fatal("expected public model to be unrestricted")
+	}
+	if !def.VisibleTo("", nil) {
+		t.Error("expected public model visible to anonymous caller")
+	}
+}
+
+func TestDef_BackendModelNames(t *testing.T) {
+	// Service-level backend_model, single value.
+	cfg := baseServiceConfig()
+	cfg.BackendModel = "meta-llama/Meta-Llama-3-8B-Instruct"
+	def := service.NewRegistry([]config.ServiceConfig{cfg}).Models()[0]
+	if got := def.BackendModelNames(); len(got) != 1 || got[0] != "meta-llama/Meta-Llama-3-8B-Instruct" {
+		t.Errorf("expected single service-level backend model, got %v", got)
+	}
+
+	// Per-backend overrides, distinct.
+	cfg2 := baseServiceConfig()
+	cfg2.InferenceURL = ""
+	cfg2.Backends = []config.BackendConfig{
+		{URL: "http://b1", Weight: 1, Model: "a"},
+		{URL: "http://b2", Weight: 1, Model: "b"},
+		{URL: "http://b3", Weight: 1, Model: "a"}, // dup collapses
+	}
+	def2 := service.NewRegistry([]config.ServiceConfig{cfg2}).Models()[0]
+	if got := def2.BackendModelNames(); len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("expected distinct backend models [a b], got %v", got)
+	}
+
+	// No rewrite.
+	def3 := service.NewRegistry([]config.ServiceConfig{baseServiceConfig()}).Models()[0]
+	if got := def3.BackendModelNames(); got != nil {
+		t.Errorf("expected nil backend models when no rewrite, got %v", got)
+	}
+}

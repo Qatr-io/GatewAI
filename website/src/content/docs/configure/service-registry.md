@@ -146,7 +146,64 @@ When `provider` is set, JSON requests bypass the standard direct proxy and go th
 
 `backend_model` rewrites the `model` field in the JSON body before forwarding — useful for vLLM which expects HuggingFace model IDs. The cache key always uses the alias (`model` from config), not the backend name.
 
+The real backend model is **surfaced to clients** in `GET /v1/models` as a `backend_model` field on the model object, so developers can see what actually runs behind each alias:
+
+```json
+{
+  "id": "next-gen",
+  "object": "model",
+  "service_type": "llm",
+  "provider": "passthrough",
+  "backend_model": "meta-llama/Meta-Llama-3-8B-Instruct"
+}
+```
+
+`backend_model` is omitted when the alias is forwarded unchanged (no rewrite configured). When the backends behind one alias serve **distinct** real models (e.g. a canary with a different model version, or a per-backend `model` override), the field lists the primary and an additional `backend_models` array holds every distinct backend model:
+
+```json
+{
+  "id": "chat",
+  "backend_model": "llama-3-8b",
+  "backend_models": ["llama-3-8b", "llama-3-70b"]
+}
+```
+
 See [LLM proxy](llm-proxy.md) for full documentation.
+
+## Model visibility (`visibility`)
+
+A model can be gated to a specific audience so it is only discoverable and usable by chosen callers — useful for **beta-testing a new model through the same API** before opening it to everyone.
+
+```yaml
+services:
+  - type: llm
+    model: "next-gen"                 # stable public alias
+    provider: passthrough
+    backend_model: "llama-3.3-70b"    # real model, surfaced in /v1/models
+    operations:
+      chat:
+        - "/v1/chat/completions"
+    inference_url: "http://vllm.svc"
+    visibility:
+      user_types: ["beta"]            # callers whose user type is "beta"…
+      groups: ["ai-team"]             # …OR who belong to the "ai-team" group
+```
+
+A model with a `visibility` block is **restricted**: it is only visible to callers who match at least one entry. Matching is a union across both fields:
+
+- `user_types` — matched against the caller's user type, read from `server.user_type_header` (bridged automatically in `proxy` and `oauth2` auth modes).
+- `groups` — matched against the authenticated `Principal`'s groups (requires an `auth` mode that resolves groups).
+
+A model **without** a `visibility` block is public — visible to everyone, including anonymous callers.
+
+Enforcement is uniform and **fail-closed**: a caller outside the audience (including one with no identity) is treated as if the model does not exist —
+
+- `GET /v1/models` omits it from the list, and `GET /v1/models?model=<name>` returns `404`.
+- `POST /v1/*` and `POST /jobs/{service_type}` return `404` when they resolve to a hidden model.
+
+A hidden model is therefore **indistinguishable from a non-existent one** — there is no `403` that would leak its existence.
+
+Visibility composes with [access control](../configure/configuration.md) (`policies`): a request must satisfy **both** the model's visibility *and* any authz allow-rule. Visibility gates discovery; `policies` gates authorization. The Prometheus counter `gatewai_model_hidden_total{service_type, model}` increments whenever a request is rejected because the model was hidden from the caller.
 
 ## Sync concurrency cap (`max_concurrent_sync`)
 
