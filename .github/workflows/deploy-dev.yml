@@ -2,6 +2,8 @@ name: Deploy — dev (hors-prod)
 
 # Triggered on pushes to develop / release/* that touch gateway or relay
 # source files. Pure docs, CI, or Helm changes do not trigger a build.
+# Can also be run by hand from the Actions tab (workflow_dispatch) — a manual
+# run always builds both images regardless of which paths changed.
 
 on:
   push:
@@ -19,6 +21,7 @@ on:
       - "tests/**"
       # Relay module
       - "relay/**"
+  workflow_dispatch:
 
 jobs:
   # ── Detect which module(s) changed ─────────────────────────────────────────
@@ -75,7 +78,7 @@ jobs:
     name: Gateway — build & push :${{ needs.meta.outputs.tag }}
     runs-on: ubuntu-latest
     needs: [meta, changes]
-    if: needs.changes.outputs.gateway == 'true'
+    if: needs.changes.outputs.gateway == 'true' || github.event_name == 'workflow_dispatch'
     permissions:
       packages: write
     steps:
@@ -104,7 +107,7 @@ jobs:
     name: Relay — build & push :${{ needs.meta.outputs.tag }}
     runs-on: ubuntu-latest
     needs: [meta, changes]
-    if: needs.changes.outputs.relay == 'true'
+    if: needs.changes.outputs.relay == 'true' || github.event_name == 'workflow_dispatch'
     permissions:
       packages: write
     steps:
