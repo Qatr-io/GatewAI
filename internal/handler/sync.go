@@ -196,6 +196,10 @@ func (h *SyncHandler) handleMultipart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !checkModelVisible(w, r, def, h.userTypeHeader) {
+		return
+	}
+
 	r, accessOK := h.checkAccess(w, r, def)
 	if !accessOK {
 		return
@@ -295,6 +299,10 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteSync(r.URL.Path, payload.Model)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if !checkModelVisible(w, r, def, h.userTypeHeader) {
 		return
 	}
 

@@ -495,6 +495,20 @@ type ServiceConfig struct {
 	// shared sync paths only when every model on that path is deprecated).
 	// Purely informational — does not affect routing or availability.
 	Deprecated bool `yaml:"deprecated"`
+	// Visibility optionally restricts this model to specific audiences. When either
+	// list is non-empty the model is hidden from GET /v1/models for callers who
+	// don't match, and routing to it (sync or async) returns 404. Empty/absent =
+	// public (visible to everyone). Enables beta-testing a model on the same API.
+	// Requires auth.mode (or server.user_type_header) so the caller can be identified.
+	Visibility VisibilityConfig `yaml:"visibility"`
+}
+
+// VisibilityConfig gates a model to specific user types and/or groups.
+// A caller sees (and may use) the model if their user type is in UserTypes OR
+// they belong to a group in Groups. Both empty = public.
+type VisibilityConfig struct {
+	UserTypes []string `yaml:"user_types"`
+	Groups    []string `yaml:"groups"`
 }
 
 // GuardrailsStageConfig controls PII/secrets detection for one stage (input or output).

@@ -8,8 +8,42 @@ import (
 	"sort"
 	"time"
 
+	"gatewai/gateway/internal/auth"
+	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/service"
 )
+
+// callerAudience extracts the caller's user type and groups for model-visibility
+// gating. user_type comes from the configured header (bridged by proxy/oauth2 auth
+// and by upstream trust); groups come from the authenticated Principal.
+func callerAudience(r *http.Request, userTypeHeader string) (userType string, groups []string) {
+	if userTypeHeader != "" {
+		userType = r.Header.Get(userTypeHeader)
+	}
+	if p, _ := auth.FromContext(r.Context()); p != nil {
+		if userType == "" {
+			userType = p.UserType
+		}
+		groups = p.Groups
+	}
+	return userType, groups
+}
+
+// checkModelVisible enforces model visibility on the request path. Returns false
+// (and writes 404) when the model is gated to an audience the caller isn't in —
+// a hidden model must be indistinguishable from a non-existent one.
+func checkModelVisible(w http.ResponseWriter, r *http.Request, def *service.Def, userTypeHeader string) bool {
+	if !def.IsRestricted() {
+		return true
+	}
+	userType, groups := callerAudience(r, userTypeHeader)
+	if def.VisibleTo(userType, groups) {
+		return true
+	}
+	metrics.ModelHiddenTotal.WithLabelValues(def.Type, def.Model).Inc()
+	writeError(w, http.StatusNotFound, "model not found")
+	return false
+}
 
 var modelsProxyClient = &http.Client{Timeout: 30 * time.Second}
 
@@ -27,12 +61,14 @@ type modelCapabilities struct {
 // modelObject mirrors the OpenAI model object returned by GET /v1/models,
 // extended with GatewAI-specific capability metadata.
 type modelObject struct {
-	ID           string            `json:"id"`
-	Object       string            `json:"object"`
-	OwnedBy      string            `json:"owned_by"`
-	ServiceType  string            `json:"service_type"`
-	Provider     string            `json:"provider,omitempty"`
-	Capabilities modelCapabilities `json:"capabilities"`
+	ID            string            `json:"id"`
+	Object        string            `json:"object"`
+	OwnedBy       string            `json:"owned_by"`
+	ServiceType   string            `json:"service_type"`
+	Provider      string            `json:"provider,omitempty"`
+	BackendModel  string            `json:"backend_model,omitempty"`  // real model this alias forwards to (primary)
+	BackendModels []string          `json:"backend_models,omitempty"` // set only when backends serve distinct models (canary)
+	Capabilities  modelCapabilities `json:"capabilities"`
 }
 
 type modelsListResponse struct {
@@ -43,18 +79,23 @@ type modelsListResponse struct {
 // ListModels handles GET /v1/models.
 // Without query params, returns all configured models in OpenAI-compatible format.
 // With ?model=<name>, proxies to the underlying model backend to retrieve its native info.
-func ListModels(registry *service.Registry) http.HandlerFunc {
+func ListModels(registry *service.Registry, userTypeHeader string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if modelName := r.URL.Query().Get("model"); modelName != "" {
-			proxyModelsToBackend(w, r, registry, modelName)
+			proxyModelsToBackend(w, r, registry, modelName, userTypeHeader)
 			return
 		}
 
+		userType, groups := callerAudience(r, userTypeHeader)
 		defs := registry.Models()
 
 		data := make([]modelObject, 0, len(defs))
 		for _, d := range defs {
-			data = append(data, modelObject{
+			if !d.VisibleTo(userType, groups) {
+				continue // model gated to another audience — hide it entirely
+			}
+			bm := d.BackendModelNames()
+			mo := modelObject{
 				ID:          d.Model,
 				Object:      "model",
 				OwnedBy:     "gatewai",
@@ -69,7 +110,14 @@ func ListModels(registry *service.Registry) http.HandlerFunc {
 					Operations:        sortedKeys(d.Operations),
 					Deprecated:        d.Deprecated,
 				},
-			})
+			}
+			if len(bm) > 0 {
+				mo.BackendModel = bm[0]
+				if len(bm) > 1 {
+					mo.BackendModels = bm
+				}
+			}
+			data = append(data, mo)
 		}
 		sort.Slice(data, func(i, j int) bool { return data[i].ID < data[j].ID })
 
@@ -80,7 +128,7 @@ func ListModels(registry *service.Registry) http.HandlerFunc {
 	}
 }
 
-func proxyModelsToBackend(w http.ResponseWriter, r *http.Request, reg *service.Registry, modelName string) {
+func proxyModelsToBackend(w http.ResponseWriter, r *http.Request, reg *service.Registry, modelName, userTypeHeader string) {
 	var found *service.Def
 	for _, d := range reg.Models() {
 		if d.Model == modelName && d.InferenceURL != "" {
@@ -93,6 +141,9 @@ func proxyModelsToBackend(w http.ResponseWriter, r *http.Request, reg *service.R
 		w.WriteHeader(http.StatusNotFound)
 		_, _ = w.Write([]byte(`{"error":"model not found or has no backend"}`))
 		return
+	}
+	if !checkModelVisible(w, r, found, userTypeHeader) {
+		return // hidden model — 404, indistinguishable from non-existent
 	}
 
 	u, err := url.Parse(found.InferenceURL)

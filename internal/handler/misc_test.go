@@ -354,7 +354,7 @@ func TestReload_Failure_BodyContainsError(t *testing.T) {
 
 func TestListModels_EmptyRegistry(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{})
-	h := handler.ListModels(reg)
+	h := handler.ListModels(reg, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -390,7 +390,7 @@ func TestListModels_ReturnsAllModels(t *testing.T) {
 			InferenceURL: "http://svc2",
 		},
 	})
-	h := handler.ListModels(reg)
+	h := handler.ListModels(reg, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -426,14 +426,16 @@ func TestListModels_SortedAlphabetically(t *testing.T) {
 		{Type: "t", Model: "aaa-model", Operations: map[string][]string{"op": {"/v1/p"}}, InferenceURL: "http://svc"},
 		{Type: "t", Model: "mmm-model", Operations: map[string][]string{"op": {"/v1/p"}}, InferenceURL: "http://svc"},
 	})
-	h := handler.ListModels(reg)
+	h := handler.ListModels(reg, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
 	h(w, req)
 
 	var body struct {
-		Data []struct{ ID string `json:"id"` } `json:"data"`
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
 		t.Fatalf("response is not valid JSON: %v", err)
@@ -448,7 +450,7 @@ func TestListModels_SortedAlphabetically(t *testing.T) {
 
 func TestListModels_ContentType(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{})
-	h := handler.ListModels(reg)
+	h := handler.ListModels(reg, "")
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()

@@ -671,7 +671,10 @@ func listModelsPathItem() map[string]any {
 			"summary": "List available models",
 			"description": "Without query params, returns all configured models in OpenAI-compatible format.\n\n" +
 				"With `?model=<name>`, proxies to the underlying model backend to retrieve its native information " +
-				"(context size, capabilities, etc.).",
+				"(context size, capabilities, etc.).\n\n" +
+				"Models gated via `services[].visibility` are filtered by caller audience: a model restricted to " +
+				"specific user types or groups is omitted from the list — and returns `404` on `?model=` — for callers " +
+				"outside its audience, so a hidden model is indistinguishable from a non-existent one.",
 			"operationId": "listModels",
 			"parameters": []any{
 				map[string]any{
@@ -912,9 +915,34 @@ func specComponents() map[string]any {
 			"Model": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":       map[string]any{"type": "string", "example": "whisper-large-v3"},
-					"object":   map[string]any{"type": "string", "example": "model"},
-					"owned_by": map[string]any{"type": "string", "example": "gatewai"},
+					"id":           map[string]any{"type": "string", "example": "gpt-4o", "description": "Model alias clients request in the `model` field"},
+					"object":       map[string]any{"type": "string", "example": "model"},
+					"owned_by":     map[string]any{"type": "string", "example": "gatewai"},
+					"service_type": map[string]any{"type": "string", "example": "llm"},
+					"provider":     map[string]any{"type": "string", "example": "openai", "description": "LLM proxy provider, when set"},
+					"backend_model": map[string]any{
+						"type":        "string",
+						"example":     "meta-llama/Meta-Llama-3-8B-Instruct",
+						"description": "Real model this alias forwards to. Present only when the service rewrites the model name (`backend_model` or a per-backend `model`); omitted when the alias is passed through unchanged.",
+					},
+					"backend_models": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Set only when backends behind this alias serve distinct real models (canary/mixed fleet). The first entry is the primary, matching `backend_model`.",
+					},
+					"capabilities": map[string]any{"$ref": "#/components/schemas/ModelCapabilities"},
+				},
+			},
+			"ModelCapabilities": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"supports_async":     map[string]any{"type": "boolean"},
+					"supports_sync":      map[string]any{"type": "boolean"},
+					"supports_streaming": map[string]any{"type": "boolean"},
+					"accepted_formats":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"max_file_size_mb":   map[string]any{"type": "integer", "format": "int64"},
+					"operations":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"deprecated":         map[string]any{"type": "boolean"},
 				},
 			},
 			"TokenUsage": map[string]any{

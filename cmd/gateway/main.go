@@ -186,7 +186,7 @@ func buildRouter(
 			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
-		r.Get("/v1/models", handler.ListModels(reg))
+		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
 		// without needing a separate wildcard route.

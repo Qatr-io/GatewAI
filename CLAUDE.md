@@ -123,7 +123,7 @@ Configured via `services[].operations`, `services[].model`, `services[].inferenc
 
 **LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
 
-- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM)
+- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM). The real backend model is surfaced to clients in `GET /v1/models` as `backend_model` (and `backend_models[]` when backends serve distinct models) — default-on, no config.
 - **Response cache**: Redis exact-match cache keyed on SHA-256 of request body, configurable TTL via `response_cache_ttl`; `stream=true` and `Cache-Control: no-cache` bypass cache; `X-Cache: HIT/MISS` on every response
 - **Wildcard routing**: paths ending with `/*` (e.g. `/v1/*`) register as chi wildcard routes — proxies all sub-paths without enumerating them
 
@@ -148,6 +148,8 @@ operations:
 **`operation` form field** (async only): selects the operation when a model has multiple operations (`-F operation=transcription`). Auto-selected if only one operation is configured.
 
 **Multiple models per type**: multiple service entries may share the same `type` with different `model` values. The gateway routes by `model` field in the request.
+
+**`visibility`** (`services[].visibility`): gates a model to an audience — `user_types` (matched against `server.user_type_header`) and/or `groups` (from the authed `Principal`). A restricted model is fail-closed: filtered out of `GET /v1/models` and returns `404` on `/v1/*`, `/jobs/{service_type}`, and `GET /v1/models?model=` for callers outside its audience (indistinguishable from non-existent; anonymous callers see only public models). Enforced in `handler.checkModelVisible` on all three paths and as a list filter in `ListModels`. Enables beta-testing a model through the same API. Composes with `policies` (both must pass). Metric `gatewai_model_hidden_total{service_type, model}`. Registry helpers: `Def.IsRestricted()`, `Def.VisibleTo(userType, groups)`, `Def.BackendModelNames()`.
 
 ### Dynamic OpenAPI spec
 
