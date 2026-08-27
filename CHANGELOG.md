@@ -18,6 +18,8 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ### [Unreleased]
 
+### [v0.21.0] — 2026-08-27
+
 #### Added
 
 - **Backend model exposed in `GET /v1/models`**: each model object now carries a `backend_model` field revealing the real model an alias forwards to (from `backend_model` or a per-backend `model` override), so developers can see what runs behind each alias. Omitted when the alias is passed through unchanged. When the backends behind one alias serve distinct real models (canary/mixed fleet), an additional `backend_models` array lists every distinct backend model (the first matches `backend_model`). Default-on — no configuration needed.
@@ -722,6 +724,8 @@ New `lifecycle.gc` config block:
 ## Relay
 
 ### [Unreleased]
+
+### [v0.12.0] — 2026-08-27
 
 #### Added
 
