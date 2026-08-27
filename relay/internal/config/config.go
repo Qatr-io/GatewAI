@@ -31,6 +31,24 @@ type Config struct {
 	// LogLevel sets the minimum log level: DEBUG, INFO, WARN, ERROR.
 	// Defaults to INFO when absent or invalid.
 	LogLevel string `yaml:"log_level"`
+	// LeaseTTL is how long the per-job processing lease key
+	// (relay:{model}:lease:{jobID}) lives before expiring. The relay refreshes
+	// it every LeaseTTL/3 while processing; if the pod dies, the lease expires
+	// and the gateway reaper requeues the job. Must comfortably exceed one
+	// refresh interval plus Redis round-trips. Defaults to 60s.
+	LeaseTTL string `yaml:"lease_ttl"`
+}
+
+// LeaseTTLDuration returns the processing-lease TTL. Defaults to 60s; a value
+// below 3s is floored to 3s so the LeaseTTL/3 refresh interval stays sane.
+func (c *Config) LeaseTTLDuration() time.Duration {
+	if d, err := time.ParseDuration(c.LeaseTTL); err == nil && d > 0 {
+		if d < 3*time.Second {
+			return 3 * time.Second
+		}
+		return d
+	}
+	return 60 * time.Second
 }
 
 // QueuePopTimeoutDuration returns the configured queue pop timeout.

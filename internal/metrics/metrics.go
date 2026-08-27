@@ -218,6 +218,45 @@ var (
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",
 	}, []string{"model"})
 
+	// ModelHiddenTotal counts requests that targeted a visibility-gated model the
+	// caller isn't in the audience for — returned as 404 (hidden), by model.
+	ModelHiddenTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_model_hidden_total",
+		Help: "Requests to a visibility-restricted model rejected as 404 (not in audience).",
+	}, []string{"service_type", "model"})
+
+	RelayQueueOrphansSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_relay_queue_orphans_swept_total",
+		Help: "Total relay queue entries removed by the GC because their job record no longer exists in Redis.",
+	}, []string{"model", "state"})
+	// AsyncJobsReapedTotal counts jobs abandoned in the processing list (relay
+	// pod died, lease expired) that the reaper acted on. outcome is one of
+	// "requeued", "deadletter", or "dropped" (job record already gone/terminal).
+	AsyncJobsReapedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_async_jobs_reaped_total",
+		Help: "Total number of orphaned processing jobs handled by the lease reaper, by outcome.",
+	}, []string{"model", "outcome"})
+	// WebhookDeliveriesTotal counts terminal webhook outcomes. result is
+	// "delivered" (2xx–4xx received) or "deadletter" (failed after all retries).
+	WebhookDeliveriesTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_webhook_deliveries_total",
+		Help: "Total webhook deliveries by terminal outcome (delivered|deadletter).",
+	}, []string{"result"})
+
+	// WebhookRetryQueueDepth is the number of webhooks pending retry in the
+	// persistent Redis retry queue (ZSET webhook:retries).
+	WebhookRetryQueueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "gatewai_webhook_retry_queue_depth",
+		Help: "Number of webhooks currently scheduled for retry in Redis.",
+	})
+	// IdempotencyRequestsTotal counts async submissions carrying an
+	// Idempotency-Key, by outcome: "created" (new job), "replayed" (returned an
+	// existing job), or "conflict" (key reused but the job is gone → 409).
+	IdempotencyRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_idempotency_requests_total",
+		Help: "Async submissions with an Idempotency-Key, by outcome (created|replayed|conflict).",
+	}, []string{"service_type", "outcome"})
+
 	AsyncJobsSubmittedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_jobs_submitted_total",
 		Help: "Total async jobs accepted (202) by service type and model.",

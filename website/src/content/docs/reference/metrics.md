@@ -14,6 +14,7 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 |--------|------|--------|-------------|
 | `gatewai_requests_total` | counter | `mode`, `service_type`, `model`, `status` | Total requests handled by the gateway |
 | `gatewai_request_duration_seconds` | histogram | `mode`, `service_type`, `model` | End-to-end request duration. Buckets: 0.1s–300s |
+| `gatewai_model_hidden_total` | counter | `service_type`, `model` | Requests rejected (404) because the model is gated by `services[].visibility` and the caller is outside its audience |
 
 ### Async jobs
 
@@ -24,7 +25,13 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_async_jobs_cancelled_while_processing_total` | counter | `service_type`, `model` | Jobs cancelled while relay was processing them |
 | `gatewai_async_jobs_purged_total` | counter | `model` | Jobs deleted via admin purge endpoint |
 | `gatewai_async_stale_jobs_swept_total` | counter | `model` | Pending jobs marked failed by the stale-job GC |
+| `gatewai_async_jobs_reaped_total` | counter | `model`, `outcome` (`requeued`\|`deadletter`\|`dropped`) | Orphaned processing jobs handled by the GC phase-0 lease reaper |
+| `gatewai_idempotency_requests_total` | counter | `service_type`, `outcome` (`created`\|`replayed`\|`conflict`) | Async submissions carrying an `Idempotency-Key`, by outcome |
 | `gatewai_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs submitted per consumer. Requires `metricsConfig.consumerLabels: true` |
+| `gatewai_webhook_deliveries_total` | counter | `result` (`delivered`\|`deadletter`) | Terminal webhook outcomes |
+| `gatewai_webhook_retry_queue_depth` | gauge | — | Webhooks currently scheduled for retry in Redis |
+| `gatewai_relay_queue_depth` | gauge | `model`, `state` (`pending`\|`processing`) | Live length of each relay queue list, read from Redis on every scrape |
+| `gatewai_relay_queue_orphans_swept_total` | counter | `model`, `state` (`pending`\|`processing`) | Relay queue entries removed by GC phase 3 because their job record no longer exists |
 
 ### Rate limiting
 

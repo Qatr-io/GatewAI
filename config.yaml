@@ -149,7 +149,8 @@ lifecycle:
     # pending:    "${LIFECYCLE_JOB_TTL_PENDING:-}"
     # failed:     "${LIFECYCLE_JOB_TTL_FAILED:-}"
     # cancelled:  "${LIFECYCLE_JOB_TTL_CANCELLED:-}"
-  # gc: unified background garbage collector.
+  # gc: unified background garbage collector. Sweeps stale-pending jobs, orphaned
+  # S3 objects, and relay queue entries left behind by a crashed relay pod.
   # enabled: false by default — set to true to activate.
   # interval: how often the GC runs (default 15m).
   # orphan_min_age: S3 objects younger than this are never treated as orphans (default 5m).
@@ -157,6 +158,40 @@ lifecycle:
     enabled: ${LIFECYCLE_GC_ENABLED:-false}
     interval: "${LIFECYCLE_GC_INTERVAL:-15m}"
     orphan_min_age: "${LIFECYCLE_GC_ORPHAN_MIN_AGE:-5m}"
+    # max_reap_attempts: the reaper requeues jobs abandoned in the processing
+    # list by a dead relay pod (expired lease). After this many requeues a job is
+    # dead-lettered to relay:{model}:deadletter and marked failed. Default 3.
+    max_reap_attempts: ${LIFECYCLE_GC_MAX_REAP_ATTEMPTS:-3}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Webhooks — durable outbound delivery of job-completion callbacks
+# One inline attempt is made on completion; failures are persisted to a Redis
+# retry queue (survives gateway restarts) and retried with exponential backoff.
+# After max_retries attempts a webhook is dead-lettered to the Redis list
+# "webhook:deadletter" and counted by gatewai_webhook_deliveries_total{result="deadletter"}.
+# ─────────────────────────────────────────────────────────────────────────────
+webhooks:
+  max_retries: ${WEBHOOK_MAX_RETRIES:-3}      # total attempts (incl. the inline one) before dead-letter
+  retry_backoff: "${WEBHOOK_RETRY_BACKOFF:-30s}" # base backoff; doubles each retry
+  max_backoff: "${WEBHOOK_MAX_BACKOFF:-10m}"    # backoff cap
+  # signing_secret: when set, every webhook carries an HMAC-SHA256 header
+  #   X-Gatewai-Signature: t=<unix>,v1=<hex over "<t>.<body>">
+  # so consumers can verify authenticity and reject replays (stale t). Empty = unsigned.
+  signing_secret: "${WEBHOOK_SIGNING_SECRET:-}"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Async jobs
+# ─────────────────────────────────────────────────────────────────────────────
+jobs:
+  # idempotency_ttl: how long an "Idempotency-Key" header → job mapping is kept.
+  # A repeat POST /jobs/{type} with the same key (per consumer) returns the
+  # original job instead of starting a duplicate inference. Default 24h.
+  idempotency_ttl: "${JOBS_IDEMPOTENCY_TTL:-24h}"
+  # expired_marker_ttl: how long a lightweight "this job existed" tombstone is
+  # kept after submission. While it lives, polling a job whose record TTL has
+  # passed returns 410 (status "expired") instead of 404. Should exceed the job
+  # record TTL. Default 168h (7 days).
+  expired_marker_ttl: "${JOBS_EXPIRED_MARKER_TTL:-168h}"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking
@@ -334,6 +369,33 @@ services:
   #         Authorization: "Bearer ${CANARY_API_KEY}"
   #     - url: "http://vllm-fallback.default.svc.cluster.local:8000"
   #       weight: 0    # only used if both stable and canary return 5xx
+  #
+  # ── Model aliasing + visibility : beta-testing through the same API ───────────
+  # backend_model rewrites the model name before forwarding, so clients keep using
+  # a stable public alias while you swap the real model behind it. It is surfaced
+  # (as `backend_model`) in GET /v1/models so developers can see what runs behind
+  # each alias.
+  #
+  # visibility gates a model to specific audiences. A restricted model is filtered
+  # out of GET /v1/models — and returns 404 on /v1/* and /jobs — for callers outside
+  # its audience, so a hidden model is indistinguishable from a non-existent one.
+  # This lets you beta-test a new model through the same API before general release.
+  #   user_types — matched against server.user_type_header (e.g. sa, user, beta)
+  #   groups     — matched against the authenticated Principal's groups (auth required)
+  # Public (no visibility block) = visible to everyone. Composes with `policies`
+  # access control: a caller must pass BOTH visibility and any authz allow-rule.
+  #
+  # - type: llm
+  #   model: "next-gen"                 # stable public alias
+  #   provider: passthrough
+  #   backend_model: "llama-3.3-70b"    # real model surfaced in GET /v1/models
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  #   inference_url: "http://vllm.default.svc.cluster.local:8000"
+  #   visibility:                       # omit this block to make the model public
+  #     user_types: ["beta"]            # only callers with X-User-Type: beta see/use it
+  #     groups: ["ai-team"]             # OR members of the ai-team group
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Rate limiting
@@ -414,6 +476,12 @@ services:
 #     #   - /metrics
 #     #   - /docs
 #     #   - /openapi.yaml
+#     # langfuse.enabled: attach prompt/completion content and gen_ai.usage.*
+#     # to LLM request spans (for a Langfuse-consuming pipeline downstream).
+#     # Independent of traces.enabled so you can send generic traces without
+#     # also forwarding prompt content to Langfuse.
+#     langfuse:
+#       enabled: false
 #
 #   # OTLP metrics push (useful for short-lived processes or when Prometheus
 #   # scrape is not available, e.g. relay running as a Kubernetes Job).

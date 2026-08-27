@@ -227,3 +227,25 @@ Common causes: S3 credentials not injected into relay pod; `ENCRYPTION_KEY` mism
 2. Confirm `ENCRYPTION_KEY` is the same secret in both gateway and relay deployments
 3. Check network policies — inference pods must reach the S3 endpoint
 4. If input files disappear prematurely: check `redis.pending_max_age` and `lifecycle.job_ttl.pending` vs inference duration
+
+## Dead-letter queues
+
+Two Redis lists collect items that could not be delivered or recovered automatically. They are **not** self-draining — inspect and act on them.
+
+**`webhook:deadletter`** — job-completion webhooks that failed every retry (consumer endpoint down or returning `5xx`). Watch `increase(gatewai_webhook_deliveries_total{result="deadletter"}[1h])` and `gatewai_webhook_retry_queue_depth` (a growing depth means consumers are failing).
+
+```bash
+redis-cli LLEN webhook:deadletter
+redis-cli LRANGE webhook:deadletter 0 9    # {job_id, service_type, url, attempts, failed_at}
+```
+
+The job result is still in S3/Redis (subject to TTL) — clients can poll `GET /jobs/{type}/{id}`. Once the consumer is healthy, re-notify from your own tooling, or `LTRIM`/`DEL` the list after handling.
+
+**`relay:<model>:deadletter`** — async jobs a dead relay pod abandoned that the phase-0 reaper requeued `gc.max_reap_attempts` times without success (persistently crashing on that job). The job is marked `failed`. Watch `increase(gatewai_async_jobs_reaped_total{outcome="deadletter"}[1h])`.
+
+```bash
+redis-cli LLEN relay:whisper-large-v3:deadletter
+redis-cli LRANGE relay:whisper-large-v3:deadletter 0 -1
+```
+
+A non-zero count usually means the job input reliably kills the relay (bad payload, OOM). Investigate the relay logs for those IDs before re-submitting; raise `gc.max_reap_attempts` only if the failures were transient (e.g. node churn), not deterministic.

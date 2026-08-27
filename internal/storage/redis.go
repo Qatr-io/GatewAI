@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -20,8 +21,30 @@ import (
 
 // RedisClient wraps go-redis with job-specific persistence helpers.
 type RedisClient struct {
-	client    *redis.Client
-	lifecycle config.LifecycleConfig
+	client           *redis.Client
+	lifecycle        config.LifecycleConfig
+	expiredMarkerTTL time.Duration // "this job existed" tombstone TTL; default 168h
+}
+
+// SetExpiredMarkerTTL overrides how long the job-existence tombstone is kept.
+// A value ≤ 0 keeps the default (168h).
+func (r *RedisClient) SetExpiredMarkerTTL(d time.Duration) {
+	if d > 0 {
+		r.expiredMarkerTTL = d
+	}
+}
+
+func jobMetaKey(id string) string { return "jobmeta:" + id }
+
+// JobEverExisted reports whether a job with this ID was ever submitted, using
+// the long-lived tombstone written by SaveJob. Used to answer 410-expired vs
+// 404-not-found when the job record itself is gone.
+func (r *RedisClient) JobEverExisted(ctx context.Context, id string) (bool, error) {
+	n, err := r.client.Exists(ctx, jobMetaKey(id)).Result()
+	if err != nil {
+		return false, fmt.Errorf("check job tombstone: %w", err)
+	}
+	return n == 1, nil
 }
 
 func NewRedis(cfg config.RedisConfig, lc config.LifecycleConfig) (*RedisClient, error) {
@@ -38,7 +61,7 @@ func NewRedis(cfg config.RedisConfig, lc config.LifecycleConfig) (*RedisClient, 
 		return nil, fmt.Errorf("connecting to redis at %q: %w", cfg.Addr, err)
 	}
 
-	return &RedisClient{client: rdb, lifecycle: lc}, nil
+	return &RedisClient{client: rdb, lifecycle: lc, expiredMarkerTTL: 168 * time.Hour}, nil
 }
 
 // ttlForStatus returns the Redis TTL to apply when storing a job with the given status.
@@ -160,6 +183,11 @@ func (r *RedisClient) SaveJob(ctx context.Context, job *model.Job) (err error) {
 			pipe.LPush(ctx, "relay:"+job.Model+":pending", job.ID)
 		} else {
 			pipe.RPush(ctx, "relay:"+job.Model+":pending", job.ID)
+		}
+		// Long-lived tombstone so a later poll can distinguish "expired" from
+		// "never existed" after the job record's own TTL passes.
+		if r.expiredMarkerTTL > 0 {
+			pipe.Set(ctx, jobMetaKey(job.ID), job.ServiceType, r.expiredMarkerTTL)
 		}
 		return nil
 	})
@@ -405,6 +433,70 @@ func (r *RedisClient) MarkJobCancelled(ctx context.Context, jobID, modelName str
 	return nil
 }
 
+// relayQueueStates are the Redis list suffixes a job passes through:
+// relay:{model}:pending -> relay:{model}:processing (mirrors
+// internal/metrics.relayQueueStates, which reports depth for the same lists).
+var relayQueueStates = [2]string{"pending", "processing"}
+
+// SweepOrphanedRelayQueueEntries removes job IDs from relay:{model}:pending and
+// relay:{model}:processing whose Redis job record no longer exists.
+//
+// A relay pod that exits (os.Exit) before calling DoneJob — e.g. on an infra
+// error reading the job or running inference — never removes its job ID from
+// the processing list, and one-pod-per-job scaling means no later pod picks
+// that job back up to finish the cleanup. The stale-pending sweep (phase 1)
+// has the same gap for the pending list: it marks the job record failed but
+// never LRems the queue entry. Both leave the entry stuck forever, inflating
+// gatewai_relay_queue_depth even once processing has stopped.
+//
+// Once the job's TTL expires (job absent from Redis), its queue entry is
+// unambiguously orphaned regardless of state, so this reuses the same
+// existence check as the S3 orphan sweep (phase 2) rather than inspecting
+// job status.
+type RelayQueueSweepResult struct {
+	Model string
+	State string
+	Count int
+}
+
+func (r *RedisClient) SweepOrphanedRelayQueueEntries(ctx context.Context, models []string) ([]RelayQueueSweepResult, error) {
+	var removed []RelayQueueSweepResult
+	for _, m := range models {
+		for _, state := range relayQueueStates {
+			key := "relay:" + m + ":" + state
+			ids, err := r.client.LRange(ctx, key, 0, -1).Result()
+			if err != nil {
+				return removed, fmt.Errorf("lrange %s: %w", key, err)
+			}
+			if len(ids) == 0 {
+				continue
+			}
+
+			exists, err := r.JobsExistBatch(ctx, ids)
+			if err != nil {
+				return removed, fmt.Errorf("checking job existence for %s: %w", key, err)
+			}
+
+			count := 0
+			for _, id := range ids {
+				if exists[id] {
+					continue
+				}
+				if err := r.client.LRem(ctx, key, 1, id).Err(); err != nil {
+					slog.Warn("GC: failed to remove orphaned relay queue entry", "key", key, "job_id", id, "error", err)
+					continue
+				}
+				count++
+				slog.Info("GC: removed orphaned relay queue entry", "model", m, "state", state, "job_id", id)
+			}
+			if count > 0 {
+				removed = append(removed, RelayQueueSweepResult{Model: m, State: state, Count: count})
+			}
+		}
+	}
+	return removed, nil
+}
+
 // scanStaleJobs returns all pending jobs whose queue score (creation Unix timestamp)
 // is older than cutoff. Used by both SweepStalePendingJobs and ListStalePendingJobs
 // to avoid duplicating the queue-scan + MGet logic.
@@ -525,4 +617,174 @@ func (r *RedisClient) NotifyJobDone(ctx context.Context, jobID string) {
 	if err := r.client.Publish(ctx, "job:"+jobID+":done", "1").Err(); err != nil {
 		slog.ErrorContext(ctx, "failed to notify job done", "job_id", jobID, "error", err)
 	}
+}
+
+// reapProcessingScript atomically reclaims (or drops) one orphaned entry from a
+// relay processing list. It re-checks the lease inside the script so it can
+// never requeue a job a live worker still holds, and is idempotent across
+// gateway replicas (LREM returns 0 → another replica already handled it).
+//
+//	KEYS[1] = lease key         KEYS[2] = processing list   KEYS[3] = pending list
+//	KEYS[4] = dead-letter list  KEYS[5] = attempts counter
+//	ARGV[1] = jobID  ARGV[2] = maxAttempts  ARGV[3] = attemptsTTLsec  ARGV[4] = mode ("reclaim"|"drop")
+//
+// Returns: alive | gone | dropped | requeued | deadletter
+var reapProcessingScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) == 1 then return 'alive' end
+if redis.call('LREM', KEYS[2], 1, ARGV[1]) == 0 then return 'gone' end
+if ARGV[4] == 'drop' then return 'dropped' end
+local n = redis.call('INCR', KEYS[5])
+redis.call('EXPIRE', KEYS[5], tonumber(ARGV[3]))
+if n > tonumber(ARGV[2]) then
+    redis.call('RPUSH', KEYS[4], ARGV[1])
+    return 'deadletter'
+end
+redis.call('RPUSH', KEYS[3], ARGV[1])
+return 'requeued'
+`)
+
+// ReapResult summarises one reaper pass across all models.
+type ReapResult struct {
+	Requeued     int
+	DeadLettered int
+	Dropped      int
+}
+
+func isTerminalStatus(s model.JobStatus) bool {
+	return s == model.JobStatusCompleted || s == model.JobStatusFailed || s == model.JobStatusCancelled
+}
+
+// ReapOrphanedProcessingJobs requeues jobs abandoned in relay:{model}:processing
+// by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing
+// its lease. For each processing entry with no live lease:
+//   - a live, non-terminal job record → requeued to relay:{model}:pending (up to
+//     maxAttempts times, then dead-lettered to relay:{model}:deadletter and marked failed);
+//   - a missing or terminal job record → dropped (stale processing entry cleaned up).
+//
+// The lease check is atomic with the reclaim, so a healthy worker's job is never
+// requeued. Intended to run from the background GC loop.
+func (r *RedisClient) ReapOrphanedProcessingJobs(ctx context.Context, maxAttempts int) (ReapResult, error) {
+	var res ReapResult
+	if maxAttempts <= 0 {
+		maxAttempts = 3
+	}
+	const attemptsTTL = 24 * time.Hour
+
+	var procKeys []string
+	iter := r.client.Scan(ctx, 0, "relay:*:processing", 0).Iterator()
+	for iter.Next(ctx) {
+		procKeys = append(procKeys, iter.Val())
+	}
+	if err := iter.Err(); err != nil {
+		return res, fmt.Errorf("scanning processing keys: %w", err)
+	}
+
+	for _, procKey := range procKeys {
+		modelName := strings.TrimSuffix(strings.TrimPrefix(procKey, "relay:"), ":processing")
+		ids, err := r.client.LRange(ctx, procKey, 0, -1).Result()
+		if err != nil {
+			slog.Warn("reaper: failed to LRANGE processing list", "key", procKey, "error", err)
+			continue
+		}
+		for _, id := range ids {
+			leaseK := "relay:" + modelName + ":lease:" + id
+			// Fast path: a live lease means the worker is still processing.
+			if n, err := r.client.Exists(ctx, leaseK).Result(); err == nil && n == 1 {
+				continue
+			}
+			// Decide reclaim vs drop from the job record. Never drop on a Redis
+			// error — we cannot distinguish "record gone" from "Redis down".
+			mode := "reclaim"
+			existsN, err := r.client.Exists(ctx, jobKey(id)).Result()
+			if err != nil {
+				slog.Warn("reaper: cannot verify job record, skipping", "job_id", id, "error", err)
+				continue
+			}
+			if existsN == 0 {
+				mode = "drop" // record TTL-expired — cannot be reprocessed
+			} else if job, gerr := r.GetJob(ctx, id); gerr != nil {
+				slog.Warn("reaper: failed to read job record, skipping", "job_id", id, "error", gerr)
+				continue
+			} else if isTerminalStatus(job.Status) {
+				mode = "drop" // already completed/failed/cancelled
+			}
+
+			outcome, err := reapProcessingScript.Run(ctx, r.client,
+				[]string{
+					leaseK,
+					procKey,
+					"relay:" + modelName + ":pending",
+					"relay:" + modelName + ":deadletter",
+					"relay:" + modelName + ":attempts:" + id,
+				},
+				id, maxAttempts, int(attemptsTTL.Seconds()), mode,
+			).Text()
+			if err != nil {
+				slog.Warn("reaper: reclaim script failed", "job_id", id, "error", err)
+				continue
+			}
+
+			switch outcome {
+			case "requeued":
+				res.Requeued++
+				metrics.AsyncJobsReapedTotal.WithLabelValues(modelName, "requeued").Inc()
+				if err := r.UpdateJobResult(ctx, id, model.JobStatusPending, "", ""); err != nil {
+					slog.Warn("reaper: failed to reset requeued job to pending", "job_id", id, "error", err)
+				}
+				slog.Info("reaper: requeued abandoned job", "job_id", id, "model", modelName)
+			case "deadletter":
+				res.DeadLettered++
+				metrics.AsyncJobsReapedTotal.WithLabelValues(modelName, "deadletter").Inc()
+				if err := r.UpdateJobResult(ctx, id, model.JobStatusFailed, "",
+					fmt.Sprintf("relay worker died before completion; exceeded %d requeue attempts", maxAttempts)); err != nil {
+					slog.Warn("reaper: failed to mark dead-lettered job failed", "job_id", id, "error", err)
+				}
+				slog.Warn("reaper: dead-lettered abandoned job", "job_id", id, "model", modelName, "max_attempts", maxAttempts)
+			case "dropped":
+				res.Dropped++
+				metrics.AsyncJobsReapedTotal.WithLabelValues(modelName, "dropped").Inc()
+				slog.Info("reaper: dropped stale processing entry", "job_id", id, "model", modelName)
+			case "alive", "gone":
+				// alive: lease reappeared between checks; gone: another replica won the race.
+			}
+		}
+	}
+	return res, nil
+}
+
+func idempotencyKey(consumer, key string) string {
+	return "idem:" + consumer + ":" + key
+}
+
+// ReserveIdempotencyKey atomically claims an idempotency key for jobID (SET NX).
+// Returns true if this caller won the claim (no prior submission with this key),
+// false if the key was already taken. Scoped per consumer.
+func (r *RedisClient) ReserveIdempotencyKey(ctx context.Context, consumer, key, jobID string, ttl time.Duration) (bool, error) {
+	ok, err := r.client.SetNX(ctx, idempotencyKey(consumer, key), jobID, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("reserve idempotency key: %w", err)
+	}
+	return ok, nil
+}
+
+// GetIdempotencyKey returns the job ID previously stored for an idempotency key,
+// or "" if the key is absent.
+func (r *RedisClient) GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error) {
+	v, err := r.client.Get(ctx, idempotencyKey(consumer, key)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get idempotency key: %w", err)
+	}
+	return v, nil
+}
+
+// ReleaseIdempotencyKey deletes an idempotency-key claim, letting a corrected
+// retry proceed. Called when the reserved submission fails before the job is saved.
+func (r *RedisClient) ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error {
+	if err := r.client.Del(ctx, idempotencyKey(consumer, key)).Err(); err != nil {
+		return fmt.Errorf("release idempotency key: %w", err)
+	}
+	return nil
 }

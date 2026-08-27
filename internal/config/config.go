@@ -31,6 +31,80 @@ type Config struct {
 	// Policies configures identity-based access control. Nil means no enforcement.
 	Policies *PoliciesConfig `yaml:"policies"`
 	Usage    UsageConfig     `yaml:"usage"`
+	Webhooks WebhookConfig   `yaml:"webhooks"`
+	Jobs     JobsConfig      `yaml:"jobs"`
+}
+
+// WebhookConfig tunes durable outbound webhook delivery. Retries are persisted
+// in Redis (ZSET webhook:retries + per-job task keys) so a gateway restart does
+// not drop pending retries; final failures are dead-lettered to webhook:deadletter.
+type WebhookConfig struct {
+	// MaxRetries is the total number of delivery attempts (including the first,
+	// inline one) before a webhook is dead-lettered. 0 or absent = 3.
+	MaxRetries int `yaml:"max_retries"`
+	// RetryBackoff is the base delay before the first retry; each subsequent
+	// retry doubles it, capped by MaxBackoff. Default "30s".
+	RetryBackoff string `yaml:"retry_backoff"`
+	// MaxBackoff caps the exponential backoff. Default "10m".
+	MaxBackoff string `yaml:"max_backoff"`
+	// SigningSecret, when set, signs every outbound webhook with an HMAC-SHA256
+	// header `X-Gatewai-Signature: t=<unix>,v1=<hex>` computed over "<t>.<body>",
+	// letting consumers verify authenticity and reject replays (stale t).
+	// Supports ${VAR} expansion. Empty = unsigned (backward compatible).
+	SigningSecret string `yaml:"signing_secret"`
+}
+
+// MaxRetriesOrDefault returns the configured attempt cap, defaulting to 3.
+func (w WebhookConfig) MaxRetriesOrDefault() int {
+	if w.MaxRetries > 0 {
+		return w.MaxRetries
+	}
+	return 3
+}
+
+// RetryBackoffDuration returns the base retry backoff, defaulting to 30s.
+func (w WebhookConfig) RetryBackoffDuration() time.Duration {
+	if d := parseDuration(w.RetryBackoff); d > 0 {
+		return d
+	}
+	return 30 * time.Second
+}
+
+// MaxBackoffDuration returns the backoff cap, defaulting to 10m.
+func (w WebhookConfig) MaxBackoffDuration() time.Duration {
+	if d := parseDuration(w.MaxBackoff); d > 0 {
+		return d
+	}
+	return 10 * time.Minute
+}
+
+// JobsConfig tunes async job submission behaviour.
+type JobsConfig struct {
+	// IdempotencyTTL is how long an Idempotency-Key → job mapping is remembered,
+	// so a client retry with the same key returns the original job instead of
+	// starting a duplicate inference. 0 or absent = 24h.
+	IdempotencyTTL string `yaml:"idempotency_ttl"`
+	// ExpiredMarkerTTL is how long a lightweight "this job existed" tombstone is
+	// kept after submission. While it lives, polling a job whose record TTL has
+	// passed returns 410 (status "expired") instead of 404. Should exceed the
+	// job record TTL. 0 or absent = 168h (7 days).
+	ExpiredMarkerTTL string `yaml:"expired_marker_ttl"`
+}
+
+// ExpiredMarkerTTLDuration returns the job-existence tombstone TTL, default 168h.
+func (j JobsConfig) ExpiredMarkerTTLDuration() time.Duration {
+	if d := parseDuration(j.ExpiredMarkerTTL); d > 0 {
+		return d
+	}
+	return 168 * time.Hour
+}
+
+// IdempotencyTTLDuration returns the idempotency-key retention, defaulting to 24h.
+func (j JobsConfig) IdempotencyTTLDuration() time.Duration {
+	if d := parseDuration(j.IdempotencyTTL); d > 0 {
+		return d
+	}
+	return 24 * time.Hour
 }
 
 // PoliciesConfig controls which principals may access which services and models.
@@ -301,6 +375,18 @@ type GCConfig struct {
 	Enabled      bool   `yaml:"enabled"`        // master switch; default false
 	Interval     string `yaml:"interval"`       // tick frequency; default "15m"
 	OrphanMinAge string `yaml:"orphan_min_age"` // min S3 object age before orphan check; default "5m"
+	// MaxReapAttempts caps how many times the processing-queue reaper requeues an
+	// abandoned job (relay pod died, lease expired) before dead-lettering it to
+	// relay:{model}:deadletter and marking it failed. 0 or absent = 3.
+	MaxReapAttempts int `yaml:"max_reap_attempts"`
+}
+
+// MaxReapAttemptsOrDefault returns the configured requeue cap, defaulting to 3.
+func (g GCConfig) MaxReapAttemptsOrDefault() int {
+	if g.MaxReapAttempts > 0 {
+		return g.MaxReapAttempts
+	}
+	return 3
 }
 
 func (g GCConfig) IntervalDuration() time.Duration     { return parseDuration(g.Interval) }
@@ -352,6 +438,12 @@ type ServiceConfig struct {
 	// MaxConcurrentSync limits the number of simultaneous sync proxy calls for this model.
 	// 0 (default) means no limit. When exceeded, the handler returns 503.
 	MaxConcurrentSync int `yaml:"max_concurrent_sync"`
+	// PriorityReservedSync reserves this many of MaxConcurrentSync's slots
+	// exclusively for requests carrying server.priority_header. The remainder
+	// is the shared pool used by everyone (priority requests fall back to it
+	// too, once their reserved slots are full). 0 (default) = no reservation;
+	// priority requests compete in the shared pool like everyone else.
+	PriorityReservedSync int `yaml:"priority_reserved_sync"`
 	// SwaggerURL is an optional URL to an OpenAPI JSON spec for this service.
 	// Fetched once at startup; served at GET /swagger/{type}/{model}.
 	// Failures are logged as warnings and do not block startup.
@@ -397,6 +489,26 @@ type ServiceConfig struct {
 	TokenLimits map[string]RateLimitConfig `yaml:"token_limits"`
 	// Health controls backend probing for this service (GET /health?verbose=true).
 	Health ServiceHealthConfig `yaml:"health"`
+	// Deprecated marks this model as deprecated: surfaced in GET /v1/models
+	// (capabilities.deprecated) and as `deprecated: true` on the corresponding
+	// operations in the generated OpenAPI spec (per-model swagger docs always;
+	// shared sync paths only when every model on that path is deprecated).
+	// Purely informational — does not affect routing or availability.
+	Deprecated bool `yaml:"deprecated"`
+	// Visibility optionally restricts this model to specific audiences. When either
+	// list is non-empty the model is hidden from GET /v1/models for callers who
+	// don't match, and routing to it (sync or async) returns 404. Empty/absent =
+	// public (visible to everyone). Enables beta-testing a model on the same API.
+	// Requires auth.mode (or server.user_type_header) so the caller can be identified.
+	Visibility VisibilityConfig `yaml:"visibility"`
+}
+
+// VisibilityConfig gates a model to specific user types and/or groups.
+// A caller sees (and may use) the model if their user type is in UserTypes OR
+// they belong to a group in Groups. Both empty = public.
+type VisibilityConfig struct {
+	UserTypes []string `yaml:"user_types"`
+	Groups    []string `yaml:"groups"`
 }
 
 // GuardrailsStageConfig controls PII/secrets detection for one stage (input or output).

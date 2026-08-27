@@ -70,7 +70,7 @@ Images:
 - Gateway:    `ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z`
 - Relay: `ghcr.io/qatr-io/gatewai/relay:vX.Y.Z`
 
-Current tags: gateway `v0.16.0`, relay `v0.7.2`.
+Current tags: gateway `v0.21.0`, relay `v0.12.0`.
 
 ## Architecture
 
@@ -100,6 +100,12 @@ Gateway (:8080)
                                                               └── Trigger webhook (if callback_url set)
 ```
 
+**Async crash recovery (lease + reaper)**: on `BLMOVE` the relay writes a per-job lease `relay:<model>:lease:<id>` (config `lease_ttl`, default 60s) and refreshes it every `lease_ttl/3` while processing; `Done` deletes it. If the relay pod dies mid-job the lease expires and the gateway GC's reaper (`ReapOrphanedProcessingJobs`, phase 0 of `runGC`) requeues the abandoned `relay:<model>:processing` entry to `pending` — atomically re-checking the lease (Lua) so a live worker's job is never touched, and idempotently across replicas. After `lifecycle.gc.max_reap_attempts` requeues (default 3) the job is dead-lettered to `relay:<model>:deadletter` and marked failed. Metric: `gatewai_async_jobs_reaped_total{model, outcome}`.
+**Durable webhooks** (`internal/consumer/webhook.go` + `webhook_retry.go`): `Send` makes one inline delivery attempt; on failure (5xx/network) the retry is persisted to Redis (ZSET `webhook:retries` + per-job task key `webhook:retry:{id}`) and worked by `RunRetryLoop` with exponential backoff (`webhooks.retry_backoff`→`max_backoff`), so a gateway restart never drops pending retries. Claims are atomic (Lua, visibility-timeout) so the 2 replicas don't double-send. After `webhooks.max_retries` (default 3) attempts the webhook is dead-lettered to `webhook:deadletter`. Metrics: `gatewai_webhook_deliveries_total{result}`, `gatewai_webhook_retry_queue_depth`. When `webhooks.signing_secret` is set, each delivery carries `X-Gatewai-Signature: t=<unix>,v1=HMAC-SHA256(secret,"<t>.<body>")` for authenticity + replay protection.
+**Idempotency** (async submit): `POST /jobs/{type}` honours an optional `Idempotency-Key` header. The key is reserved in Redis (`idem:{consumer}:{key}`, SETNX, `jobs.idempotency_ttl` default 24h) against the new job's ID just before `SaveJob`; a repeat with the same key returns the original job (`200` + `X-Idempotent-Replay: true`) instead of a duplicate inference, or `409` if that job is gone. Metric `gatewai_idempotency_requests_total{service_type, outcome}`.
+
+**Job poll — expired vs not-found**: `GET /jobs/{type}/{id}` returns `410 Gone` + `{"status":"expired"}` when the job record TTL has passed but a long-lived tombstone (`jobmeta:{id}`, `jobs.expired_marker_ttl`, default 7d, written by `SaveJob`) proves it existed; a truly unknown id still returns `404`.
+
 **Sync direct proxy** (`POST /v1/*`):
 ```
 Gateway → HTTP proxy → InferenceService URL (inference_url in config)
@@ -117,7 +123,7 @@ Configured via `services[].operations`, `services[].model`, `services[].inferenc
 
 **LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
 
-- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM)
+- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM). The real backend model is surfaced to clients in `GET /v1/models` as `backend_model` (and `backend_models[]` when backends serve distinct models) — default-on, no config.
 - **Response cache**: Redis exact-match cache keyed on SHA-256 of request body, configurable TTL via `response_cache_ttl`; `stream=true` and `Cache-Control: no-cache` bypass cache; `X-Cache: HIT/MISS` on every response
 - **Wildcard routing**: paths ending with `/*` (e.g. `/v1/*`) register as chi wildcard routes — proxies all sub-paths without enumerating them
 
@@ -143,6 +149,8 @@ operations:
 
 **Multiple models per type**: multiple service entries may share the same `type` with different `model` values. The gateway routes by `model` field in the request.
 
+**`visibility`** (`services[].visibility`): gates a model to an audience — `user_types` (matched against `server.user_type_header`) and/or `groups` (from the authed `Principal`). A restricted model is fail-closed: filtered out of `GET /v1/models` and returns `404` on `/v1/*`, `/jobs/{service_type}`, and `GET /v1/models?model=` for callers outside its audience (indistinguishable from non-existent; anonymous callers see only public models). Enforced in `handler.checkModelVisible` on all three paths and as a list filter in `ListModels`. Enables beta-testing a model through the same API. Composes with `policies` (both must pass). Metric `gatewai_model_hidden_total{service_type, model}`. Registry helpers: `Def.IsRestricted()`, `Def.VisibleTo(userType, groups)`, `Def.BackendModelNames()`.
+
 ### Dynamic OpenAPI spec
 
 `handler.GenerateSpec(registry, version)` builds the full OpenAPI 3.0.3 spec at startup from the live registry. No static file — the spec always reflects the current config. Served at:
@@ -156,6 +164,16 @@ Version injected at build time: `go build -ldflags "-X main.version=v0.4.3" ./cm
 Both binaries use `config.Load(path)` which reads a YAML file and expands `${VAR}` / `${VAR:-default}` with `os.Expand` before unmarshalling. The config path defaults to `config.yaml` in the working directory, overridden by env var `CONFIG_PATH`.
 
 **Adding a new service type** requires only a new entry in `config.yaml` (and `values.yaml` for Helm). No Go code change is needed — the service registry (`internal/service/registry.go`) is entirely config-driven.
+
+### Lifecycle GC
+
+`cmd/gateway/gc.go`: unified background GC, gated by `lifecycle.gc.enabled` (default `false`), ticking every `lifecycle.gc.interval` (default 15m). Three phases per cycle:
+
+1. **Stale-pending sweep** (`redis.SweepStalePendingJobs`) — marks pending jobs older than `redis.pending_max_age` as failed and deletes their S3 input. Skipped when `pending_max_age` is `0s`/empty.
+2. **Orphan S3 cleanup** — deletes S3 objects whose job ID predates `lifecycle.gc.orphan_min_age` and no longer has a Redis job record.
+3. **Orphan relay queue cleanup** (`redis.SweepOrphanedRelayQueueEntries`) — removes job IDs from `relay:{model}:pending`/`relay:{model}:processing` whose Redis job record no longer exists. Catches jobs a relay pod left behind when it `os.Exit`s on an infra error before calling `Done` (queue.go) — with one-pod-per-job scaling, no later pod ever cleans that entry up, so it inflates `gatewai_relay_queue_depth` forever without this sweep. Swept counts are exposed as `gatewai_relay_queue_orphans_swept_total{model,state}`.
+
+Phases 2 and 3 abort the cycle if Redis is unreachable (`redis.Ping`), since "job gone" can't be distinguished from "Redis down".
 
 ### Rate limiting & token limits
 
@@ -215,6 +233,7 @@ A rule may also carry an optional **`limits`** block (a `RateLimitConfig`: `rate
 | `k8s/deployment-transcription.yaml` | Deployment + Service + RBAC for whisper-large-v3 |
 | `internal/service/registry.go` | Config-driven service registry (routing, default model, operations map) |
 | `internal/handler/docs.go` | Dynamic OpenAPI spec generator + Swagger UI handler |
+| `cmd/gateway/gc.go` | Unified background GC — stale-pending sweep, S3 orphan cleanup, relay queue orphan cleanup |
 | `internal/ratelimit/` | Per-consumer Redis fixed-window rate limiting |
 | `internal/consumer/` | Redis pub/sub subscriber + webhook sender (replaces Kafka) |
 | `internal/llmproxy/` | LLM proxy with provider interface (openai/anthropic/ollama/passthrough) |

@@ -46,6 +46,10 @@ type asyncJobStore interface {
 	ListJobsByConsumer(ctx context.Context, consumer string, limit, offset int64) ([]*model.Job, int64, error)
 	GetQueuePosition(ctx context.Context, jobID, model string) (int64, bool, error)
 	ListStalePendingJobs(ctx context.Context, olderThan time.Duration) ([]*model.Job, error)
+	ReserveIdempotencyKey(ctx context.Context, consumer, key, jobID string, ttl time.Duration) (bool, error)
+	GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error)
+	ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error
+	JobEverExisted(ctx context.Context, id string) (bool, error)
 }
 
 // reservedJobFields are multipart form fields consumed by the gateway
@@ -69,6 +73,16 @@ type JobHandler struct {
 	userTypeHeader        string                          // HTTP header carrying user type (e.g. "X-User-Type")
 	authz                 *authz.Engine                   // nil = no enforcement
 	usageTracker          usage.UsageTracker              // nil = no usage tracking
+	idempotencyTTL        time.Duration                   // Idempotency-Key retention; default 24h
+}
+
+// WithIdempotencyTTL sets how long Idempotency-Key → job mappings are retained.
+// A value ≤ 0 keeps the default (24h).
+func (h *JobHandler) WithIdempotencyTTL(ttl time.Duration) *JobHandler {
+	if ttl > 0 {
+		h.idempotencyTTL = ttl
+	}
+	return h
 }
 
 func NewJobHandler(
@@ -88,6 +102,7 @@ func NewJobHandler(
 		consumerHeader: consumerHeader,
 		rateLimiter:    rateLimiter,
 		lifecycle:      lifecycle,
+		idempotencyTTL: 24 * time.Hour,
 	}
 }
 
@@ -146,11 +161,11 @@ type statusResponse struct {
 
 // listJobsResponse is the body returned on GET /jobs.
 type listJobsResponse struct {
-	Consumer string           `json:"consumer"`
-	Total    int64            `json:"total"`
-	Limit    int64            `json:"limit"`
-	Offset   int64            `json:"offset"`
-	Jobs     []*jobSummary    `json:"jobs"`
+	Consumer string        `json:"consumer"`
+	Total    int64         `json:"total"`
+	Limit    int64         `json:"limit"`
+	Offset   int64         `json:"offset"`
+	Jobs     []*jobSummary `json:"jobs"`
 }
 
 type jobSummary struct {
@@ -222,6 +237,10 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 	def, err := h.registry.RouteAsync(serviceType, r.FormValue("model"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	if !checkModelVisible(w, r, def, h.userTypeHeader) {
 		return
 	}
 
@@ -397,8 +416,39 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		))
 	defer func() { span.End() }()
 
+	// Idempotency: reserve the key with this job's ID. If it was already used,
+	// return the original job (or 409 if it's gone) rather than run a duplicate
+	// inference. The S3 file just staged under this jobID becomes an orphan the
+	// GC cleans up. Scoped per consumer.
+	idemKey := r.Header.Get("Idempotency-Key")
+	if idemKey != "" {
+		won, ierr := h.redis.ReserveIdempotencyKey(ctx, consumerName, idemKey, jobID, h.idempotencyTTL)
+		switch {
+		case ierr != nil:
+			slog.WarnContext(ctx, "idempotency reserve failed, proceeding without dedup", "error", ierr)
+		case !won:
+			existingID, _ := h.redis.GetIdempotencyKey(ctx, consumerName, idemKey)
+			if existingID != "" {
+				if existing, gerr := h.redis.GetJob(ctx, existingID); gerr == nil {
+					metrics.IdempotencyRequestsTotal.WithLabelValues(serviceType, "replayed").Inc()
+					w.Header().Set("X-Idempotent-Replay", "true")
+					writeSubmitResponse(w, http.StatusOK, existing.ID, existing.ServiceType, existing.Model, string(existing.Status))
+					return
+				}
+			}
+			metrics.IdempotencyRequestsTotal.WithLabelValues(serviceType, "conflict").Inc()
+			writeError(w, http.StatusConflict, "Idempotency-Key was recently used for a job that is no longer available; retry with a new key")
+			return
+		default:
+			metrics.IdempotencyRequestsTotal.WithLabelValues(serviceType, "created").Inc()
+		}
+	}
+
 	// Step 2 — persist the job record in Redis (also enqueues to relay:<model>:pending).
 	if err := h.redis.SaveJob(ctx, job); err != nil {
+		if idemKey != "" {
+			_ = h.redis.ReleaseIdempotencyKey(ctx, consumerName, idemKey)
+		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		slog.ErrorContext(ctx, "redis save failed", "job_id", jobID, "error", err)
@@ -427,15 +477,35 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	writeSubmitResponse(w, http.StatusAccepted, jobID, serviceType, def.Model, string(model.JobStatusPending))
+}
+
+// writeSubmitResponse writes a submitResponse JSON body with the given status.
+func writeSubmitResponse(w http.ResponseWriter, status int, jobID, serviceType, modelName, jobStatus string) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
+	w.WriteHeader(status)
 	enc := json.NewEncoder(w)
 	enc.SetEscapeHTML(false)
 	_ = enc.Encode(submitResponse{
 		JobID:       jobID,
 		ServiceType: serviceType,
-		Model:       def.Model,
-		Status:      string(model.JobStatusPending),
+		Model:       modelName,
+		Status:      jobStatus,
+	})
+}
+
+// writeExpiredResponse returns 410 Gone for a job that provably existed but
+// whose record TTL has passed, so clients can tell "timed out / cleaned up"
+// apart from "never existed" (404).
+func writeExpiredResponse(w http.ResponseWriter, id string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusGone)
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(map[string]string{
+		"job_id": id,
+		"status": string(model.JobStatusExpired),
+		"error":  "job result expired (retention TTL passed) and is no longer available",
 	})
 }
 
@@ -452,6 +522,12 @@ func (h *JobHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	job, err := h.redis.GetJob(r.Context(), id)
 	if err != nil {
+		// Distinguish a job whose record TTL has passed (410 "expired") from one
+		// that never existed (404), using the long-lived submission tombstone.
+		if existed, eerr := h.redis.JobEverExisted(r.Context(), id); eerr == nil && existed {
+			writeExpiredResponse(w, id)
+			return
+		}
 		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", id))
 		return
 	}

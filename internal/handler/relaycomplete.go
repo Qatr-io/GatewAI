@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/consumer"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/storage"
@@ -34,11 +36,17 @@ type RelayCompleteHandler struct {
 // NewRelayCompleteHandler creates a RelayCompleteHandler.
 // persistsResult controls whether the S3 result object is deleted after
 // successful webhook delivery (false = delete, true = keep).
-func NewRelayCompleteHandler(redis *storage.RedisClient, s3 consumer.S3Store, persistsResult bool) *RelayCompleteHandler {
+func NewRelayCompleteHandler(redis *storage.RedisClient, s3 consumer.S3Store, persistsResult bool, webhookCfg config.WebhookConfig) *RelayCompleteHandler {
 	return &RelayCompleteHandler{
 		redis:         redis,
-		webhookSender: consumer.NewWebhookSender(redis, s3, persistsResult),
+		webhookSender: consumer.NewWebhookSender(redis, s3, persistsResult, webhookCfg),
 	}
+}
+
+// StartRetryLoop launches the durable webhook retry worker. Call once at startup;
+// it stops when ctx is cancelled.
+func (h *RelayCompleteHandler) StartRetryLoop(ctx context.Context) {
+	go h.webhookSender.RunRetryLoop(ctx)
 }
 
 // WithProcessingTimeLimiter attaches a processing-time budget limiter.

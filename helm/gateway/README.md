@@ -141,6 +141,7 @@ services:
 | `type` | Service type used in async routes (`/jobs/{type}`). Multiple models can share the same type. |
 | `model` | Model identifier — matched against the `model` field in the request. |
 | `default` | `true` → used as fallback when `model` is omitted and multiple models are registered for the type. |
+| `deprecated` | `true` → marks the model deprecated. Surfaced in `GET /v1/models` (`capabilities.deprecated`) and as `deprecated: true` on the corresponding OpenAPI operations (per-model swagger doc always; a shared sync path only when every model on it is deprecated). Informational only — does not affect routing or availability. |
 | `operations` | Map of `operationName → [url-paths]`. All paths are indexed for sync routing. The first path of the selected operation is forwarded in async InputEvents. |
 | `inferenceURL` | Base URL of the Knative InferenceService predictor (cluster-local). The original request path is appended at runtime. Single-backend legacy — use `backends` for multi-backend. |
 | `backends` | List of backends with weighted routing. Takes precedence over `inferenceURL`. See below. |
@@ -150,6 +151,8 @@ services:
 | `provider` | Activates LLM proxy mode: `openai`, `anthropic`, `ollama`, `passthrough`. Absent = legacy direct proxy. |
 | `backendModel` | Default model name sent to the backend (rewrites the `model` field in the request body). Overridden by `backends[].model`. |
 | `responseCacheTTL` | Redis response cache TTL in seconds. `0` = disabled. LLM proxy only. |
+| `maxConcurrentSync` | Max simultaneous sync requests for this model across all replicas. `0` = unlimited. Returns `503` when full. |
+| `priorityReservedSync` | Slots of `maxConcurrentSync` reserved for requests carrying `server.priorityHeader`. `0` = no reservation. |
 | `swaggerURL` | Optional URL to an OpenAPI JSON spec for this service. Fetched once at startup; served at `GET /swagger/{type}/{model}`. Failures are logged and skipped. |
 | `swaggerHeaders` | Optional map of HTTP headers sent when fetching `swaggerURL`. Values support `${VAR}` env expansion. |
 
@@ -382,6 +385,11 @@ The chart includes [redis-ha](https://github.com/DandyDeveloper/charts/tree/mast
 | `redis-ha.enabled` | Deploy Redis HA | `true` |
 | `redis-ha.haproxy.enabled` | Enable HAProxy frontend | `true` |
 | `redis-ha.replicas` | Redis replica count | `3` |
+| `redis-ha.redis.config.appendonly` | AOF persistence | `"yes"` |
+| `redis-ha.redis.config.appendfsync` | AOF fsync policy | `"everysec"` |
+| `redis-ha.persistentVolume.enabled` | PVC for AOF/RDB files | `true` |
+
+**Durability:** async state lives entirely in Redis — job records, the relay `pending`/`processing` queues, per-job leases, and the webhook retry queue. The chart enables **AOF** (`appendfsync everysec`, ≤1s loss window) and **RDB** snapshots on a PersistentVolume so this state survives a Redis pod restart or master failover. Without persistence, a master crash can lose recently-enqueued jobs and their lease/webhook state. Disable only for ephemeral/dev clusters.
 
 ## API reference
 

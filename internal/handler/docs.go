@@ -302,10 +302,14 @@ func healthPathItem() map[string]any {
 func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]any {
 	// Collect models and operations per service type.
 	modelsByType := map[string][]string{}
+	deprecatedModels := map[string]bool{}
 	allOps := []string{}
 	for _, def := range reg.All() {
 		if def.Model != "" {
 			modelsByType[def.Type] = uniqueSorted(append(modelsByType[def.Type], def.Model))
+			if def.Deprecated {
+				deprecatedModels[def.Model] = true
+			}
 		}
 		for opName := range def.Operations {
 			allOps = appendUniq(allOps, opName)
@@ -313,12 +317,26 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 	}
 	sort.Strings(allOps)
 
-	// Build a readable description of models per type.
+	// Build a readable description of models per type. This path is shared
+	// across every model of a type (routed via the "model" body field), so an
+	// individual model's deprecation can only be called out inline here —
+	// see syncPathItems / the per-model swagger overlay for cases where the
+	// whole OpenAPI `deprecated: true` operation flag applies cleanly.
 	typeParts := make([]string, 0, len(serviceTypes))
 	for _, t := range serviceTypes {
-		if models := modelsByType[t]; len(models) > 0 {
-			typeParts = append(typeParts, fmt.Sprintf("**%s**: %s", t, strings.Join(models, ", ")))
+		models := modelsByType[t]
+		if len(models) == 0 {
+			continue
 		}
+		labeled := make([]string, len(models))
+		for i, m := range models {
+			if deprecatedModels[m] {
+				labeled[i] = m + " (deprecated)"
+			} else {
+				labeled[i] = m
+			}
+		}
+		typeParts = append(typeParts, fmt.Sprintf("**%s**: %s", t, strings.Join(labeled, ", ")))
 	}
 
 	schemaProps := map[string]any{
@@ -358,6 +376,11 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 					"schema":  map[string]any{"type": "string", "enum": serviceTypes},
 					"example": serviceTypes[0],
 				},
+				map[string]any{
+					"name": "Idempotency-Key", "in": "header", "required": false,
+					"schema":      map[string]any{"type": "string"},
+					"description": "Optional. A repeat submission with the same key (scoped per consumer) returns the original job (200 + `X-Idempotent-Replay: true`) instead of starting a duplicate inference. If the key was reused but its job is gone, returns 409.",
+				},
 			},
 			"requestBody": map[string]any{
 				"required": true,
@@ -380,8 +403,17 @@ func submitJobPathItem(serviceTypes []string, reg *service.Registry) map[string]
 						},
 					},
 				},
+				"200": map[string]any{
+					"description": "Idempotent replay — an existing job with the same Idempotency-Key is returned (header `X-Idempotent-Replay: true`); no new inference is started",
+					"content": map[string]any{
+						"application/json": map[string]any{
+							"schema": map[string]any{"$ref": "#/components/schemas/JobSubmitResponse"},
+						},
+					},
+				},
 				"400": map[string]any{"$ref": "#/components/responses/BadRequest"},
 				"404": map[string]any{"$ref": "#/components/responses/NotFound"},
+				"409": map[string]any{"description": "Idempotency-Key was reused but its job is no longer available; retry with a new key"},
 				"500": map[string]any{"$ref": "#/components/responses/InternalError"},
 			},
 		},
@@ -418,6 +450,7 @@ func jobByIDPathItem(serviceTypes []string) map[string]any {
 					},
 				},
 				"404": map[string]any{"$ref": "#/components/responses/NotFound"},
+				"410": map[string]any{"description": "The job existed but its retention TTL has passed — body `{\"status\":\"expired\"}`. Distinguishes a timed-out/cleaned-up job from one that never existed (404)."},
 			},
 		},
 		"delete": map[string]any{
@@ -638,7 +671,10 @@ func listModelsPathItem() map[string]any {
 			"summary": "List available models",
 			"description": "Without query params, returns all configured models in OpenAI-compatible format.\n\n" +
 				"With `?model=<name>`, proxies to the underlying model backend to retrieve its native information " +
-				"(context size, capabilities, etc.).",
+				"(context size, capabilities, etc.).\n\n" +
+				"Models gated via `services[].visibility` are filtered by caller audience: a model restricted to " +
+				"specific user types or groups is omitted from the list — and returns `404` on `?model=` — for callers " +
+				"outside its audience, so a hidden model is indistinguishable from a non-existent one.",
 			"operationId": "listModels",
 			"parameters": []any{
 				map[string]any{
@@ -669,11 +705,12 @@ func listModelsPathItem() map[string]any {
 // service definitions. Pattern paths (containing {model}) get a path parameter.
 func syncPathItems(reg *service.Registry) map[string]any {
 	type entry struct {
-		serviceType string
-		models      []string
-		opNames     []string
-		exts        []string
-		isPattern   bool
+		serviceType      string
+		models           []string
+		deprecatedModels map[string]bool
+		opNames          []string
+		exts             []string
+		isPattern        bool
 	}
 
 	byPath := map[string]*entry{}
@@ -690,13 +727,17 @@ func syncPathItems(reg *service.Registry) map[string]any {
 				e := byPath[p]
 				if e == nil {
 					e = &entry{
-						serviceType: def.Type,
-						isPattern:   strings.Contains(p, "{model}"),
+						serviceType:      def.Type,
+						isPattern:        strings.Contains(p, "{model}"),
+						deprecatedModels: map[string]bool{},
 					}
 					byPath[p] = e
 				}
 				e.models = appendUniq(e.models, def.Model)
 				e.opNames = appendUniq(e.opNames, opName)
+				if def.Deprecated {
+					e.deprecatedModels[def.Model] = true
+				}
 				for ext := range def.AcceptedExts {
 					e.exts = appendUniq(e.exts, ext)
 				}
@@ -714,11 +755,24 @@ func syncPathItems(reg *service.Registry) map[string]any {
 		schemaProps := map[string]any{}
 		required := []string{}
 
+		allDeprecated := len(e.models) > 0
+		for _, m := range e.models {
+			if !e.deprecatedModels[m] {
+				allDeprecated = false
+				break
+			}
+		}
+
 		if !e.isPattern {
 			modelField := map[string]any{"type": "string"}
 			if len(e.models) > 0 {
 				modelField["enum"] = e.models
 				modelField["example"] = e.models[0]
+				if !allDeprecated {
+					if deprecated := deprecatedModelNames(e.models, e.deprecatedModels); deprecated != "" {
+						modelField["description"] = "Deprecated: " + deprecated
+					}
+				}
 			}
 			schemaProps["model"] = modelField
 			if len(e.models) > 1 {
@@ -781,6 +835,13 @@ func syncPathItems(reg *service.Registry) map[string]any {
 				"504": map[string]any{"$ref": "#/components/responses/GatewayTimeout"},
 				"502": map[string]any{"$ref": "#/components/responses/BadGateway"},
 			},
+		}
+
+		// Only mark the whole operation deprecated when every model sharing
+		// this path is deprecated — otherwise callers of the still-active
+		// models would see a misleading deprecation warning in Swagger UI.
+		if allDeprecated {
+			op["deprecated"] = true
 		}
 
 		if e.isPattern {
@@ -854,9 +915,34 @@ func specComponents() map[string]any {
 			"Model": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"id":       map[string]any{"type": "string", "example": "whisper-large-v3"},
-					"object":   map[string]any{"type": "string", "example": "model"},
-					"owned_by": map[string]any{"type": "string", "example": "gatewai"},
+					"id":           map[string]any{"type": "string", "example": "gpt-4o", "description": "Model alias clients request in the `model` field"},
+					"object":       map[string]any{"type": "string", "example": "model"},
+					"owned_by":     map[string]any{"type": "string", "example": "gatewai"},
+					"service_type": map[string]any{"type": "string", "example": "llm"},
+					"provider":     map[string]any{"type": "string", "example": "openai", "description": "LLM proxy provider, when set"},
+					"backend_model": map[string]any{
+						"type":        "string",
+						"example":     "meta-llama/Meta-Llama-3-8B-Instruct",
+						"description": "Real model this alias forwards to. Present only when the service rewrites the model name (`backend_model` or a per-backend `model`); omitted when the alias is passed through unchanged.",
+					},
+					"backend_models": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "Set only when backends behind this alias serve distinct real models (canary/mixed fleet). The first entry is the primary, matching `backend_model`.",
+					},
+					"capabilities": map[string]any{"$ref": "#/components/schemas/ModelCapabilities"},
+				},
+			},
+			"ModelCapabilities": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"supports_async":     map[string]any{"type": "boolean"},
+					"supports_sync":      map[string]any{"type": "boolean"},
+					"supports_streaming": map[string]any{"type": "boolean"},
+					"accepted_formats":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"max_file_size_mb":   map[string]any{"type": "integer", "format": "int64"},
+					"operations":         map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					"deprecated":         map[string]any{"type": "boolean"},
 				},
 			},
 			"TokenUsage": map[string]any{
@@ -1018,6 +1104,18 @@ func specComponents() map[string]any {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+// deprecatedModelNames returns a sorted, comma-joined list of the models in
+// models that are marked deprecated, or "" if none are.
+func deprecatedModelNames(models []string, deprecated map[string]bool) string {
+	var out []string
+	for _, m := range models {
+		if deprecated[m] {
+			out = append(out, m)
+		}
+	}
+	return strings.Join(out, ", ")
+}
 
 func appendUniq(slice []string, s string) []string {
 	for _, v := range slice {

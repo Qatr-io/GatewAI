@@ -44,15 +44,25 @@ type AuditConfig struct {
 
 // Handler orchestrates LLM requests: cache → provider → translate → cache-fill.
 type Handler struct {
-	cache          cache.Cache
-	providers      providerLookup
-	httpClient     *http.Client
-	userTypeHeader string // HTTP header carrying consumer type (e.g. "X-User-Type")
-	tracker        metrics.ConsumerTracker
-	audit          AuditConfig
-	tokenLimiter   ratelimit.TokenChecker // nil = token rate limiting disabled
-	guard          *guardrails.Checker    // output DLP scanner
-	usageTracker   usage.UsageTracker     // nil = calendar usage reporting disabled
+	cache           cache.Cache
+	providers       providerLookup
+	httpClient      *http.Client
+	userTypeHeader  string // HTTP header carrying consumer type (e.g. "X-User-Type")
+	tracker         metrics.ConsumerTracker
+	audit           AuditConfig
+	tokenLimiter    ratelimit.TokenChecker // nil = token rate limiting disabled
+	guard           *guardrails.Checker    // output DLP scanner
+	usageTracker    usage.UsageTracker     // nil = calendar usage reporting disabled
+	langfuseEnabled bool                   // attach langfuse.observation.* span attrs; requires OTel traces enabled
+}
+
+// WithLangfuse enables attaching Langfuse observability attributes
+// (prompt/completion content, gen_ai.usage.*) to the request span.
+// Callers should pass cfg.Otel.Enabled && cfg.Otel.Traces.Enabled &&
+// cfg.Otel.Traces.Langfuse.Enabled (opentelemetry.traces.langfuse.enabled).
+func (h *Handler) WithLangfuse(enabled bool) *Handler {
+	h.langfuseEnabled = enabled
+	return h
 }
 
 // WithUsageTracker sets the usage tracker used to feed the cross-consumer
@@ -346,6 +356,22 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		}
 	}
 
+	// ── Langfuse observability attributes ─────────────────────────────────────
+	// gen_ai.usage.* mirrors vLLM's own child-span attribute naming so this root
+	// span passes the collector's filter/langfuse processor (which keeps only
+	// spans carrying gen_ai.usage.completion_tokens); langfuse.observation.* are
+	// Langfuse's native OTel attributes for carrying prompt/completion content.
+	if h.langfuseEnabled && usage != nil {
+		span.SetAttributes(
+			attribute.Int("gen_ai.usage.prompt_tokens", usage.PromptTokens),
+			attribute.Int("gen_ai.usage.completion_tokens", usage.CompletionTokens),
+			attribute.String("langfuse.observation.type", "generation"),
+			attribute.String("langfuse.observation.model.name", def.Model),
+			attribute.String("langfuse.observation.input", truncateForSpan(body)),
+			attribute.String("langfuse.observation.output", truncateForSpan(finalBody)),
+		)
+	}
+
 	// ── Write response (before cache-fill to avoid blocking the client) ───────
 	ct := resp.Header.Get("Content-Type")
 	if ct == "" {
@@ -387,6 +413,17 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			}
 		}()
 	}
+}
+
+// maxSpanAttrBytes caps how much of a request/response body is attached to a
+// span attribute, to avoid oversized spans on large prompts or completions.
+const maxSpanAttrBytes = 32 * 1024
+
+func truncateForSpan(body []byte) string {
+	if len(body) <= maxSpanAttrBytes {
+		return string(body)
+	}
+	return string(body[:maxSpanAttrBytes]) + "...[truncated]"
 }
 
 func emitTokenMetrics(ctx context.Context, def *service.Def, backendModel, userType string, body []byte) *provider.Usage {

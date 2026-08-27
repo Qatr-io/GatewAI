@@ -16,6 +16,24 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
+### [Unreleased]
+
+### [v0.21.0] — 2026-08-27
+
+#### Added
+
+- **Backend model exposed in `GET /v1/models`**: each model object now carries a `backend_model` field revealing the real model an alias forwards to (from `backend_model` or a per-backend `model` override), so developers can see what runs behind each alias. Omitted when the alias is passed through unchanged. When the backends behind one alias serve distinct real models (canary/mixed fleet), an additional `backend_models` array lists every distinct backend model (the first matches `backend_model`). Default-on — no configuration needed.
+- **Per-audience model visibility (`services[].visibility`)**: a service entry may be gated to specific `user_types` and/or `groups`. A restricted model is filtered out of `GET /v1/models` and returns `404` on `/v1/*`, `/jobs/{service_type}`, and `GET /v1/models?model=` for callers outside its audience — a hidden model is indistinguishable from a non-existent one (fail-closed; anonymous callers see only public models). Enables beta-testing a new model through the same API before general release. Composes with `policies` access control (a request must satisfy both). New metric `gatewai_model_hidden_total{service_type, model}`; Helm `services[].visibility.userTypes`/`groups`.
+- **Processing-queue crash recovery (lease reaper)**: a new GC phase (`ReapOrphanedProcessingJobs`) requeues async jobs abandoned in `relay:{model}:processing` by a relay pod that died mid-job (OOM, node loss, SIGKILL) without releasing its lease. Jobs with no live lease are requeued to `relay:{model}:pending` up to `lifecycle.gc.max_reap_attempts` times (default 3), then **dead-lettered** to `relay:{model}:deadletter` and marked failed; entries whose job record is already gone/terminal are dropped. The lease check is atomic with the reclaim (Lua), so a healthy worker's job is never requeued, and it is idempotent across gateway replicas. New metric `gatewai_async_jobs_reaped_total{model, outcome}` (`requeued`/`deadletter`/`dropped`). Runs in the existing GC loop; requires `lifecycle.gc.enabled`. Helm: `lifecycle.gc.maxReapAttempts`.
+- **HMAC-signed webhooks**: when `webhooks.signing_secret` is set, every outbound webhook carries an `X-Gatewai-Signature: t=<unix>,v1=<hex>` header, where `v1 = HMAC-SHA256(secret, "<t>.<body>")`. Consumers verify the HMAC and reject stale timestamps for replay protection. Empty secret = unsigned (unchanged behaviour). Helm: `webhooks.signingSecret`.
+- **Distinct `expired` status on job poll**: `GET /jobs/{service_type}/{id}` now returns **`410 Gone`** with `{"status":"expired"}` when a job whose retention TTL has passed is polled, instead of a generic `404`. A lightweight tombstone (`jobmeta:{id}`, kept `jobs.expired_marker_ttl`, default 7d) lets the gateway tell "existed but timed out / cleaned up" apart from "never existed" (still `404`). Config `jobs.expired_marker_ttl`; Helm `jobs.expiredMarkerTtl`.
+
+#### Changed
+
+- **Durable webhook delivery**: outbound job-completion webhooks now persist their retry state in Redis instead of an in-memory retry goroutine. `Send` makes one inline attempt; on failure the retry is stored in a ZSET (`webhook:retries`) plus a per-job task key and worked by a background loop with exponential backoff — so a gateway restart no longer silently drops pending retries. After `webhooks.max_retries` attempts (default 3) a webhook is **dead-lettered** to the `webhook:deadletter` Redis list. New metrics `gatewai_webhook_deliveries_total{result}` (`delivered`/`deadletter`) and `gatewai_webhook_retry_queue_depth`. New config block `webhooks` (`max_retries`, `retry_backoff`, `max_backoff`); Helm `webhooks.*`.
+- **Idempotency keys on async submission**: `POST /jobs/{service_type}` now honours an optional `Idempotency-Key` header. A repeat submission with the same key (scoped per consumer, retained `jobs.idempotency_ttl`, default 24h) returns the original job (`200` + `X-Idempotent-Replay: true`) instead of enqueuing a duplicate inference — preventing wasted GPU calls on client retries. A reused key whose job is no longer retrievable returns `409`. Metric `gatewai_idempotency_requests_total{service_type, outcome}` (`created`/`replayed`/`conflict`); Helm `jobs.idempotencyTtl`.
+- **Redis persistence enabled by default (Helm)**: the bundled `redis-ha` subchart now runs with **AOF** (`appendonly yes`, `appendfsync everysec`) + **RDB** snapshots on a PersistentVolume. Async state (job records, relay `pending`/`processing` queues, per-job leases, webhook retry queue) now survives a Redis pod restart or master failover instead of being lost — bounding data loss to ~1s. Values: `redis-ha.redis.config.appendonly`/`appendfsync`, `redis-ha.persistentVolume.enabled`.
+
 ### [v0.20.2] — 2026-07-31
 
 #### Added
@@ -704,6 +722,14 @@ New `lifecycle.gc` config block:
 ---
 
 ## Relay
+
+### [Unreleased]
+
+### [v0.12.0] — 2026-08-27
+
+#### Added
+
+- **Per-job processing lease**: on `Pop` the relay writes a short-lived lease key `relay:{model}:lease:{jobID}` and refreshes it every `lease_ttl/3` (config `lease_ttl`, default 60s) for the lifetime of the job; `Done` deletes it. If the pod dies mid-job the lease expires and the gateway reaper requeues the job (see Gateway). Enables crash recovery for jobs that previously stayed orphaned in the processing list forever.
 
 ### [v0.11.3] — 2026-07-28
 

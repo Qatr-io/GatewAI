@@ -90,12 +90,12 @@ func ApplyGatewayOverlay(raw json.RawMessage, svc config.ServiceConfig, allModel
 			delete(paths, path)
 			continue
 		}
-		overlayPathItem(item, spec, svc.Model, opNames)
+		overlayPathItem(item, spec, svc.Model, opNames, svc.Deprecated)
 	}
 
 	// Always inject /v1/models GET with model query param so the per-model swagger
 	// documents the gateway's proxy feature with the correct default model value.
-	paths["/v1/models"] = modelsPathItemForModel(svc.Model)
+	paths["/v1/models"] = modelsPathItemForModel(svc.Model, svc.Deprecated)
 
 	out, err := json.Marshal(spec)
 	if err != nil {
@@ -104,43 +104,45 @@ func ApplyGatewayOverlay(raw json.RawMessage, svc config.ServiceConfig, allModel
 	return out
 }
 
-func modelsPathItemForModel(model string) map[string]any {
-	return map[string]any{
-		"get": map[string]any{
-			"summary": "Get model information",
-			"description": "Proxied by the gateway to the underlying model backend. " +
-				"Returns the model's native information (context size, capabilities, etc.).",
-			"operationId": "getModelInfo_" + model,
-			"parameters": []any{
-				map[string]any{
-					"name":        "model",
-					"in":          "query",
-					"required":    false,
-					"description": "Model name. Defaults to this model.",
-					"schema": map[string]any{
-						"type":    "string",
-						"default": model,
-						"enum":    []string{model},
-					},
+func modelsPathItemForModel(model string, deprecated bool) map[string]any {
+	op := map[string]any{
+		"summary": "Get model information",
+		"description": "Proxied by the gateway to the underlying model backend. " +
+			"Returns the model's native information (context size, capabilities, etc.).",
+		"operationId": "getModelInfo_" + model,
+		"parameters": []any{
+			map[string]any{
+				"name":        "model",
+				"in":          "query",
+				"required":    false,
+				"description": "Model name. Defaults to this model.",
+				"schema": map[string]any{
+					"type":    "string",
+					"default": model,
+					"enum":    []string{model},
 				},
-			},
-			"responses": map[string]any{
-				"200": map[string]any{
-					"description": "Model information from the backend",
-					"content": map[string]any{
-						"application/json": map[string]any{
-							"schema": map[string]any{"type": "object"},
-						},
-					},
-				},
-				"404": map[string]any{"description": "Model not found or has no backend"},
-				"502": map[string]any{"description": "Backend unreachable"},
 			},
 		},
+		"responses": map[string]any{
+			"200": map[string]any{
+				"description": "Model information from the backend",
+				"content": map[string]any{
+					"application/json": map[string]any{
+						"schema": map[string]any{"type": "object"},
+					},
+				},
+			},
+			"404": map[string]any{"description": "Model not found or has no backend"},
+			"502": map[string]any{"description": "Backend unreachable"},
+		},
 	}
+	if deprecated {
+		op["deprecated"] = true
+	}
+	return map[string]any{"get": op}
 }
 
-func overlayPathItem(pathItem any, spec map[string]any, model string, opNames []string) {
+func overlayPathItem(pathItem any, spec map[string]any, model string, opNames []string, deprecated bool) {
 	item, _ := pathItem.(map[string]any)
 	for _, method := range []string{"post", "put", "patch"} {
 		op, _ := item[method].(map[string]any)
@@ -163,6 +165,9 @@ func overlayPathItem(pathItem any, spec map[string]any, model string, opNames []
 				"enum":        opNames,
 				"description": "Operation to perform — required when the model supports multiple operations",
 			}
+		}
+		if deprecated {
+			op["deprecated"] = true
 		}
 	}
 }

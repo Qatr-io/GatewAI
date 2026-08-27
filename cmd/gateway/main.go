@@ -119,7 +119,8 @@ func buildRouter(
 	usageHTTPHandler *usage.UsageHandler,
 	relayCompleteHandler *handler.RelayCompleteHandler,
 ) *chi.Mux {
-	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle)
+	jobHandler := handler.NewJobHandler(reg, s3Client, redisClient, cfg.Server.PriorityHeader, cfg.Server.ConsumerHeader, rl, cfg.Lifecycle).
+		WithIdempotencyTTL(cfg.Jobs.IdempotencyTTLDuration())
 	if limiter != nil {
 		jobHandler.WithConcurrentLimiter(limiter, cfg.Server.UserTypeHeader)
 		jobHandler.WithProcessingTimeLimiter(limiter)
@@ -172,6 +173,7 @@ func buildRouter(
 	if reg.HasSyncServices() {
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw())).
+			WithPriorityHeader(cfg.Server.PriorityHeader).
 			WithMaxBodyMB(cfg.Server.MaxBodyMB)
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
@@ -184,7 +186,7 @@ func buildRouter(
 			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
-		r.Get("/v1/models", handler.ListModels(reg))
+		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
 		// without needing a separate wildcard route.
@@ -258,6 +260,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer redisClient.Close()
+	redisClient.SetExpiredMarkerTTL(cfg.Jobs.ExpiredMarkerTTLDuration())
 
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
@@ -272,7 +275,7 @@ func main() {
 
 	manager := consumer.NewManager(redisClient)
 
-	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult)
+	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult, cfg.Webhooks)
 	if limiter != nil {
 		relayCompleteHandler.WithProcessingTimeLimiter(limiter)
 		relayCompleteHandler.WithTokenLimiter(limiter)
@@ -309,6 +312,7 @@ func main() {
 	if usageTracker != nil {
 		llmHandler.WithUsageTracker(usageTracker)
 	}
+	llmHandler.WithLangfuse(cfg.Otel.Enabled && cfg.Otel.Traces.Enabled && cfg.Otel.Traces.Langfuse.Enabled)
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -341,11 +345,14 @@ func main() {
 
 	// GC atomics — declared before reloadFn so the reload path can update them.
 	var (
-		gcEnabled      atomic.Bool
-		gcInterval     atomic.Int64 // nanoseconds
-		gcOrphanMinAge atomic.Int64 // nanoseconds
-		gcMaxAge       atomic.Int64 // nanoseconds
+		gcEnabled         atomic.Bool
+		gcInterval        atomic.Int64 // nanoseconds
+		gcOrphanMinAge    atomic.Int64 // nanoseconds
+		gcMaxAge          atomic.Int64 // nanoseconds
+		gcMaxReapAttempts atomic.Int64
+		gcRegistry        atomic.Pointer[service.Registry]
 	)
+	gcRegistry.Store(initialRegistry)
 
 	var reloadFn func() error
 	reloadFn = func() error {
@@ -361,6 +368,7 @@ func main() {
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
 		relayQueueDepth.UpdateRegistry(newReg)
+		gcRegistry.Store(newReg)
 		gcEnabled.Store(newCfg.Lifecycle.GC.Enabled)
 		if iv := newCfg.Lifecycle.GC.IntervalDuration(); iv > 0 {
 			gcInterval.Store(int64(iv))
@@ -369,6 +377,7 @@ func main() {
 			gcOrphanMinAge.Store(int64(oma))
 		}
 		gcMaxAge.Store(int64(newCfg.Redis.PendingMaxAgeDuration()))
+		gcMaxReapAttempts.Store(int64(newCfg.Lifecycle.GC.MaxReapAttemptsOrDefault()))
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
@@ -393,6 +402,7 @@ func main() {
 		if usageTracker != nil {
 			llmHandler.WithUsageTracker(usageTracker)
 		}
+		llmHandler.WithLangfuse(newCfg.Otel.Enabled && newCfg.Otel.Traces.Enabled && newCfg.Otel.Traces.Langfuse.Enabled)
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine
@@ -433,6 +443,7 @@ func main() {
 
 	manager.Start(ctx, initialRegistry)
 	go healthChecker.Start(ctx)
+	relayCompleteHandler.StartRetryLoop(ctx)
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.
@@ -448,6 +459,7 @@ func main() {
 	}
 	gcOrphanMinAge.Store(int64(oma))
 	gcMaxAge.Store(int64(cfg.Redis.PendingMaxAgeDuration()))
+	gcMaxReapAttempts.Store(int64(cfg.Lifecycle.GC.MaxReapAttemptsOrDefault()))
 
 	go func() {
 		ticker := time.NewTicker(time.Minute)
@@ -469,9 +481,10 @@ func main() {
 					continue
 				}
 				lastRun = time.Now()
-				runGC(ctx, redisClient, s3Client,
+				runGC(ctx, redisClient, s3Client, gcRegistry.Load(),
 					time.Duration(gcMaxAge.Load()),
 					time.Duration(gcOrphanMinAge.Load()),
+					int(gcMaxReapAttempts.Load()),
 				)
 			}
 		}

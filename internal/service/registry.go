@@ -35,6 +35,9 @@ type Def struct {
 	// (i.e. AcceptedExts is explicitly set in the config).
 	SupportsAsync     bool
 	MaxConcurrentSync int // max simultaneous sync calls; 0 = unlimited
+	// PriorityReservedSync reserves this many MaxConcurrentSync slots exclusively
+	// for requests carrying server.priority_header. 0 = no reservation.
+	PriorityReservedSync int
 
 	// Sync / OpenAI-compatible mode (optional).
 	InferenceURL     string              // primary backend URL (derived from Backends; kept for compatibility)
@@ -47,6 +50,55 @@ type Def struct {
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
 	HealthCheck      config.ServiceHealthConfig
+	Deprecated       bool                    // informational: surfaced in /v1/models and OpenAPI specs
+	Visibility       config.VisibilityConfig // audience gate; empty = public
+}
+
+// BackendModelNames returns the distinct real model names this alias forwards to,
+// in backend order. Uses per-backend model overrides when set, else the
+// service-level backend_model. Empty when the alias is forwarded to the backend
+// unchanged (no rewrite configured).
+func (d *Def) BackendModelNames() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, b := range d.Backends {
+		if b.Model != "" && !seen[b.Model] {
+			seen[b.Model] = true
+			out = append(out, b.Model)
+		}
+	}
+	if len(out) == 0 && d.BackendModel != "" {
+		out = []string{d.BackendModel}
+	}
+	return out
+}
+
+// IsRestricted reports whether the model is gated to a specific audience.
+func (d *Def) IsRestricted() bool {
+	return len(d.Visibility.UserTypes) > 0 || len(d.Visibility.Groups) > 0
+}
+
+// VisibleTo reports whether a caller with the given user type and groups may see
+// and use this model. Public models (no visibility set) are always visible.
+func (d *Def) VisibleTo(userType string, groups []string) bool {
+	if !d.IsRestricted() {
+		return true
+	}
+	if userType != "" {
+		for _, ut := range d.Visibility.UserTypes {
+			if ut == userType {
+				return true
+			}
+		}
+	}
+	for _, g := range d.Visibility.Groups {
+		for _, cg := range groups {
+			if g == cg {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // OperationPath returns the first path for the given operation name.
@@ -206,22 +258,25 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			primaryURL = backends[0].URL
 		}
 		def := &Def{
-			Type:              cfg.Type,
-			Model:             cfg.Model,
-			AcceptedExts:      exts,
-			MaxFileSizeMB:     cfg.MaxFileSizeMB,
-			SupportsAsync:     len(cfg.AcceptedExts) > 0,
-			MaxConcurrentSync: cfg.MaxConcurrentSync,
-			InferenceURL:      primaryURL,
-			Backends:          backends,
-			Operations:        cfg.Operations,
-			InferenceHeaders:  cfg.InferenceHeaders,
-			Provider:          cfg.Provider,
-			BackendModel:      cfg.BackendModel,
-			ResponseCacheTTL:  time.Duration(cfg.ResponseCacheTTL) * time.Second,
-			Retries:           cfg.Retries,
-			Guardrails:        resolveGuardrails(cfg.Guardrails),
-			HealthCheck:       cfg.Health,
+			Type:                 cfg.Type,
+			Model:                cfg.Model,
+			AcceptedExts:         exts,
+			MaxFileSizeMB:        cfg.MaxFileSizeMB,
+			SupportsAsync:        len(cfg.AcceptedExts) > 0,
+			MaxConcurrentSync:    cfg.MaxConcurrentSync,
+			PriorityReservedSync: cfg.PriorityReservedSync,
+			InferenceURL:         primaryURL,
+			Backends:             backends,
+			Operations:           cfg.Operations,
+			InferenceHeaders:     cfg.InferenceHeaders,
+			Provider:             cfg.Provider,
+			BackendModel:         cfg.BackendModel,
+			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
+			Retries:              cfg.Retries,
+			Guardrails:           resolveGuardrails(cfg.Guardrails),
+			HealthCheck:          cfg.Health,
+			Deprecated:           cfg.Deprecated,
+			Visibility:           cfg.Visibility,
 		}
 
 		if r.byTypeModel[cfg.Type] == nil {

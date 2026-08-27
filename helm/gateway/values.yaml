@@ -2,7 +2,7 @@ replicaCount: 1
 
 image:
   repository: ghcr.io/qatr-io/gatewai/gateway
-  tag: "v0.20.2"
+  tag: "v0.21.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets: []
@@ -165,6 +165,19 @@ encryption:
 #   acceptedExts / maxFileSizeMB
 #   En async, spécifier l'opération via le champ de formulaire "operation"
 #   si le modèle en propose plusieurs.
+#
+#   deprecated — true marque ce modèle comme déprécié : visible dans
+#                GET /v1/models (capabilities.deprecated) et comme
+#                `deprecated: true` dans le spec OpenAPI (par-modèle dans le
+#                swagger dédié ; sur un endpoint sync partagé uniquement si
+#                tous les modèles de ce chemin le sont). Purement informatif,
+#                n'affecte ni le routage ni la disponibilité.
+#
+#   backendModel — vrai nom de modèle envoyé au backend (réécrit l'alias public).
+#                  Exposé comme `backend_model` dans GET /v1/models.
+#   visibility  — restreint le modèle à une audience (userTypes / groups) : masqué
+#                 de GET /v1/models et 404 sur /v1/* + /jobs hors audience.
+#                 Voir l'exemple commenté plus bas.
 services:
   - type: audio
     # Sync / OpenAI-compatible
@@ -253,6 +266,33 @@ services:
   #     - url: "http://backend-fallback.svc"
   #       weight: 0    # last resort
 
+  # ── Alias de modèle + visibilité : beta-test via la même API ─────────────
+  # backendModel réécrit le nom du modèle avant transfert : les clients gardent
+  # un alias public stable pendant que le vrai modèle change derrière. Il est
+  # exposé (`backend_model`) dans GET /v1/models pour que les développeurs voient
+  # ce qui tourne derrière chaque alias.
+  #
+  # visibility restreint un modèle à une audience. Un modèle restreint est masqué
+  # de GET /v1/models — et renvoie 404 sur /v1/* et /jobs — pour les appelants
+  # hors audience (un modèle caché est indistinguable d'un modèle inexistant).
+  # Permet de beta-tester un nouveau modèle via la même API avant ouverture.
+  #   userTypes — comparé à server.userTypeHeader (ex : sa, user, beta)
+  #   groups    — comparé aux groupes du Principal authentifié (auth requise)
+  # Public (sans bloc visibility) = visible par tous. Se combine avec `policies` :
+  # l'appelant doit passer À LA FOIS la visibilité et une règle d'autorisation.
+  #
+  # - type: llm
+  #   model: "next-gen"                 # alias public stable
+  #   provider: passthrough
+  #   backendModel: "llama-3.3-70b"     # vrai modèle exposé dans GET /v1/models
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  #   inferenceURL: "http://vllm.svc"
+  #   visibility:                       # omettre ce bloc = modèle public
+  #     userTypes: ["beta"]             # seuls les appelants X-User-Type: beta le voient
+  #     groups: ["ai-team"]             # OU les membres du groupe ai-team
+
   # Exemple de service sync-direct uniquement (sans Kafka).
   # Les requêtes POST /v1/* sont proxifiées directement vers inferenceURL.
   # POST /jobs/{service_type} retourne 405.
@@ -281,7 +321,20 @@ redis-ha:
     replicas: 2
   redis:
     masterGroupName: "mymaster"
+    # Durability for in-flight async state (job records, relay pending/processing
+    # queues, per-job leases, and the webhook retry queue). Without persistence a
+    # Redis master crash or failover can lose recently-enqueued jobs and their
+    # lease/webhook state. AOF (append-only, fsync every second) bounds loss to
+    # ~1s; RDB snapshots give faster restarts. Merged over the subchart defaults.
+    config:
+      appendonly: "yes"
+      appendfsync: "everysec"
+      save: "900 1 300 10 60 10000"
   replicas: 3
+  # AOF/RDB files must live on a PersistentVolume to survive pod restarts.
+  persistentVolume:
+    enabled: true
+    size: 10Gi
 
 # ── Lifecycle — job record and S3 result retention ───────────────────────────
 lifecycle:
@@ -302,6 +355,21 @@ lifecycle:
     interval: "15m"
     # orphanMinAge: S3 objects younger than this are never treated as orphans. Default "5m".
     orphanMinAge: "5m"
+    # maxReapAttempts: times the reaper requeues a job abandoned in the processing
+    # list by a dead relay pod (expired lease) before dead-lettering it to
+    # relay:{model}:deadletter and marking it failed. Default 3.
+    maxReapAttempts: 3
+
+# ── Async jobs ───────────────────────────────────────────────────────────────
+jobs:
+  # How long an "Idempotency-Key" → job mapping is kept. A repeat POST /jobs/{type}
+  # with the same key (per consumer) returns the original job instead of starting
+  # a duplicate inference. Default "24h".
+  idempotencyTtl: "24h"
+  # How long a "this job existed" tombstone is kept. While it lives, polling a job
+  # whose record TTL passed returns 410 (status "expired") instead of 404. Should
+  # exceed the job record TTL. Default "168h" (7 days).
+  expiredMarkerTtl: "168h"
 
 metricsConfig:
   # Nombre de top consumers à exposer dans Prometheus (Redis sorted set, refresh 60s).
@@ -310,6 +378,20 @@ metricsConfig:
   # Labels Prometheus directs par consumer. Uniquement pour < 50 consumers connus.
   # Pour des consumers dynamiques, utiliser topConsumers à la place.
   consumerLabels: false
+
+# ── Webhooks — durable outbound delivery ─────────────────────────────────────
+# One inline attempt on completion; failures are persisted to a Redis retry
+# queue (survives gateway restarts) and retried with exponential backoff. After
+# maxRetries attempts a webhook is dead-lettered to the "webhook:deadletter"
+# list (metric gatewai_webhook_deliveries_total{result="deadletter"}).
+webhooks:
+  maxRetries: 3        # total attempts (incl. the inline one) before dead-letter
+  retryBackoff: "30s"  # base backoff; doubles each retry
+  maxBackoff: "10m"    # backoff cap
+  # signingSecret: HMAC secret for the X-Gatewai-Signature header (empty = unsigned).
+  # Prefer an env reference resolved from a Secret (e.g. "${WEBHOOK_SIGNING_SECRET}"
+  # injected via extraEnvVars) over a plaintext value here.
+  signingSecret: ""
 
 # ── Monitoring (Prometheus Operator) ─────────────────────────────────────
 metrics:
@@ -421,6 +503,12 @@ opentelemetry:
     # ignorePaths: path prefixes excluded from tracing (prefix-based).
     # Defaults: ["/health", "/metrics", "/docs", "/openapi.yaml"]
     ignorePaths: []
+    # langfuse.enabled: attach prompt/completion content and gen_ai.usage.*
+    # to LLM request spans, for a Langfuse-consuming pipeline downstream.
+    # Independent of traces.enabled — lets you keep generic tracing on
+    # without also forwarding prompt content to Langfuse.
+    langfuse:
+      enabled: false
   metrics:
     enabled: false
     interval: "60s"

@@ -126,10 +126,25 @@ data:
         enabled: {{ .Values.lifecycle.gc.enabled | default false }}
         interval: "{{ .Values.lifecycle.gc.interval | default "15m" }}"
         orphan_min_age: "{{ .Values.lifecycle.gc.orphanMinAge | default "5m" }}"
+        {{- if .Values.lifecycle.gc.maxReapAttempts }}
+        max_reap_attempts: {{ .Values.lifecycle.gc.maxReapAttempts | int64 }}
+        {{- end }}
+
+    jobs:
+      idempotency_ttl: "{{ .Values.jobs.idempotencyTtl | default "24h" }}"
+      expired_marker_ttl: "{{ .Values.jobs.expiredMarkerTtl | default "168h" }}"
 
     metrics:
       top_consumers: {{ .Values.metricsConfig.topConsumers | default 0 }}
       consumer_labels: {{ .Values.metricsConfig.consumerLabels | default false }}
+
+    webhooks:
+      max_retries: {{ .Values.webhooks.maxRetries | default 3 | int64 }}
+      retry_backoff: "{{ .Values.webhooks.retryBackoff | default "30s" }}"
+      max_backoff: "{{ .Values.webhooks.maxBackoff | default "10m" }}"
+      {{- if .Values.webhooks.signingSecret }}
+      signing_secret: "{{ .Values.webhooks.signingSecret }}"
+      {{- end }}
 
     {{- if .Values.rateLimits }}
     rate_limits:
@@ -174,6 +189,8 @@ data:
           - {{ . | quote }}
           {{- end }}
         {{- end }}
+        langfuse:
+          enabled: {{ .Values.opentelemetry.traces.langfuse.enabled | default false }}
       metrics:
         enabled: {{ .Values.opentelemetry.metrics.enabled | default false }}
         interval: {{ .Values.opentelemetry.metrics.interval | default "60s" | quote }}
@@ -189,6 +206,9 @@ data:
         {{- end }}
         {{- if .default }}
         default:           true
+        {{- end }}
+        {{- if .deprecated }}
+        deprecated:        true
         {{- end }}
         {{- if .operations }}
         operations:
@@ -221,6 +241,15 @@ data:
         {{- if .backendModel }}
         backend_model:     {{ .backendModel | quote }}
         {{- end }}
+        {{- if .visibility }}
+        visibility:
+          {{- if .visibility.userTypes }}
+          user_types: [{{ range $i, $ut := .visibility.userTypes }}{{ if $i }}, {{ end }}{{ $ut | quote }}{{ end }}]
+          {{- end }}
+          {{- if .visibility.groups }}
+          groups: [{{ range $i, $g := .visibility.groups }}{{ if $i }}, {{ end }}{{ $g | quote }}{{ end }}]
+          {{- end }}
+        {{- end }}
         {{- if .responseCacheTTL }}
         response_cache_ttl: {{ .responseCacheTTL }}
         {{- end }}
@@ -229,6 +258,9 @@ data:
         {{- end }}
         {{- if .maxConcurrentSync }}
         max_concurrent_sync: {{ .maxConcurrentSync }}
+        {{- end }}
+        {{- if .priorityReservedSync }}
+        priority_reserved_sync: {{ .priorityReservedSync }}
         {{- end }}
         {{- if .guardrails }}
         guardrails:

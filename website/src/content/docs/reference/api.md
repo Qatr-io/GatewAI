@@ -23,13 +23,22 @@ Accepts a multipart form. Returns `202 Accepted` with a job ID.
 | `file` | yes | Input file |
 | `model` | no | Target model. Auto-selected if only one is registered for the type |
 | `operation` | no | Operation name (e.g. `transcription`). Required if the model has multiple operations |
-| `callback_url` | no | Webhook URL called on completion |
+| `callback_url` | no | Webhook URL called on completion (see [Webhooks](#webhooks)) |
+
+**Headers**
+
+| Header | Description |
+|--------|-------------|
+| `Idempotency-Key` | Optional. A repeat submission with the same key (scoped per consumer) returns the original job instead of starting a duplicate inference. See [Idempotency](../configure/configuration#idempotency). |
 
 **Response**
 
 ```json
-{ "job_id": "01HXYZ..." }
+{ "job_id": "01HXYZ...", "service_type": "audio", "model": "whisper", "status": "pending" }
 ```
+
+- `200 OK` + `X-Idempotent-Replay: true` — a job with this `Idempotency-Key` already exists; the original is returned (no new inference).
+- `409 Conflict` — the `Idempotency-Key` was reused but its job is no longer available; retry with a new key.
 
 ---
 
@@ -52,6 +61,12 @@ Returns the job record. When status is `completed`, the `result` field contains 
 | `result` | Inference result (only when `completed`) |
 | `error` | Error message (only when `failed`) |
 | `created_at` | ISO 8601 timestamp |
+
+**Status codes**
+
+- `200 OK` — the job record (any non-terminal or terminal status above).
+- `410 Gone` + `{"status":"expired"}` — the job **existed** but its retention TTL has passed and the record is gone. Distinguishes "timed out / cleaned up" from "never existed".
+- `404 Not Found` — no job with this ID was ever submitted (or ownership check failed).
 
 If `server.consumer_header` is configured and the header is present, ownership is enforced: a consumer can only access their own jobs.
 
@@ -84,6 +99,34 @@ Lists the caller's jobs across all service types. Requires `server.consumer_head
 
 ---
 
+## Webhooks
+
+If a job was submitted with `callback_url`, the gateway `POST`s a JSON notification there when the job reaches a terminal state. Delivery is durable — one inline attempt, then Redis-backed retries with exponential backoff, then a dead-letter list. See [Configuration — Webhooks](../configure/configuration#webhooks) for `max_retries` / `retry_backoff` / `max_backoff` / `signing_secret`.
+
+**Request headers**
+
+| Header | Description |
+|--------|-------------|
+| `X-Job-ID` | The job ID |
+| `X-Gatewai-Signature` | Present when `webhooks.signing_secret` is set: `t=<unix>,v1=<hex>` where `v1 = HMAC-SHA256(secret, "<t>.<raw_body>")`. Verify it and reject stale `t` for replay protection. |
+
+**Body**
+
+```json
+{
+  "job_id": "01HXYZ...",
+  "service_type": "audio",
+  "status": "completed",
+  "result": { },
+  "error": "",
+  "completed_at": "2026-08-25T10:00:00Z"
+}
+```
+
+A `2xx`–`4xx` response is treated as delivered; a `5xx` or a network error is retried. After `webhooks.max_retries` attempts the delivery is dead-lettered to the `webhook:deadletter` Redis list.
+
+---
+
 ## Sync proxy
 
 ### OpenAI-compatible proxy
@@ -102,7 +145,30 @@ Proxies the request to the configured `inference_url`. Handles both JSON and mul
 GET /v1/models
 ```
 
-Returns an OpenAI-compatible model list for all registered services with a `model` field set.
+Returns an OpenAI-compatible model list for all registered services with a `model` field set. Each entry carries GatewAI capability metadata and, when the alias rewrites the model name, a `backend_model` field exposing the real model that runs behind it:
+
+```json
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "next-gen",
+      "object": "model",
+      "owned_by": "gatewai",
+      "service_type": "llm",
+      "provider": "passthrough",
+      "backend_model": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "capabilities": { "supports_sync": true, "supports_streaming": true }
+    }
+  ]
+}
+```
+
+`backend_model` is omitted when the alias is forwarded unchanged. If the backends behind one alias serve distinct real models, a `backend_models` array lists all of them (the first matches `backend_model`).
+
+**Backend passthrough** — `GET /v1/models?model=<name>` proxies to that model's backend and returns its native model info (context size, etc.).
+
+**Visibility** — models gated via `services[].visibility` are filtered by caller audience: a restricted model is omitted from the list and returns `404` on `?model=` for callers outside its audience, so a hidden model is indistinguishable from a non-existent one. See [Service registry → Model visibility](../configure/service-registry.md#model-visibility-visibility).
 
 ---
 

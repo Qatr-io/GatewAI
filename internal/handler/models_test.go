@@ -15,7 +15,7 @@ func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName stri
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?model="+modelName, nil)
 	w := httptest.NewRecorder()
-	handler.ListModels(reg)(w, req)
+	handler.ListModels(reg, "")(w, req)
 	return w
 }
 
@@ -23,18 +23,21 @@ func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName stri
 type modelsResponse struct {
 	Object string `json:"object"`
 	Data   []struct {
-		ID          string `json:"id"`
-		Object      string `json:"object"`
-		OwnedBy     string `json:"owned_by"`
-		ServiceType string `json:"service_type"`
-		Provider    string `json:"provider,omitempty"`
-		Capabilities struct {
-			SupportsAsync    bool     `json:"supports_async"`
-			SupportsSync     bool     `json:"supports_sync"`
+		ID            string   `json:"id"`
+		Object        string   `json:"object"`
+		OwnedBy       string   `json:"owned_by"`
+		ServiceType   string   `json:"service_type"`
+		Provider      string   `json:"provider,omitempty"`
+		BackendModel  string   `json:"backend_model,omitempty"`
+		BackendModels []string `json:"backend_models,omitempty"`
+		Capabilities  struct {
+			SupportsAsync     bool     `json:"supports_async"`
+			SupportsSync      bool     `json:"supports_sync"`
 			SupportsStreaming bool     `json:"supports_streaming"`
-			AcceptedFormats  []string `json:"accepted_formats,omitempty"`
-			MaxFileSizeMB    int64    `json:"max_file_size_mb,omitempty"`
-			Operations       []string `json:"operations,omitempty"`
+			AcceptedFormats   []string `json:"accepted_formats,omitempty"`
+			MaxFileSizeMB     int64    `json:"max_file_size_mb,omitempty"`
+			Operations        []string `json:"operations,omitempty"`
+			Deprecated        bool     `json:"deprecated,omitempty"`
 		} `json:"capabilities"`
 	} `json:"data"`
 }
@@ -43,7 +46,7 @@ func callListModels(t *testing.T, reg *service.Registry) modelsResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
-	handler.ListModels(reg)(w, req)
+	handler.ListModels(reg, "")(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -111,6 +114,37 @@ func TestListModels_Capabilities_AsyncOnly(t *testing.T) {
 	}
 }
 
+func TestListModels_Capabilities_Deprecated(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:       "transcription",
+			Model:      "whisper-large-v2",
+			Deprecated: true,
+		},
+		{
+			Type:  "transcription",
+			Model: "whisper-large-v3",
+		},
+	})
+
+	resp := callListModels(t, reg)
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected 2 models, got %d", len(resp.Data))
+	}
+	for _, m := range resp.Data {
+		switch m.ID {
+		case "whisper-large-v2":
+			if !m.Capabilities.Deprecated {
+				t.Error("expected deprecated=true for whisper-large-v2")
+			}
+		case "whisper-large-v3":
+			if m.Capabilities.Deprecated {
+				t.Error("expected deprecated=false for whisper-large-v3")
+			}
+		}
+	}
+}
+
 func TestListModels_Capabilities_SyncLLM(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{{
 		Type:     "llm",
@@ -145,24 +179,24 @@ func TestListModels_Capabilities_SyncLLM(t *testing.T) {
 func TestListModels_MultipleModels_SortedByID(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{
 		{
-			Type:     "llm",
-			Model:    "zephyr-7b",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "zephyr-7b",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b1.example.com",
 		},
 		{
-			Type:     "llm",
-			Model:    "gpt-4o",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "gpt-4o",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b2.example.com",
 		},
 		{
-			Type:     "llm",
-			Model:    "mistral-7b",
-			Provider: "openai",
-			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Type:         "llm",
+			Model:        "mistral-7b",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
 			InferenceURL: "http://b3.example.com",
 		},
 	})
@@ -183,9 +217,9 @@ func TestListModels_MultipleModels_SortedByID(t *testing.T) {
 
 func TestListModels_Capabilities_MultiBackend(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{{
-		Type:     "llm",
-		Model:    "llama3",
-		Provider: "ollama",
+		Type:       "llm",
+		Model:      "llama3",
+		Provider:   "ollama",
 		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
 		Backends: []config.BackendConfig{
 			{URL: "http://b1.example.com", Weight: 100},
@@ -274,5 +308,164 @@ func TestListModels_EmptyRegistry_ReturnsEmptyList(t *testing.T) {
 	resp := callListModels(t, reg)
 	if resp.Object != "list" {
 		t.Errorf("expected object='list', got %q", resp.Object)
+	}
+}
+
+// ── Backend model exposure (feature 1) ─────────────────────────────────────────
+
+func TestListModels_BackendModel_ServiceLevel(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:         "llm",
+		Model:        "gpt-4o",
+		Provider:     "passthrough",
+		BackendModel: "meta-llama/Meta-Llama-3-8B-Instruct",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: "http://b.example.com",
+	}})
+
+	resp := callListModels(t, reg)
+	m := resp.Data[0]
+	if m.BackendModel != "meta-llama/Meta-Llama-3-8B-Instruct" {
+		t.Errorf("expected backend_model exposed, got %q", m.BackendModel)
+	}
+	if len(m.BackendModels) != 0 {
+		t.Errorf("expected no backend_models for single backend model, got %v", m.BackendModels)
+	}
+}
+
+func TestListModels_BackendModel_DistinctPerBackend(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:       "llm",
+		Model:      "chat",
+		Provider:   "passthrough",
+		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+		Backends: []config.BackendConfig{
+			{URL: "http://b1.example.com", Weight: 90, Model: "llama-3-8b"},
+			{URL: "http://b2.example.com", Weight: 10, Model: "llama-3-70b"},
+		},
+	}})
+
+	resp := callListModels(t, reg)
+	m := resp.Data[0]
+	if m.BackendModel != "llama-3-8b" {
+		t.Errorf("expected primary backend_model='llama-3-8b', got %q", m.BackendModel)
+	}
+	if len(m.BackendModels) != 2 || m.BackendModels[0] != "llama-3-8b" || m.BackendModels[1] != "llama-3-70b" {
+		t.Errorf("expected both backend models listed, got %v", m.BackendModels)
+	}
+}
+
+func TestListModels_BackendModel_OmittedWhenUnset(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:         "llm",
+		Model:        "gpt-4o",
+		Provider:     "openai",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: "http://b.example.com",
+	}})
+
+	resp := callListModels(t, reg)
+	m := resp.Data[0]
+	if m.BackendModel != "" {
+		t.Errorf("expected no backend_model when no rewrite configured, got %q", m.BackendModel)
+	}
+}
+
+// ── Model visibility gating (feature 2) ────────────────────────────────────────
+
+// listModelsWithHeader issues GET /v1/models with the given user_type header value
+// and returns the decoded response. userTypeHeader configures which header the
+// handler reads; pass "" to disable header-based audience resolution.
+func listModelsWithHeader(t *testing.T, reg *service.Registry, userTypeHeader, headerName, headerValue string) modelsResponse {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	if headerName != "" {
+		req.Header.Set(headerName, headerValue)
+	}
+	w := httptest.NewRecorder()
+	handler.ListModels(reg, userTypeHeader)(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp modelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return resp
+}
+
+func TestListModels_Visibility_HidesRestrictedFromPublic(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:         "llm",
+			Model:        "gpt-4o",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+			InferenceURL: "http://b1.example.com",
+		},
+		{
+			Type:         "llm",
+			Model:        "gpt-5-beta",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+			InferenceURL: "http://b2.example.com",
+			Visibility:   config.VisibilityConfig{UserTypes: []string{"beta"}},
+		},
+	})
+
+	// No identity → restricted model hidden.
+	resp := listModelsWithHeader(t, reg, "X-User-Type", "", "")
+	if len(resp.Data) != 1 || resp.Data[0].ID != "gpt-4o" {
+		t.Fatalf("expected only public model visible, got %+v", resp.Data)
+	}
+}
+
+func TestListModels_Visibility_ShowsToMatchingUserType(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type:         "llm",
+			Model:        "gpt-4o",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+			InferenceURL: "http://b1.example.com",
+		},
+		{
+			Type:         "llm",
+			Model:        "gpt-5-beta",
+			Provider:     "openai",
+			Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+			InferenceURL: "http://b2.example.com",
+			Visibility:   config.VisibilityConfig{UserTypes: []string{"beta"}},
+		},
+	})
+
+	resp := listModelsWithHeader(t, reg, "X-User-Type", "X-User-Type", "beta")
+	if len(resp.Data) != 2 {
+		t.Fatalf("expected both models visible to beta user, got %d: %+v", len(resp.Data), resp.Data)
+	}
+}
+
+func TestListModels_ProxyModel_RestrictedHiddenAs404(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"object":"list"}`))
+	}))
+	defer backend.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:         "llm",
+		Model:        "gpt-5-beta",
+		Provider:     "openai",
+		InferenceURL: backend.URL + "/v1/chat/completions",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		Visibility:   config.VisibilityConfig{UserTypes: []string{"beta"}},
+	}})
+
+	// Caller without the beta user type must get 404, not a proxied response.
+	req := httptest.NewRequest(http.MethodGet, "/v1/models?model=gpt-5-beta", nil)
+	w := httptest.NewRecorder()
+	handler.ListModels(reg, "X-User-Type")(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404 for hidden model, got %d: %s", w.Code, w.Body.String())
 	}
 }
