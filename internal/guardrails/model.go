@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"time"
-
-	"gatewai/gateway/internal/metrics"
 )
 
 // defaultModelTimeout bounds a model-detector call when the config leaves it
@@ -95,10 +93,10 @@ func (d *ModelDetector) Scan(ctx context.Context, texts []string) ([]Finding, er
 
 	start := time.Now()
 	raw, err := d.call(ctx, texts)
-	metrics.GuardrailsModelLatency.WithLabelValues(d.Name()).Observe(time.Since(start).Seconds())
+	observer.ObserveModelLatency(d.Name(), time.Since(start).Seconds())
 
 	if err != nil {
-		metrics.GuardrailsModelErrorsTotal.WithLabelValues(d.Name(), classifyErr(err)).Inc()
+		observer.IncModelError(d.Name(), classifyErr(err))
 		if d.cfg.OnError == FailClosed {
 			return nil, err
 		}
