@@ -70,7 +70,7 @@ Images:
 - Gateway:    `ghcr.io/qatr-io/gatewai/gateway:vX.Y.Z`
 - Relay: `ghcr.io/qatr-io/gatewai/relay:vX.Y.Z`
 
-Current tags: gateway `v0.16.0`, relay `v0.7.2`.
+Current tags: gateway `v0.21.0`, relay `v0.12.0`.
 
 ## Architecture
 
