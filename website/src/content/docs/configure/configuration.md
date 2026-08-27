@@ -14,10 +14,19 @@ server:
   read_timeout: 120s
   write_timeout: 0s        # 0 = no timeout (recommended for long sync jobs)
   idle_timeout: 120s
+  max_body_mb: 1           # cap on the sync JSON body (POST /v1/*); 0 or absent = 1 MiB
   consumer_header: ""      # header name for consumer identification (e.g. X-Consumer-Username)
   priority_header: ""      # header name for priority routing (e.g. X-Priority)
   user_type_header: ""     # header name for user type (e.g. X-User-Type) — rate limiting + LLM metrics
 ```
+
+### `max_body_mb`
+
+Caps the request body (in MiB) on the **sync JSON path** (`POST /v1/*`), enforced with `http.MaxBytesReader` — oversized requests get a clean **`413 Request Entity Too Large`** instead of being silently truncated. `0` or absent means the **1 MiB default**.
+
+Raise it for **vision models** that receive base64-embedded images: base64 inflates binary by ~33%, so a 30 MB image needs a cap around `45`. Helm exposes this as `server.maxBodyMB`.
+
+This is independent of `services[].max_file_size_mb`, which bounds only the **multipart upload** path (async `POST /jobs/{service_type}`), not the sync JSON body.
 
 ### `consumer_header`
 
