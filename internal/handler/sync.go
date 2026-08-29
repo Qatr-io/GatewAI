@@ -396,6 +396,22 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 
 			// ── Model-backed detectors (semantic; sync can block, async shadows) ──
 			if len(g.Models) > 0 {
+				// sync NER redaction (mutates the body in place, sequentially).
+				cleaned, redResults := guardrails.EvaluateRedact(r.Context(), g.Models, raw)
+				for _, rr := range redResults {
+					if rr.Err != nil {
+						slog.WarnContext(r.Context(), "llm request blocked by guardrail model (redactor unavailable)",
+							"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "error", rr.Err)
+						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "blocked").Inc()
+						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: redaction unavailable")
+						return
+					}
+					slog.WarnContext(r.Context(), "llm request redacted by guardrail model",
+						"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "violations", rr.Categories)
+					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "redacted").Inc()
+				}
+				raw = cleaned
+
 				texts := guardrails.MessageTexts(raw)
 
 				// async shadow: observe only, detached from the request lifetime.

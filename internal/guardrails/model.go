@@ -28,9 +28,16 @@ const (
 // ModelConfig configures a single model-backed detector. mode/action are
 // pipeline-level concerns applied by the caller, not the detector — the detector
 // only detects.
+// Detector kinds.
+const (
+	KindClassifier = "classifier" // returns a score → block/flag
+	KindNER        = "ner"        // returns spans/redacted text → redact
+)
+
 type ModelConfig struct {
 	Name       string        // detector name (metrics/logs)
 	Endpoint   string        // HTTP endpoint the guardrail server exposes
+	Kind       string        // KindClassifier (default) | KindNER
 	Categories []string      // categories to request/keep; empty = all returned
 	Threshold  float64       // minimum score to keep a finding
 	Timeout    time.Duration // per-call timeout (default 120ms)
@@ -55,7 +62,11 @@ type modelResponse struct {
 	Findings []struct {
 		Category string  `json:"category"`
 		Score    float64 `json:"score"`
+		Text     string  `json:"text,omitempty"` // matched substring (NER), for redaction/logging
 	} `json:"findings"`
+	// RedactedTexts (NER detectors) holds each input text with its entities
+	// masked, aligned by index with the request's texts. Empty for classifiers.
+	RedactedTexts []string `json:"redacted_texts,omitempty"`
 }
 
 // badResponseError marks a non-2xx status or unparseable body, so failures can
@@ -144,12 +155,47 @@ func estimateTokens(texts []string) int {
 	return chars / 4
 }
 
-// Redact implements Detector. A classifier model produces no spans, so it cannot
-// rewrite the body — it returns the body unchanged alongside its findings.
-// Span-based redaction (NER models) is a later slice.
+// Redact implements Detector.
+//
+// A classifier detector produces no spans, so it returns the body unchanged
+// alongside its findings (block/flag only). A NER detector returns each input
+// text with its entities masked (`redacted_texts`); Redact swaps the original
+// text for the masked one in the body, so PII is removed in place. Fail-open /
+// fail-closed and the latency bound apply as in Scan.
 func (d *ModelDetector) Redact(ctx context.Context, body []byte) ([]byte, []Finding, error) {
-	f, err := d.Scan(ctx, MessageTexts(body))
-	return body, f, err
+	texts := MessageTexts(body)
+	if d.cfg.Kind != KindNER {
+		f, err := d.Scan(ctx, texts)
+		return body, f, err
+	}
+	if len(texts) == 0 {
+		return body, nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, d.cfg.Timeout)
+	defer cancel()
+	start := time.Now()
+	raw, err := d.call(ctx, texts)
+	observer.ObserveModelLatency(d.Name(), time.Since(start).Seconds())
+	if err != nil {
+		observer.IncModelError(d.Name(), classifyErr(err))
+		if d.cfg.OnError == FailClosed {
+			return body, nil, err
+		}
+		return body, nil, nil // fail open: forward unredacted
+	}
+
+	findings := d.filter(raw)
+	out := body
+	for i, orig := range texts {
+		if i >= len(raw.RedactedTexts) {
+			break
+		}
+		if masked := raw.RedactedTexts[i]; masked != "" && masked != orig {
+			out = bytes.ReplaceAll(out, []byte(orig), []byte(masked))
+		}
+	}
+	return out, findings, nil
 }
 
 // call performs the HTTP request and decodes the response.
@@ -198,7 +244,7 @@ func (d *ModelDetector) filter(mr *modelResponse) []Finding {
 		if len(allow) > 0 && !allow[f.Category] {
 			continue
 		}
-		out = append(out, Finding{Category: f.Category, Detector: d.Name(), Score: f.Score})
+		out = append(out, Finding{Category: f.Category, Detector: d.Name(), Score: f.Score, Text: f.Text})
 	}
 	return out
 }

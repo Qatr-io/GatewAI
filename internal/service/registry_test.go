@@ -616,3 +616,33 @@ func TestResolveGuardrailModels(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveGuardrailModels_NER(t *testing.T) {
+	cfg := config.ServiceConfig{
+		Type: "llm", Model: "chat", Provider: "passthrough",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: "http://backend",
+		Guardrails: config.GuardrailsConfig{
+			Models: []config.GuardrailModelConfig{
+				{Name: "pii", Endpoint: "http://pii", Kind: "ner", Mode: "sync"},                               // default action → redact
+				{Name: "pii-async", Endpoint: "http://p2", Kind: "ner", Mode: "async"},                         // async → flag
+				{Name: "clf-redact", Endpoint: "http://c", Kind: "classifier", Mode: "sync", Action: "redact"}, // no spans → flag
+			},
+		},
+	}
+	def := service.NewRegistry([]config.ServiceConfig{cfg}).Models()[0]
+	byName := map[string]string{}
+	for _, m := range def.Guardrails.Input.Models {
+		byName[m.Detector.Name()] = m.Action
+	}
+	want := map[string]string{
+		"pii":        guardrails.ActionRedact, // NER + sync default = redact
+		"pii-async":  guardrails.ActionFlag,   // async can't act
+		"clf-redact": guardrails.ActionFlag,   // classifier can't redact
+	}
+	for name, action := range want {
+		if byName[name] != action {
+			t.Errorf("model %q: got action %q, want %q", name, byName[name], action)
+		}
+	}
+}
