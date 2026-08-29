@@ -395,24 +395,15 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 			}
 
 			// ── Model-backed detectors (semantic; sync can block, async shadows) ──
+			//
+			// Classifiers (block/flag) judge the ORIGINAL text; redaction only
+			// mutates what is forwarded. Order matters: classify first (so a
+			// blocked request never forwards), then redact the survivors — and
+			// crucially, classifiers must not see redaction placeholders, which
+			// otherwise inflate scores (e.g. an injection classifier false-firing
+			// on "[REDACTED_EMAIL]").
 			if len(g.Models) > 0 {
-				// sync NER redaction (mutates the body in place, sequentially).
-				cleaned, redResults := guardrails.EvaluateRedact(r.Context(), g.Models, raw)
-				for _, rr := range redResults {
-					if rr.Err != nil {
-						slog.WarnContext(r.Context(), "llm request blocked by guardrail model (redactor unavailable)",
-							"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "error", rr.Err)
-						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "blocked").Inc()
-						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: redaction unavailable")
-						return
-					}
-					slog.WarnContext(r.Context(), "llm request redacted by guardrail model",
-						"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "violations", rr.Categories)
-					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "redacted").Inc()
-				}
-				raw = cleaned
-
-				texts := guardrails.MessageTexts(raw)
+				texts := guardrails.MessageTexts(raw) // original, pre-redaction
 
 				// async shadow: observe only, detached from the request lifetime.
 				guardrails.FireAsync(context.WithoutCancel(r.Context()), g.Models, texts, func(name string, cats []string) {
@@ -421,7 +412,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", name, "async", "flagged").Inc()
 				})
 
-				// sync: run in parallel, then enforce each model's action.
+				// sync block/flag classifiers (on the original text).
 				for _, res := range guardrails.EvaluateSync(r.Context(), g.Models, texts) {
 					if res.Err != nil || res.Action == guardrails.ActionBlock {
 						reason := res.Categories
@@ -438,6 +429,23 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 						"service_type", def.Type, "model", def.Model, "detector", res.Name, "consumer", consumer, "violations", res.Categories)
 					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "flagged").Inc()
 				}
+
+				// sync NER redaction (mutates the forwarded body) — reached only
+				// when the request was not blocked above.
+				cleaned, redResults := guardrails.EvaluateRedact(r.Context(), g.Models, raw)
+				for _, rr := range redResults {
+					if rr.Err != nil {
+						slog.WarnContext(r.Context(), "llm request blocked by guardrail model (redactor unavailable)",
+							"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "error", rr.Err)
+						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "blocked").Inc()
+						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: redaction unavailable")
+						return
+					}
+					slog.WarnContext(r.Context(), "llm request redacted by guardrail model",
+						"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "violations", rr.Categories)
+					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "redacted").Inc()
+				}
+				raw = cleaned
 			}
 		}
 		start := time.Now()
