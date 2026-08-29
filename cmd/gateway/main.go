@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -217,6 +219,38 @@ func (guardrailMetricsObserver) IncModelError(detector, reason string) {
 	gmetrics.GuardrailsModelErrorsTotal.WithLabelValues(detector, reason).Inc()
 }
 
+func (guardrailMetricsObserver) IncModelCache(detector, result string) {
+	gmetrics.GuardrailsModelCacheTotal.WithLabelValues(detector, result).Inc()
+}
+
+func (guardrailMetricsObserver) IncModelSkipped(detector, reason string) {
+	gmetrics.GuardrailsModelSkippedTotal.WithLabelValues(detector, reason).Inc()
+}
+
+// guardrailVerdictCache adapts the Redis client to guardrails.VerdictCache,
+// storing findings as JSON under a dedicated key namespace.
+type guardrailVerdictCache struct{ rdb *redis.Client }
+
+func (c guardrailVerdictCache) Get(ctx context.Context, key string) ([]guardrails.Finding, bool) {
+	val, err := c.rdb.Get(ctx, "guardrail:verdict:"+key).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var f []guardrails.Finding
+	if json.Unmarshal(val, &f) != nil {
+		return nil, false
+	}
+	return f, true
+}
+
+func (c guardrailVerdictCache) Set(ctx context.Context, key string, findings []guardrails.Finding, ttl time.Duration) {
+	data, err := json.Marshal(findings)
+	if err != nil {
+		return
+	}
+	c.rdb.Set(ctx, "guardrail:verdict:"+key, data, ttl)
+}
+
 func main() {
 	// JSON structured logger — compatible with log aggregators (Loki, Datadog, …).
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
@@ -277,6 +311,9 @@ func main() {
 	}
 	defer redisClient.Close()
 	redisClient.SetExpiredMarkerTTL(cfg.Jobs.ExpiredMarkerTTLDuration())
+
+	// Verdict cache for model-backed guardrails (reuses the Redis client).
+	guardrails.SetVerdictCache(guardrailVerdictCache{rdb: redisClient.Client()})
 
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter

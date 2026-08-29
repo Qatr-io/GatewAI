@@ -236,6 +236,20 @@ var (
 		Help: "Model-backed guardrail detections by detector, mode and result (blocked|flagged).",
 	}, []string{"service_type", "model", "stage", "detector", "mode", "result"})
 
+	// GuardrailsModelCacheTotal counts verdict-cache lookups by detector and
+	// result ("hit"|"miss").
+	GuardrailsModelCacheTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_cache_total",
+		Help: "Model-backed guardrail verdict-cache lookups by detector and result (hit|miss).",
+	}, []string{"detector", "result"})
+
+	// GuardrailsModelSkippedTotal counts model-detector calls skipped by a guard
+	// (e.g. the input-length gate), by detector and reason.
+	GuardrailsModelSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_skipped_total",
+		Help: "Model-backed guardrail calls skipped by a guard, by detector and reason.",
+	}, []string{"detector", "reason"})
+
 	AsyncStaleJobsSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_stale_jobs_swept_total",
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",

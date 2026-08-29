@@ -264,17 +264,25 @@ func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement 
 				timeout = d
 			}
 		}
+		var cacheTTL time.Duration
+		if m.CacheTTL != "" {
+			if d, err := time.ParseDuration(m.CacheTTL); err == nil {
+				cacheTTL = d
+			}
+		}
 		name := m.Name
 		if name == "" {
 			name = "model"
 		}
 		det := guardrails.NewModelDetector(guardrails.ModelConfig{
-			Name:       name,
-			Endpoint:   m.Endpoint,
-			Categories: m.Categories,
-			Threshold:  m.Threshold,
-			Timeout:    timeout,
-			OnError:    guardrails.OnError(m.OnError),
+			Name:           name,
+			Endpoint:       m.Endpoint,
+			Categories:     m.Categories,
+			Threshold:      m.Threshold,
+			Timeout:        timeout,
+			OnError:        guardrails.OnError(m.OnError),
+			CacheTTL:       cacheTTL,
+			MaxInputTokens: m.MaxInputTokens,
 		})
 
 		mode := m.Mode

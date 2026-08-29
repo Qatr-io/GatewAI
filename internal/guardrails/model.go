@@ -35,6 +35,12 @@ type ModelConfig struct {
 	Threshold  float64       // minimum score to keep a finding
 	Timeout    time.Duration // per-call timeout (default 120ms)
 	OnError    OnError       // fail_open (default) | fail_closed
+	// CacheTTL enables verdict caching for this detector when > 0: identical
+	// inputs reuse the cached findings for this duration instead of calling the model.
+	CacheTTL time.Duration
+	// MaxInputTokens skips the model call (allow) when the estimated input token
+	// count exceeds this, protecting the latency budget on long inputs. 0 = no gate.
+	MaxInputTokens int
 }
 
 // modelRequest / modelResponse define the JSON contract with the guardrail
@@ -88,6 +94,24 @@ func (d *ModelDetector) Scan(ctx context.Context, texts []string) ([]Finding, er
 	if len(texts) == 0 {
 		return nil, nil
 	}
+
+	// Length gate: skip (allow) inputs too large to score within budget.
+	if d.cfg.MaxInputTokens > 0 && estimateTokens(texts) > d.cfg.MaxInputTokens {
+		observer.IncModelSkipped(d.Name(), "too_long")
+		return nil, nil
+	}
+
+	// Verdict cache: reuse findings for identical inputs.
+	var key string
+	if d.cfg.CacheTTL > 0 {
+		key = verdictKey(d.Name(), texts)
+		if findings, ok := verdictCache.Get(ctx, key); ok {
+			observer.IncModelCache(d.Name(), "hit")
+			return findings, nil
+		}
+		observer.IncModelCache(d.Name(), "miss")
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, d.cfg.Timeout)
 	defer cancel()
 
@@ -102,7 +126,22 @@ func (d *ModelDetector) Scan(ctx context.Context, texts []string) ([]Finding, er
 		}
 		return nil, nil // fail open
 	}
-	return d.filter(raw), nil
+
+	findings := d.filter(raw)
+	if d.cfg.CacheTTL > 0 {
+		verdictCache.Set(ctx, key, findings, d.cfg.CacheTTL)
+	}
+	return findings, nil
+}
+
+// estimateTokens is a cheap heuristic (≈ chars/4) used only by the length gate;
+// exactness is unnecessary since it gates a coarse budget decision.
+func estimateTokens(texts []string) int {
+	chars := 0
+	for _, t := range texts {
+		chars += len(t)
+	}
+	return chars / 4
 }
 
 // Redact implements Detector. A classifier model produces no spans, so it cannot

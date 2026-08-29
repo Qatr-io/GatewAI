@@ -9,12 +9,19 @@ type Observer interface {
 	// IncModelError records a detector failure by reason
 	// ("timeout"|"unreachable"|"bad_response").
 	IncModelError(detector, reason string)
+	// IncModelCache records a verdict-cache lookup result ("hit"|"miss").
+	IncModelCache(detector, result string)
+	// IncModelSkipped records a detector call skipped by a guard (reason
+	// e.g. "too_long").
+	IncModelSkipped(detector, reason string)
 }
 
 type nopObserver struct{}
 
 func (nopObserver) ObserveModelLatency(string, float64) {}
 func (nopObserver) IncModelError(string, string)        {}
+func (nopObserver) IncModelCache(string, string)        {}
+func (nopObserver) IncModelSkipped(string, string)      {}
 
 // observer is the package-level sink, replaceable via SetObserver at startup.
 var observer Observer = nopObserver{}
