@@ -560,9 +560,13 @@ type GuardrailModelConfig struct {
 	Timeout string `yaml:"timeout"`
 	// OnError is "fail_open" (default: forward on failure) or "fail_closed".
 	OnError string `yaml:"on_error"`
-	// MaxInputTokens skips an inline detector above this size (0 = no gate). Used
-	// by a later slice; parsed now for forward-compatibility.
+	// MaxInputTokens skips the model call (allow) when the estimated input token
+	// count exceeds this, protecting the latency budget. 0 = no gate.
 	MaxInputTokens int `yaml:"max_input_tokens"`
+	// CacheTTL enables verdict caching for this detector when set (duration
+	// string, e.g. "5m"; supports ${VAR:-default}). Identical inputs reuse the
+	// cached findings instead of calling the model. Empty/0 = no caching.
+	CacheTTL string `yaml:"cache_ttl"`
 }
 
 // LoadFromBytes parses a YAML config from an in-memory byte slice.
