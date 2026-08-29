@@ -529,9 +529,40 @@ type GuardrailsConfig struct {
 	// Checks selects which guardrail groups to run:
 	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
 	Checks []string `yaml:"checks"`
+	// Models configures model-backed detectors run alongside the regex checks on
+	// the input (request) stage. Empty = regex only.
+	Models []GuardrailModelConfig `yaml:"models"`
 	// Output configures output-stage DLP guardrails (applied to LLM responses).
 	// When nil, output guardrails are disabled.
 	Output *GuardrailsStageConfig `yaml:"output"`
+}
+
+// GuardrailModelConfig configures one model-backed guardrail detector (a
+// self-hosted classifier/NER endpoint). It augments the regex checks; it does
+// not replace them.
+type GuardrailModelConfig struct {
+	// Name identifies the detector in metrics/logs.
+	Name string `yaml:"name"`
+	// Endpoint is the guardrail model's HTTP endpoint.
+	Endpoint string `yaml:"endpoint"`
+	// Kind is "classifier" (block/flag) or "ner" (spans → redact). Default classifier.
+	Kind string `yaml:"kind"`
+	// Categories filters which findings to act on; empty = all returned.
+	Categories []string `yaml:"categories"`
+	// Mode is "async" (shadow: observe only, default) or "sync" (inline: can act).
+	Mode string `yaml:"mode"`
+	// Action on a finding: "block", "redact", or "flag". async coerces to flag.
+	Action string `yaml:"action"`
+	// Threshold is the minimum score to act on a finding.
+	Threshold float64 `yaml:"threshold"`
+	// Timeout bounds a sync detector call (duration string, e.g. "120ms").
+	// Supports ${VAR:-default} expansion. Default 120ms.
+	Timeout string `yaml:"timeout"`
+	// OnError is "fail_open" (default: forward on failure) or "fail_closed".
+	OnError string `yaml:"on_error"`
+	// MaxInputTokens skips an inline detector above this size (0 = no gate). Used
+	// by a later slice; parsed now for forward-compatibility.
+	MaxInputTokens int `yaml:"max_input_tokens"`
 }
 
 // LoadFromBytes parses a YAML config from an in-memory byte slice.

@@ -213,6 +213,29 @@ var (
 		Help: "Total guardrails matches by stage, action and result (blocked|redacted|flagged).",
 	}, []string{"service_type", "model", "stage", "action", "result"})
 
+	// GuardrailsModelLatency observes the latency of a model-backed guardrail
+	// detector call, by detector name. Buckets span the sub-second budget.
+	GuardrailsModelLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gatewai_guardrails_model_latency_seconds",
+		Help:    "Latency of a model-backed guardrail detector call, by detector.",
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 1, 2, 5},
+	}, []string{"detector"})
+
+	// GuardrailsModelErrorsTotal counts model-backed guardrail detector failures,
+	// by detector and reason ("timeout"|"unreachable"|"bad_response").
+	GuardrailsModelErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_errors_total",
+		Help: "Model-backed guardrail detector failures, by detector and reason.",
+	}, []string{"detector", "reason"})
+
+	// GuardrailsModelDetectionsTotal counts model-backed guardrail detections that
+	// fired, by detector, mode ("sync"|"async") and result ("blocked"|"flagged").
+	// Kept separate from GuardrailsTotal so the regex metric's labels are unchanged.
+	GuardrailsModelDetectionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_detections_total",
+		Help: "Model-backed guardrail detections by detector, mode and result (blocked|flagged).",
+	}, []string{"service_type", "model", "stage", "detector", "mode", "result"})
+
 	AsyncStaleJobsSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_stale_jobs_swept_total",
 		Help: "Total number of pending jobs marked failed and cleaned up by the stale-job GC.",

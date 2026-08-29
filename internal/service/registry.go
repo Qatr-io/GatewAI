@@ -10,13 +10,15 @@ import (
 	"time"
 
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/guardrails"
 )
 
 // GuardrailsStage is the resolved guardrails configuration for a single pipeline stage.
 type GuardrailsStage struct {
 	Enabled bool
-	Checks  []string // resolved group names to run
-	Action  string   // "block" | "redact" | "flag"
+	Checks  []string                 // resolved regex group names to run
+	Action  string                   // "block" | "redact" | "flag" (regex checks)
+	Models  []guardrails.Enforcement // model-backed detectors for this stage
 }
 
 // GuardrailsSpec holds resolved guardrails for both the input and output stages.
@@ -227,11 +229,68 @@ func resolveStage(checks []string, action string) GuardrailsStage {
 // maps to the Output stage. Both default to disabled when not configured.
 func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 	input := resolveStage(cfg.Checks, cfg.Action)
+	input.Models = resolveModels(cfg.Models)
+	if len(input.Models) > 0 {
+		input.Enabled = true // a stage with only model detectors is still active
+	}
 	var output GuardrailsStage
 	if cfg.Output != nil {
 		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
 	}
 	return GuardrailsSpec{Input: input, Output: output}
+}
+
+// resolveModels builds runtime model-detector Enforcements from config, applying
+// safe defaults and coercions:
+//   - mode defaults to "async" (shadow) so adding a model never starts blocking
+//     traffic by accident;
+//   - async coerces any action to "flag" (can't act after forwarding);
+//   - "redact" coerces to "flag" for now (classifier detectors have no spans;
+//     NER redaction is a later slice).
+//
+// Entries with an empty endpoint are skipped.
+func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement {
+	if len(cfgs) == 0 {
+		return nil
+	}
+	out := make([]guardrails.Enforcement, 0, len(cfgs))
+	for _, m := range cfgs {
+		if m.Endpoint == "" {
+			continue
+		}
+		timeout := 120 * time.Millisecond
+		if m.Timeout != "" {
+			if d, err := time.ParseDuration(m.Timeout); err == nil {
+				timeout = d
+			}
+		}
+		name := m.Name
+		if name == "" {
+			name = "model"
+		}
+		det := guardrails.NewModelDetector(guardrails.ModelConfig{
+			Name:       name,
+			Endpoint:   m.Endpoint,
+			Categories: m.Categories,
+			Threshold:  m.Threshold,
+			Timeout:    timeout,
+			OnError:    guardrails.OnError(m.OnError),
+		})
+
+		mode := m.Mode
+		if mode != guardrails.ModeSync {
+			mode = guardrails.ModeAsync // safe default
+		}
+		action := m.Action
+		if action == "" {
+			action = guardrails.ActionBlock
+		}
+		if mode == guardrails.ModeAsync || action == guardrails.ActionRedact {
+			action = guardrails.ActionFlag
+		}
+		out = append(out, guardrails.Enforcement{Detector: det, Mode: mode, Action: action})
+	}
+	return out
 }
 
 func NewRegistry(cfgs []config.ServiceConfig) *Registry {

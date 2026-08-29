@@ -25,6 +25,7 @@ import (
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/consumer"
+	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/handler"
 	"gatewai/gateway/internal/health"
 	"gatewai/gateway/internal/llmproxy"
@@ -204,12 +205,27 @@ func buildRouter(
 	return r
 }
 
+// guardrailMetricsObserver forwards model-detector telemetry from the guardrails
+// package (a leaf) to the metrics package.
+type guardrailMetricsObserver struct{}
+
+func (guardrailMetricsObserver) ObserveModelLatency(detector string, seconds float64) {
+	gmetrics.GuardrailsModelLatency.WithLabelValues(detector).Observe(seconds)
+}
+
+func (guardrailMetricsObserver) IncModelError(detector, reason string) {
+	gmetrics.GuardrailsModelErrorsTotal.WithLabelValues(detector, reason).Inc()
+}
+
 func main() {
 	// JSON structured logger — compatible with log aggregators (Loki, Datadog, …).
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	// Route model-detector telemetry to the metrics package (keeps guardrails a leaf).
+	guardrails.SetObserver(guardrailMetricsObserver{})
 
 	// ── Config ────────────────────────────────────────────────────────────────
 	cfgPath := "config.yaml"
