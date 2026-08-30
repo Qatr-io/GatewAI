@@ -482,8 +482,35 @@ func extractMessageTexts(body []byte) []string {
 		Messages []struct {
 			Content json.RawMessage `json:"content"`
 		} `json:"messages"`
+		Prompt json.RawMessage `json:"prompt"`
 	}
-	if err := json.Unmarshal(body, &payload); err != nil || len(payload.Messages) == 0 {
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil
+	}
+
+	// Completions API (/v1/completions): a "prompt" string or array of strings.
+	if len(payload.Messages) == 0 && len(payload.Prompt) > 0 {
+		var s string
+		if err := json.Unmarshal(payload.Prompt, &s); err == nil {
+			if s == "" {
+				return nil
+			}
+			return []string{s}
+		}
+		var arr []string
+		if err := json.Unmarshal(payload.Prompt, &arr); err == nil {
+			var texts []string
+			for _, p := range arr {
+				if p != "" {
+					texts = append(texts, p)
+				}
+			}
+			return texts
+		}
+		return nil
+	}
+
+	if len(payload.Messages) == 0 {
 		return nil
 	}
 
