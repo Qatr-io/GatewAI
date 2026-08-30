@@ -90,3 +90,26 @@ func TestCategories_Empty(t *testing.T) {
 		t.Errorf("Categories(nil) = %v, want nil", got)
 	}
 }
+
+func TestMessageTexts_CompletionsPrompt(t *testing.T) {
+	// /v1/completions string prompt
+	got := guardrails.MessageTexts([]byte(`{"prompt":"email me at bob@example.org"}`))
+	if len(got) != 1 || got[0] != "email me at bob@example.org" {
+		t.Errorf("string prompt: got %v", got)
+	}
+	// /v1/completions array prompt
+	got = guardrails.MessageTexts([]byte(`{"prompt":["first part","second bob@x.org"]}`))
+	if len(got) != 2 {
+		t.Errorf("array prompt: got %v", got)
+	}
+	// chat still works
+	got = guardrails.MessageTexts([]byte(`{"messages":[{"role":"user","content":"hi"}]}`))
+	if len(got) != 1 || got[0] != "hi" {
+		t.Errorf("chat: got %v", got)
+	}
+	// messages take precedence when both present
+	got = guardrails.MessageTexts([]byte(`{"messages":[{"role":"user","content":"m"}],"prompt":"p"}`))
+	if len(got) != 1 || got[0] != "m" {
+		t.Errorf("precedence: got %v", got)
+	}
+}
