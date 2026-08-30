@@ -274,9 +274,14 @@ func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement 
 		if name == "" {
 			name = "model"
 		}
+		kind := m.Kind
+		if kind != guardrails.KindNER {
+			kind = guardrails.KindClassifier
+		}
 		det := guardrails.NewModelDetector(guardrails.ModelConfig{
 			Name:           name,
 			Endpoint:       m.Endpoint,
+			Kind:           kind,
 			Categories:     m.Categories,
 			Threshold:      m.Threshold,
 			Timeout:        timeout,
@@ -291,9 +296,17 @@ func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement 
 		}
 		action := m.Action
 		if action == "" {
-			action = guardrails.ActionBlock
+			// NER defaults to redact (its purpose); classifiers default to block.
+			if kind == guardrails.KindNER {
+				action = guardrails.ActionRedact
+			} else {
+				action = guardrails.ActionBlock
+			}
 		}
-		if mode == guardrails.ModeAsync || action == guardrails.ActionRedact {
+		// Coercions: async can't act; only NER can redact (classifiers have no spans).
+		if mode == guardrails.ModeAsync {
+			action = guardrails.ActionFlag
+		} else if action == guardrails.ActionRedact && kind != guardrails.KindNER {
 			action = guardrails.ActionFlag
 		}
 		out = append(out, guardrails.Enforcement{Detector: det, Mode: mode, Action: action})

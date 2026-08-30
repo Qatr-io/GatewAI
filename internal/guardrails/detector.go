@@ -9,6 +9,7 @@ type Finding struct {
 	Category string  // matched category, e.g. "email", "aws_access_key", "injection"
 	Detector string  // which detector produced it, e.g. "regex"
 	Score    float64 // confidence in [0,1]; deterministic regex matches are 1.0
+	Text     string  // matched substring, when the detector reports one (NER); "" otherwise
 }
 
 // Detector scans and optionally redacts text for guardrail violations. The regex

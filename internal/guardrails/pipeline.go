@@ -38,9 +38,11 @@ func (r ModelResult) Fired() bool { return r.Err != nil || len(r.Categories) > 0
 // result's Action to decide block vs flag. Async enforcements are ignored here —
 // use FireAsync for those.
 func EvaluateSync(ctx context.Context, models []Enforcement, texts []string) []ModelResult {
+	// Only sync block/flag enforcements are evaluated here; redact models mutate
+	// the body and are applied separately (see EvaluateRedact).
 	sync := make([]Enforcement, 0, len(models))
 	for _, m := range models {
-		if m.Mode == ModeSync {
+		if m.Mode == ModeSync && m.Action != ActionRedact {
 			sync = append(sync, m)
 		}
 	}
@@ -77,6 +79,37 @@ func EvaluateSync(ctx context.Context, models []Enforcement, texts []string) []M
 		}
 	}
 	return out
+}
+
+// RedactResult is one redact detector's outcome, for the caller to log/meter.
+type RedactResult struct {
+	Name       string
+	Categories []string // categories redacted (empty when only Err is set)
+	Err        error    // non-nil = a fail_closed NER detector failed
+}
+
+// EvaluateRedact applies every sync redact-action enforcement to body in
+// sequence (each redacts the output of the previous), returning the possibly
+// modified body and the results that fired (redacted something or errored).
+// Sequential because each detector mutates the body.
+func EvaluateRedact(ctx context.Context, models []Enforcement, body []byte) ([]byte, []RedactResult) {
+	out := body
+	var results []RedactResult
+	for _, m := range models {
+		if m.Mode != ModeSync || m.Action != ActionRedact {
+			continue
+		}
+		cleaned, findings, err := m.Detector.Redact(ctx, out)
+		if err != nil {
+			results = append(results, RedactResult{Name: m.Detector.Name(), Err: err})
+			continue
+		}
+		if len(findings) > 0 {
+			out = cleaned
+			results = append(results, RedactResult{Name: m.Detector.Name(), Categories: Categories(findings)})
+		}
+	}
+	return out, results
 }
 
 // FireAsync runs every async-mode enforcement in the background against texts,
