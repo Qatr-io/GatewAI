@@ -50,6 +50,12 @@ type CircuitBreakerConfig struct {
 	// Cooldown is how long a circuit stays open before a half-open probe is
 	// allowed through. Default "30s".
 	Cooldown string `yaml:"cooldown"`
+	// ProbeInterval, when set (e.g. "10s"), runs an active per-replica health
+	// probe against each LLM backend's health path, feeding the breaker so an
+	// idle/dead backend opens and a recovered one closes without waiting for live
+	// request traffic. Empty/"0s" = passive only (default). Uses each service's
+	// health.path/health.timeout; backends with health.disabled are skipped.
+	ProbeInterval string `yaml:"probe_interval"`
 }
 
 // WebhookConfig tunes durable outbound webhook delivery. Retries are persisted
@@ -486,6 +492,11 @@ type ServiceConfig struct {
 	// expected identifier (e.g. "meta-llama/Meta-Llama-3-8B-Instruct" for vLLM).
 	// Only applied when Provider is set. Empty means the alias is forwarded as-is.
 	BackendModel string `yaml:"backend_model"`
+	// FallbackModel is another model (on the same sync path) to route to when this
+	// model's backends are all circuit-open (requires circuit_breaker.enabled).
+	// Opt-in; empty = no fallback. The caller must also be allowed to use it
+	// (visibility/policies are re-checked against the fallback).
+	FallbackModel string `yaml:"fallback_model"`
 	// Provider selects the LLM backend protocol. When set, JSON requests are routed
 	// through the LLM proxy handler instead of the bare direct proxy.
 	// Valid values: "openai", "anthropic", "ollama", "passthrough". Empty = legacy direct proxy.

@@ -179,6 +179,13 @@ var (
 		Help: "Requests that skipped an LLM backend because its circuit was open.",
 	}, []string{"model", "backend"})
 
+	// LLMFallbackTotal counts requests re-routed from a degraded model to its
+	// configured fallback model (all primary backends circuit-open).
+	LLMFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_llm_fallback_total",
+		Help: "Requests routed to a fallback model because the primary's backends were all circuit-open.",
+	}, []string{"service_type", "model", "fallback"})
+
 	// LLMTokensPerRequest is a histogram of tokens per request, enabling p50/p95/p99
 	// analysis by user_type. Useful to detect large contexts and capacity planning.
 	LLMTokensPerRequest = promauto.NewHistogramVec(prometheus.HistogramOpts{

@@ -207,6 +207,13 @@ circuit_breaker:
   enabled: ${CIRCUIT_BREAKER_ENABLED:-false}
   failure_threshold: 5
   cooldown: "30s"
+  # probe_interval: when set, actively health-checks each LLM backend (per replica)
+  # so idle/dead backends open and recovered ones close without waiting for live
+  # request traffic. Uses each service's health.path/health.timeout. Empty = passive
+  # only (open only on real request failures).
+  probe_interval: "${CIRCUIT_BREAKER_PROBE_INTERVAL:-}"
+  # A model may also set `fallback_model` (on the service entry) to transparently
+  # route to another model on the same path when all its backends are circuit-open.
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking

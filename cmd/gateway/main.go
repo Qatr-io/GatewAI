@@ -174,10 +174,18 @@ func buildRouter(
 	}
 
 	if reg.HasSyncServices() {
+		// Backend health for degraded-model listing + cross-model fallback. Only
+		// set when a breaker is present so BackendHealth stays a nil interface
+		// (avoids a typed-nil wrapping a nil *CircuitBreaker).
+		var modelHealth handler.BackendHealth
+		if b := llmHandler.Breaker(); b != nil {
+			modelHealth = b
+		}
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw())).
 			WithPriorityHeader(cfg.Server.PriorityHeader).
-			WithMaxBodyMB(cfg.Server.MaxBodyMB)
+			WithMaxBodyMB(cfg.Server.MaxBodyMB).
+			WithCircuitBreaker(modelHealth)
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
 			sh.WithTokenLimiter(limiter)
@@ -189,13 +197,6 @@ func buildRouter(
 			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
-		// Surface degraded (all-circuits-open) models in GET /v1/models. Only pass
-		// the breaker when present so BackendHealth stays a nil interface (avoids a
-		// typed-nil wrapping a nil *CircuitBreaker).
-		var modelHealth handler.BackendHealth
-		if b := llmHandler.Breaker(); b != nil {
-			modelHealth = b
-		}
 		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader, modelHealth))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
@@ -516,6 +517,27 @@ func main() {
 	manager.Start(ctx, initialRegistry)
 	go healthChecker.Start(ctx)
 	relayCompleteHandler.StartRetryLoop(ctx)
+
+	// Active circuit-breaker probing (opt-in) — per replica, so each replica's
+	// breaker view stays current for idle/dead/recovered backends.
+	if breaker != nil {
+		if pi, _ := time.ParseDuration(cfg.CircuitBreaker.ProbeInterval); pi > 0 {
+			probeClient := &http.Client{Timeout: 5 * time.Second}
+			llmproxy.StartProber(ctx, breaker, probeClient, pi, func() []llmproxy.ProbeTarget {
+				var targets []llmproxy.ProbeTarget
+				for _, d := range gcRegistry.Load().Models() {
+					if d.HealthCheck.Disabled {
+						continue
+					}
+					for _, b := range d.Backends {
+						targets = append(targets, llmproxy.ProbeTarget{Model: d.Model, URL: b.URL, HealthPath: d.HealthCheck.Path})
+					}
+				}
+				return targets
+			})
+			slog.Info("llm backend active health probing enabled", "interval", cfg.CircuitBreaker.ProbeInterval)
+		}
+	}
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.
