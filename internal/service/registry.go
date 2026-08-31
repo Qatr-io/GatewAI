@@ -19,6 +19,11 @@ type GuardrailsStage struct {
 	Checks  []string                 // resolved regex group names to run
 	Action  string                   // "block" | "redact" | "flag" (regex checks)
 	Models  []guardrails.Enforcement // model-backed detectors for this stage
+	// Streaming (output stage only) controls streaming enforcement:
+	// "flag" (default) | "block" | "buffer". StreamWindowTokens is the buffer
+	// window for block/buffer (0 = default).
+	Streaming          string
+	StreamWindowTokens int
 }
 
 // GuardrailsSpec holds resolved guardrails for both the input and output stages.
@@ -236,6 +241,14 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 	var output GuardrailsStage
 	if cfg.Output != nil {
 		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
+		output.Streaming = cfg.Output.Streaming
+		if output.Streaming == "" {
+			output.Streaming = "flag" // safe default: observe only, no buffering
+		}
+		output.StreamWindowTokens = cfg.Output.StreamWindowTokens
+		if output.StreamWindowTokens <= 0 {
+			output.StreamWindowTokens = 64
+		}
 	}
 	return GuardrailsSpec{Input: input, Output: output}
 }

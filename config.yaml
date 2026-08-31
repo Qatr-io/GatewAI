@@ -299,10 +299,21 @@ services:
   #     #               pii_es (DNI), pii_it (Codice Fiscale), secrets (API keys, tokens, private keys)
   #     checks: [pii, secrets]
   #     # Optional output stage — scan/redact the model RESPONSE (output DLP).
-  #     # Streaming responses always degrade to flag (cannot redact/block mid-stream).
+  #     # Both input and output stages also scan tool-call arguments
+  #     # (messages[*].tool_calls[*].function.arguments and the response's), not
+  #     # just message content.
   #     output:
   #       checks: [pii, secrets]
   #       action: redact
+  #       # streaming: how the output stage acts on STREAMING responses —
+  #       #   flag   (default) observe only, content streams through unbuffered;
+  #       #   block  buffer a window and terminate the stream on a violation;
+  #       #   buffer buffer a window, redact matches, then release it.
+  #       # block/buffer trade time-to-first-token for enforcement (opt-in).
+  #       streaming: buffer
+  #       # stream_window_tokens: buffer size (~tokens) held before a window is
+  #       # scanned/released. Larger = better detection, higher latency. Default 64.
+  #       stream_window_tokens: 64
   #
   # Anthropic — translate OpenAI-format requests to the Messages API automatically.
   # - type: llm

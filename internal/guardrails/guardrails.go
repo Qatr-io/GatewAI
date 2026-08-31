@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Check group names used in the enabled filter of Scan and Redact.
@@ -420,6 +421,13 @@ func (c *Checker) RedactResponse(body []byte, enabled []string) ([]byte, []strin
 
 // applyRedactions applies all active-group patterns to text and returns the
 // rewritten string plus the list of category names that actually matched.
+// RedactText redacts matches of the enabled regex groups in a plain string,
+// returning the redacted text and the categories that matched. Used for
+// scanning already-extracted text such as buffered streaming content.
+func RedactText(text string, enabled []string) (string, []string) {
+	return applyRedactions(text, enabled)
+}
+
 func applyRedactions(text string, enabled []string) (string, []string) {
 	var matched []string
 	for _, p := range compiledPatterns {
@@ -441,7 +449,8 @@ func extractResponseTexts(body []byte) []string {
 	var payload struct {
 		Choices []struct {
 			Message struct {
-				Content json.RawMessage `json:"content"`
+				Content   json.RawMessage `json:"content"`
+				ToolCalls []toolCall      `json:"tool_calls"`
 			} `json:"message"`
 		} `json:"choices"`
 	}
@@ -451,6 +460,7 @@ func extractResponseTexts(body []byte) []string {
 
 	var texts []string
 	for _, choice := range payload.Choices {
+		texts = appendToolCallArgs(texts, choice.Message.ToolCalls)
 		raw := choice.Message.Content
 		if len(raw) == 0 {
 			continue
@@ -480,7 +490,8 @@ func extractResponseTexts(body []byte) []string {
 func extractMessageTexts(body []byte) []string {
 	var payload struct {
 		Messages []struct {
-			Content json.RawMessage `json:"content"`
+			Content   json.RawMessage `json:"content"`
+			ToolCalls []toolCall      `json:"tool_calls"`
 		} `json:"messages"`
 		Prompt json.RawMessage `json:"prompt"`
 	}
@@ -535,6 +546,28 @@ func extractMessageTexts(body []byte) []string {
 					texts = append(texts, p.Text)
 				}
 			}
+		}
+	}
+	// Tool-call arguments carried in the message history (assistant turns) —
+	// increasingly where real data flows, so scan them too.
+	for _, msg := range payload.Messages {
+		texts = appendToolCallArgs(texts, msg.ToolCalls)
+	}
+	return texts
+}
+
+// toolCall mirrors an OpenAI tool_call's function.arguments (a JSON string).
+type toolCall struct {
+	Function struct {
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// appendToolCallArgs appends each non-empty tool-call arguments string to texts.
+func appendToolCallArgs(texts []string, calls []toolCall) []string {
+	for _, c := range calls {
+		if s := strings.TrimSpace(c.Function.Arguments); s != "" {
+			texts = append(texts, s)
 		}
 	}
 	return texts
