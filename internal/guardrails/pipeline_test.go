@@ -57,6 +57,48 @@ func TestEvaluateSync_BlockAndFlag(t *testing.T) {
 	}
 }
 
+func TestEvaluateAll_RunsEveryModeIgnoringAction(t *testing.T) {
+	models := []guardrails.Enforcement{
+		{Detector: fakeDetector{name: "sync-det", findings: []guardrails.Finding{finding("pii")}}, Mode: guardrails.ModeSync, Action: guardrails.ActionBlock},
+		{Detector: fakeDetector{name: "async-det", findings: []guardrails.Finding{finding("injection")}}, Mode: guardrails.ModeAsync, Action: guardrails.ActionFlag},
+		{Detector: fakeDetector{name: "clean-det"}, Mode: guardrails.ModeAsync, Action: guardrails.ActionFlag},
+	}
+	got := guardrails.EvaluateAll(context.Background(), models, []string{"text"})
+	if len(got) != 2 {
+		t.Fatalf("want 2 fired results (both sync and async detectors), got %d: %+v", len(got), got)
+	}
+	names := map[string]bool{}
+	for _, r := range got {
+		names[r.Name] = true
+	}
+	if !names["sync-det"] || !names["async-det"] {
+		t.Errorf("EvaluateAll must run detectors of every mode, got %v", names)
+	}
+	if names["clean-det"] {
+		t.Error("a detector that found nothing must not appear in results")
+	}
+}
+
+func TestEvaluateAll_Empty(t *testing.T) {
+	if got := guardrails.EvaluateAll(context.Background(), nil, []string{"t"}); got != nil {
+		t.Errorf("no models → nil, got %+v", got)
+	}
+	models := []guardrails.Enforcement{{Detector: fakeDetector{name: "d"}, Mode: guardrails.ModeAsync}}
+	if got := guardrails.EvaluateAll(context.Background(), models, nil); got != nil {
+		t.Errorf("no texts → nil, got %+v", got)
+	}
+}
+
+func TestEvaluateAll_ReportsError(t *testing.T) {
+	models := []guardrails.Enforcement{
+		{Detector: fakeDetector{name: "boom", err: errors.New("down")}, Mode: guardrails.ModeAsync, Action: guardrails.ActionFlag},
+	}
+	got := guardrails.EvaluateAll(context.Background(), models, []string{"t"})
+	if len(got) != 1 || got[0].Err == nil {
+		t.Fatalf("errored detector must be reported with Err set, got %+v", got)
+	}
+}
+
 func TestEvaluateSync_FailClosedError(t *testing.T) {
 	models := []guardrails.Enforcement{
 		{Detector: fakeDetector{name: "pg", err: errors.New("boom")}, Mode: guardrails.ModeSync, Action: guardrails.ActionBlock},

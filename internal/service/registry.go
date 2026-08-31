@@ -21,10 +21,12 @@ type GuardrailsStage struct {
 	Models  []guardrails.Enforcement // model-backed detectors for this stage
 }
 
-// GuardrailsSpec holds resolved guardrails for both the input and output stages.
+// GuardrailsSpec holds resolved guardrails for the input, output, and async
+// (result) stages.
 type GuardrailsSpec struct {
 	Input  GuardrailsStage
 	Output GuardrailsStage
+	Async  GuardrailsStage // applied to async job results in the completion path
 }
 
 // Def describes a registered inference service type.
@@ -237,7 +239,15 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 	if cfg.Output != nil {
 		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
 	}
-	return GuardrailsSpec{Input: input, Output: output}
+	var async GuardrailsStage
+	if cfg.Async != nil {
+		async = resolveStage(cfg.Async.Checks, cfg.Async.Action)
+		async.Models = resolveModels(cfg.Async.Models)
+		if len(async.Models) > 0 {
+			async.Enabled = true // a stage with only model detectors is still active
+		}
+	}
+	return GuardrailsSpec{Input: input, Output: output, Async: async}
 }
 
 // resolveModels builds runtime model-detector Enforcements from config, applying

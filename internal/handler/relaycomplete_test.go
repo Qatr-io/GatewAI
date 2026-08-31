@@ -10,10 +10,13 @@ import (
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/go-chi/chi/v5"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
 )
 
@@ -221,6 +224,93 @@ func TestComplete_ZeroProcessingTimeAndTokens_NoDebitOrTrack(t *testing.T) {
 	}
 	if len(tracker.trackProcessingTimeCalls) != 0 || len(tracker.trackTokensCalls) != 0 {
 		t.Errorf("expected no TrackProcessingTime/TrackTokens calls, got %+v / %+v", tracker.trackProcessingTimeCalls, tracker.trackTokensCalls)
+	}
+}
+
+// asyncGuardrailRegistry builds a registry with one transcription model whose
+// async (result) stage runs the given regex check groups.
+func asyncGuardrailRegistry(checks []string) *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{{
+		Type: "transcription", Model: "whisper-large-v3",
+		Operations:   map[string][]string{"transcription": {"/v1/audio/transcriptions"}},
+		InferenceURL: "http://svc",
+		Guardrails:   config.GuardrailsConfig{Async: &config.GuardrailsAsyncConfig{Checks: checks}},
+	}})
+}
+
+func TestComplete_AsyncGuardrail_ShadowFlagsPII(t *testing.T) {
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-async", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusCompleted, ResultRef: "job-async/result.json",
+	}
+	seedJob(t, mr, job)
+
+	// Result text carries an email → the pii regex group flags it (shadow).
+	s3 := &stubS3{getData: []byte(`{"text":"contact me at alice@example.com"}`)}
+	h := NewRelayCompleteHandler(rc, s3, false, config.WebhookConfig{})
+	h.WithRegistry(asyncGuardrailRegistry([]string{"pii"}))
+
+	m := metrics.GuardrailsAsyncTotal.WithLabelValues("transcription", "whisper-large-v3", "regex", "flagged")
+	before := testutil.ToFloat64(m)
+
+	w := httptest.NewRecorder()
+	h.Complete(w, newCompleteRequest("job-async"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	h.Wait() // drain the scan goroutine
+
+	if got := testutil.ToFloat64(m); got != before+1 {
+		t.Errorf("async regex flag metric: got %v, want %v", got, before+1)
+	}
+}
+
+func TestComplete_AsyncGuardrail_CleanResult_NoFlag(t *testing.T) {
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-clean", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusCompleted, ResultRef: "job-clean/result.json",
+	}
+	seedJob(t, mr, job)
+
+	s3 := &stubS3{getData: []byte(`{"text":"the weather is nice today"}`)}
+	h := NewRelayCompleteHandler(rc, s3, false, config.WebhookConfig{})
+	h.WithRegistry(asyncGuardrailRegistry([]string{"pii"}))
+
+	m := metrics.GuardrailsAsyncTotal.WithLabelValues("transcription", "whisper-large-v3", "regex", "flagged")
+	before := testutil.ToFloat64(m)
+
+	w := httptest.NewRecorder()
+	h.Complete(w, newCompleteRequest("job-clean"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	h.Wait()
+
+	if got := testutil.ToFloat64(m); got != before {
+		t.Errorf("clean result must not flag: metric moved %v → %v", before, got)
+	}
+}
+
+func TestComplete_AsyncGuardrail_NoRegistry_NoScan(t *testing.T) {
+	// Without WithRegistry the completion path must still succeed and not scan.
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-noreg", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusCompleted, ResultRef: "job-noreg/result.json",
+	}
+	seedJob(t, mr, job)
+
+	s3 := &stubS3{getData: []byte(`{"text":"alice@example.com"}`)}
+	h := NewRelayCompleteHandler(rc, s3, false, config.WebhookConfig{})
+
+	w := httptest.NewRecorder()
+	h.Complete(w, newCompleteRequest("job-noreg"))
+	h.Wait()
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
 	}
 }
 

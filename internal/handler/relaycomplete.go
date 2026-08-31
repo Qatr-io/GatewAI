@@ -6,12 +6,17 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/go-chi/chi/v5"
 
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/consumer"
+	"gatewai/gateway/internal/guardrails"
+	"gatewai/gateway/internal/metrics"
+	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
+	"gatewai/gateway/internal/service"
 	"gatewai/gateway/internal/storage"
 	"gatewai/gateway/internal/usage"
 )
@@ -24,13 +29,18 @@ import (
 // usage tracking, and webhook delivery here.
 type RelayCompleteHandler struct {
 	redis         *storage.RedisClient
+	s3            consumer.S3Store
 	webhookSender *consumer.WebhookSender
+
+	// reg drives result-stage (async) guardrails; nil = disabled. Swapped
+	// atomically on config hot-reload (UpdateRegistry).
+	reg atomic.Pointer[service.Registry]
 
 	processingTimeLimiter ratelimit.ProcessingTimeChecker // nil = disabled
 	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
 	usageTracker          usage.UsageTracker              // nil = no usage tracking
 
-	wg sync.WaitGroup // tracks in-flight webhook goroutines
+	wg sync.WaitGroup // tracks in-flight webhook + result-scan goroutines
 }
 
 // NewRelayCompleteHandler creates a RelayCompleteHandler.
@@ -39,8 +49,22 @@ type RelayCompleteHandler struct {
 func NewRelayCompleteHandler(redis *storage.RedisClient, s3 consumer.S3Store, persistsResult bool, webhookCfg config.WebhookConfig) *RelayCompleteHandler {
 	return &RelayCompleteHandler{
 		redis:         redis,
+		s3:            s3,
 		webhookSender: consumer.NewWebhookSender(redis, s3, persistsResult, webhookCfg),
 	}
+}
+
+// WithRegistry attaches the service registry so async job results can be scanned
+// by result-stage guardrails. Without it, async result scanning is disabled.
+func (h *RelayCompleteHandler) WithRegistry(reg *service.Registry) *RelayCompleteHandler {
+	h.reg.Store(reg)
+	return h
+}
+
+// UpdateRegistry swaps the registry used for async result guardrails at runtime
+// (config hot-reload). Safe to call concurrently with in-flight completions.
+func (h *RelayCompleteHandler) UpdateRegistry(reg *service.Registry) {
+	h.reg.Store(reg)
 }
 
 // StartRetryLoop launches the durable webhook retry worker. Call once at startup;
@@ -117,11 +141,82 @@ func (h *RelayCompleteHandler) Complete(w http.ResponseWriter, r *http.Request) 
 
 	w.WriteHeader(http.StatusOK)
 
+	// Result-stage (async) guardrails: scan the job's result out-of-band. Runs
+	// once per job (this handler is invoked exactly once per completion, unlike
+	// the pub/sub broadcast), detached from the request context since the relay's
+	// call returns here.
+	h.maybeScanResult(context.WithoutCancel(ctx), job)
+
 	if job.CallbackURL != "" {
 		h.wg.Add(1)
 		go func() {
 			defer h.wg.Done()
 			h.webhookSender.Send(job)
 		}()
+	}
+}
+
+// maybeScanResult fires a shadow result-stage guardrail scan when the registry
+// is attached and the job's service has async guardrails configured. Best-effort:
+// it never blocks completion (this slice only observes).
+func (h *RelayCompleteHandler) maybeScanResult(ctx context.Context, job *model.Job) {
+	reg := h.reg.Load()
+	if reg == nil || h.s3 == nil {
+		return
+	}
+	if job.Status != model.JobStatusCompleted || job.ResultRef == "" {
+		return
+	}
+	def, err := reg.RouteAsync(job.ServiceType, job.Model)
+	if err != nil || def == nil || !def.Guardrails.Async.Enabled {
+		return
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.scanResult(ctx, def, job)
+	}()
+}
+
+// scanResult fetches the job's result and runs the async-stage detectors over
+// its text in shadow: every match is logged and metered, nothing is blocked or
+// mutated. (Enforcement is a later slice.) The result is fetched here rather
+// than reusing the webhook's fetch to keep the scan independent of webhook
+// delivery; a persisted-result service may delete the object after delivery, so
+// the scan reads it promptly.
+func (h *RelayCompleteHandler) scanResult(ctx context.Context, def *service.Def, job *model.Job) {
+	body, err := h.s3.GetObject(ctx, job.ResultRef)
+	if err != nil {
+		slog.WarnContext(ctx, "async guardrails: failed to fetch result",
+			"job_id", job.ID, "result_ref", job.ResultRef, "error", err)
+		return
+	}
+	texts := guardrails.ResultTexts(body)
+	if len(texts) == 0 {
+		return
+	}
+	stage := def.Guardrails.Async
+
+	// Regex checks (shadow).
+	if len(stage.Checks) > 0 {
+		rd := guardrails.NewRegexDetector(stage.Checks...)
+		if findings, _ := rd.Scan(ctx, texts); len(findings) > 0 {
+			slog.WarnContext(ctx, "async job result flagged by regex guardrail (shadow)",
+				"service_type", def.Type, "model", def.Model, "job_id", job.ID,
+				"detector", "regex", "violations", guardrails.Categories(findings))
+			metrics.GuardrailsAsyncTotal.WithLabelValues(def.Type, def.Model, "regex", "flagged").Inc()
+		}
+	}
+
+	// Model-backed detectors (shadow) — every detector runs; Action ignored here.
+	for _, res := range guardrails.EvaluateAll(ctx, stage.Models, texts) {
+		result := "flagged"
+		if res.Err != nil {
+			result = "error"
+		}
+		slog.WarnContext(ctx, "async job result flagged by guardrail model (shadow)",
+			"service_type", def.Type, "model", def.Model, "job_id", job.ID,
+			"detector", res.Name, "violations", res.Categories, "error", res.Err)
+		metrics.GuardrailsAsyncTotal.WithLabelValues(def.Type, def.Model, res.Name, result).Inc()
 	}
 }

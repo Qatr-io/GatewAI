@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 // Check group names used in the enabled filter of Scan and Redact.
@@ -471,6 +472,40 @@ func extractResponseTexts(body []byte) []string {
 			}
 		}
 	}
+	return texts
+}
+
+// extractResultTexts collects every string leaf value from an arbitrary JSON
+// result body. Async job results (transcripts, OCR, ...) have no fixed schema,
+// so each string value is a candidate for content scanning. When the body is
+// not JSON it is returned verbatim as a single fragment.
+func extractResultTexts(body []byte) []string {
+	var root any
+	if err := json.Unmarshal(body, &root); err != nil {
+		if s := strings.TrimSpace(string(body)); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+	var texts []string
+	var walk func(n any)
+	walk = func(n any) {
+		switch t := n.(type) {
+		case string:
+			if s := strings.TrimSpace(t); s != "" {
+				texts = append(texts, s)
+			}
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(root)
 	return texts
 }
 

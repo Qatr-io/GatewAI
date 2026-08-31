@@ -81,6 +81,47 @@ func EvaluateSync(ctx context.Context, models []Enforcement, texts []string) []M
 	return out
 }
 
+// EvaluateAll runs every enforcement's detector against texts concurrently,
+// ignoring Mode and Action. It is for out-of-band result scanning (async job
+// results), where every configured detector runs post-completion rather than
+// being split into inline-sync vs shadow-async request handling. Total latency
+// is the slowest detector. Returns the results that fired (found something or
+// errored); each result carries its configured Action for the caller to enforce.
+func EvaluateAll(ctx context.Context, models []Enforcement, texts []string) []ModelResult {
+	if len(models) == 0 || len(texts) == 0 {
+		return nil
+	}
+	type item struct {
+		idx int
+		r   ModelResult
+	}
+	ch := make(chan item, len(models))
+	for i, m := range models {
+		go func(i int, m Enforcement) {
+			findings, err := m.Detector.Scan(ctx, texts)
+			r := ModelResult{Name: m.Detector.Name(), Action: m.Action}
+			if err != nil {
+				r.Err = err
+			} else {
+				r.Categories = Categories(findings)
+			}
+			ch <- item{i, r}
+		}(i, m)
+	}
+	ordered := make([]ModelResult, len(models))
+	for range models {
+		it := <-ch
+		ordered[it.idx] = it.r
+	}
+	var out []ModelResult
+	for _, r := range ordered {
+		if r.Fired() {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
 // RedactResult is one redact detector's outcome, for the caller to log/meter.
 type RedactResult struct {
 	Name       string
