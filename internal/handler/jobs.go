@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -22,6 +23,7 @@ import (
 	"gatewai/gateway/internal/auth"
 	"gatewai/gateway/internal/authz"
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
@@ -177,6 +179,54 @@ type jobSummary struct {
 	Error         string          `json:"error,omitempty"`
 	CreatedAt     time.Time       `json:"created_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+}
+
+// scanAsyncSubmitInput runs the input guardrail stage against the async submit's
+// text params. It returns blocked=true (with an HTTP status and message) when a
+// block action fires; otherwise it meters flags/shadows and returns false. Redact
+// on submit params degrades to flag — result redaction happens at the result
+// stage. Mirrors the sync input path's metrics so dashboards are consistent.
+func (h *JobHandler) scanAsyncSubmitInput(r *http.Request, def *service.Def, in service.GuardrailsStage, texts []string) (int, string, bool) {
+	if len(texts) == 0 {
+		return 0, "", false
+	}
+	// Regex checks.
+	if len(in.Checks) > 0 {
+		if findings, _ := guardrails.NewRegexDetector(in.Checks...).Scan(r.Context(), texts); len(findings) > 0 {
+			cats := guardrails.Categories(findings)
+			if in.Action == "block" {
+				slog.WarnContext(r.Context(), "async submit blocked by regex guardrails",
+					"service_type", def.Type, "model", def.Model, "violations", cats)
+				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "block", "blocked").Inc()
+				metrics.GuardrailsPiiBlockedTotal.WithLabelValues(def.Type, def.Model).Inc()
+				return http.StatusUnprocessableEntity, "guardrails violation: " + strings.Join(cats, ", "), true
+			}
+			slog.WarnContext(r.Context(), "async submit flagged by regex guardrails",
+				"service_type", def.Type, "model", def.Model, "violations", cats)
+			metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "flag", "flagged").Inc()
+		}
+	}
+	// Sync model detectors (block/flag on the original text).
+	for _, res := range guardrails.EvaluateSync(r.Context(), in.Models, texts) {
+		if res.Err != nil || res.Action == guardrails.ActionBlock {
+			reason := res.Categories
+			if res.Err != nil {
+				reason = []string{"detector unavailable"}
+			}
+			slog.WarnContext(r.Context(), "async submit blocked by guardrail model",
+				"service_type", def.Type, "model", def.Model, "detector", res.Name, "violations", reason)
+			metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "blocked").Inc()
+			return http.StatusUnprocessableEntity, "guardrails violation: " + strings.Join(reason, ", "), true
+		}
+		metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "flagged").Inc()
+	}
+	// Async shadow model detectors — observe only, detached from the request.
+	guardrails.FireAsync(context.WithoutCancel(r.Context()), in.Models, texts, func(name string, cats []string) {
+		slog.WarnContext(r.Context(), "async submit flagged by guardrail model (shadow)",
+			"service_type", def.Type, "model", def.Model, "detector", name, "violations", cats)
+		metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", name, "async", "flagged").Inc()
+	})
+	return 0, "", false
 }
 
 // Submit handles POST /jobs/{service_type}.
@@ -365,6 +415,23 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 			params = make(map[string]string)
 		}
 		params[k] = values[0]
+	}
+
+	// Input-stage guardrails on the async submit's text params (e.g. a prompt).
+	// The uploaded file is binary and is scanned at the result stage instead
+	// (see RelayCompleteHandler). A block rejects the submit before anything is
+	// stored or enqueued.
+	if in := def.Guardrails.Input; in.Enabled && len(params) > 0 {
+		var texts []string
+		for _, v := range params {
+			if s := strings.TrimSpace(v); s != "" {
+				texts = append(texts, s)
+			}
+		}
+		if status, msg, blocked := h.scanAsyncSubmitInput(r, def, in, texts); blocked {
+			writeError(w, status, msg)
+			return
+		}
 	}
 
 	jobID := uuid.New().String()

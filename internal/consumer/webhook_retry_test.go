@@ -2,6 +2,7 @@ package consumer
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -19,8 +20,9 @@ import (
 
 type retryStubS3 struct{}
 
-func (retryStubS3) GetObject(context.Context, string) ([]byte, error) { return nil, nil }
-func (retryStubS3) DeleteObject(context.Context, string) error        { return nil }
+func (retryStubS3) GetObject(context.Context, string) ([]byte, error)              { return nil, nil }
+func (retryStubS3) DeleteObject(context.Context, string) error                     { return nil }
+func (retryStubS3) Upload(context.Context, string, io.Reader, int64, string) error { return nil }
 
 func newTestSender(t *testing.T, cfg config.WebhookConfig) (*WebhookSender, *miniredis.Miniredis) {
 	t.Helper()

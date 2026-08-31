@@ -303,6 +303,26 @@ services:
   #     output:
   #       checks: [pii, secrets]
   #       action: redact
+  #     # Optional async (result) stage — scan the RESULT of async /jobs jobs
+  #     # (transcripts, OCR text, ...) in the once-per-job completion path. The
+  #     # async input is a file, so this is where content is scanned. Supports
+  #     # regex checks and model detectors. action: flag (shadow, default) |
+  #     # block (fail the job, suppress the result) | redact (write a redacted
+  #     # sibling object and repoint the job to it; the original is retained).
+  #     # Defaults to flag when unset so enabling it never enforces by accident.
+  #     # (The top-level input stage above also guards text params on async
+  #     # submit, e.g. a prompt; the uploaded file itself is not text-scanned.)
+  #     async:
+  #       checks: [pii]
+  #       action: flag
+  #       models:
+  #         - name: injection
+  #           endpoint: "http://guardrail-api-predictor.<ns>.svc.cluster.local/guardrail/injection"
+  #           kind: classifier
+  #           categories: [injection]
+  #           threshold: 0.8
+  #           timeout: "500ms"
+  #           on_error: fail_open
   #
   # Anthropic — translate OpenAI-format requests to the Messages API automatically.
   # - type: llm

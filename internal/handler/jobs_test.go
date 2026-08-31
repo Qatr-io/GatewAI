@@ -170,6 +170,42 @@ func newAsyncHandler(reg *service.Registry, s3 *mockJobS3, store *mockAsyncStore
 	return handler.NewJobHandler(reg, s3, store, "", "", nil, config.LifecycleConfig{})
 }
 
+// asyncInputGuardrailRegistry adds a blocking input-stage regex guardrail (pii)
+// to the single transcription model, for testing async-submit param scanning.
+func asyncInputGuardrailRegistry() *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "faster-whisper",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		AcceptedExts:  []string{".mp3", ".wav"},
+		MaxFileSizeMB: 100,
+		Guardrails:    config.GuardrailsConfig{Action: "block", Checks: []string{"pii"}},
+	}})
+}
+
+// submitReqWithParam builds a submit request that also carries one extra text
+// form field (e.g. a prompt) alongside the file.
+func submitReqWithParam(t *testing.T, serviceType, modelName, paramKey, paramVal, filename string, body []byte) *http.Request {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	mw := multipart.NewWriter(buf)
+	if modelName != "" {
+		_ = mw.WriteField("model", modelName)
+	}
+	_ = mw.WriteField(paramKey, paramVal)
+	fw, _ := mw.CreateFormFile("file", filename)
+	_, _ = fw.Write(body)
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/"+serviceType, buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("service_type", serviceType)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestSubmit_InvalidOperation_NoSideEffects is the regression test for the bug
@@ -231,6 +267,45 @@ func TestSubmit_NominalPath(t *testing.T) {
 	}
 	if !store.saved {
 		t.Error("Redis save should have been called")
+	}
+}
+
+// TestSubmit_AsyncInputGuardrail_BlocksPIIParam verifies that a text param with
+// PII is rejected (422) by the input stage before any S3/Redis side effects.
+func TestSubmit_AsyncInputGuardrail_BlocksPIIParam(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	req := submitReqWithParam(t, "transcription", "faster-whisper", "prompt", "transcribe for alice@example.com", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncInputGuardrailRegistry(), s3, store).Submit(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+	if s3.uploaded {
+		t.Error("blocked submit must not upload to S3")
+	}
+	if store.saved {
+		t.Error("blocked submit must not save the job")
+	}
+}
+
+// TestSubmit_AsyncInputGuardrail_AllowsCleanParam verifies a clean text param
+// passes the input stage and the job is accepted.
+func TestSubmit_AsyncInputGuardrail_AllowsCleanParam(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	req := submitReqWithParam(t, "transcription", "faster-whisper", "prompt", "please transcribe the meeting", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncInputGuardrailRegistry(), s3, store).Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if !s3.uploaded || !store.saved {
+		t.Error("clean submit should upload and save")
 	}
 }
 

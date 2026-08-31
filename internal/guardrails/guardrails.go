@@ -509,6 +509,59 @@ func extractResultTexts(body []byte) []string {
 	return texts
 }
 
+// RedactResultTexts redacts matches of the enabled regex groups inside every
+// string leaf of a JSON result body, returning the rewritten body and the
+// distinct categories redacted. A body that is not JSON is redacted as a single
+// string. Used by the async result stage, whose payloads have no fixed schema.
+// When nothing matched, the original body is returned unchanged.
+func RedactResultTexts(body []byte, enabled []string) ([]byte, []string) {
+	var root any
+	if err := json.Unmarshal(body, &root); err != nil {
+		red, matched := applyRedactions(string(body), enabled)
+		if len(matched) == 0 {
+			return body, nil
+		}
+		return []byte(red), matched
+	}
+	seen := map[string]bool{}
+	var cats []string
+	var walk func(n any) any
+	walk = func(n any) any {
+		switch t := n.(type) {
+		case string:
+			red, matched := applyRedactions(t, enabled)
+			for _, c := range matched {
+				if !seen[c] {
+					seen[c] = true
+					cats = append(cats, c)
+				}
+			}
+			return red
+		case []any:
+			for i, e := range t {
+				t[i] = walk(e)
+			}
+			return t
+		case map[string]any:
+			for k, e := range t {
+				t[k] = walk(e)
+			}
+			return t
+		default:
+			return n
+		}
+	}
+	root = walk(root)
+	if len(cats) == 0 {
+		return body, nil
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return body, nil
+	}
+	return out, cats
+}
+
 // extractMessageTexts pulls plaintext from the "messages[*].content" field
 // of an OpenAI-compatible payload. Content may be a string or an array of
 // content parts (each with a "text" field).

@@ -246,6 +246,13 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 		if len(async.Models) > 0 {
 			async.Enabled = true // a stage with only model detectors is still active
 		}
+		// The async result stage is stage-action driven (block|redact|flag applied
+		// to any fired detector). Default to "flag" (shadow) so enabling it never
+		// starts blocking/redacting results by accident — enforcement is opt-in.
+		// (resolveStage defaults an unset action to "block"; async overrides that.)
+		if async.Enabled && cfg.Async.Action == "" {
+			async.Action = "flag"
+		}
 	}
 	return GuardrailsSpec{Input: input, Output: output, Async: async}
 }

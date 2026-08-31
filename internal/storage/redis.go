@@ -390,6 +390,45 @@ func (r *RedisClient) UpdateJobResult(ctx context.Context, jobID string, status 
 	return nil
 }
 
+// overrideJobScript updates an existing job's status/result_ref/error even when
+// it is already terminal. Unlike updateJobScript (which no-ops on completed jobs
+// for idempotent completion), this is used by post-completion result-stage
+// guardrails, which must be able to fail a completed job (block) or repoint its
+// result (redact) after the fact.
+var overrideJobScript = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data then
+    return redis.error_reply('job not found: ' .. KEYS[1])
+end
+local job = cjson.decode(data)
+job['status']     = ARGV[1]
+job['result_ref'] = ARGV[2]
+job['error']      = ARGV[3]
+job['updated_at'] = ARGV[4]
+redis.call('SET', KEYS[1], cjson.encode(job), 'EX', tonumber(ARGV[5]))
+return redis.status_reply('OK')
+`)
+
+// OverrideJobResult sets an existing job's status/result_ref/error regardless of
+// its current (possibly terminal) state. Intended for result-stage guardrails
+// that act after completion: block (status=failed, result_ref cleared) or redact
+// (result_ref repointed to the redacted object).
+func (r *RedisClient) OverrideJobResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string) error {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	ttlSecs := int64(r.ttlForStatus(status).Seconds())
+	start := time.Now()
+	err := overrideJobScript.Run(ctx, r.client,
+		[]string{jobKey(jobID)},
+		string(status), resultRef, errMsg, updatedAt, ttlSecs,
+	).Err()
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("override_job"), time.Since(start).Seconds())
+	if err != nil {
+		metrics.RedisErrorsTotal.WithLabelValues("override_job").Inc()
+		return fmt.Errorf("overriding job %q result in redis: %w", jobID, err)
+	}
+	return nil
+}
+
 // PopJob atomically moves a job ID from relay:{model}:pending to
 // relay:{model}:processing using BLMOVE (blocks until a job is available
 // or the context is cancelled).
