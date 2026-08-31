@@ -357,6 +357,16 @@ func main() {
 		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
 	}
 
+	// Circuit breaker for LLM backends — created once so its per-backend state
+	// (open/closed) survives config hot-reloads.
+	var breaker *llmproxy.CircuitBreaker
+	if cfg.CircuitBreaker.Enabled {
+		cooldown, _ := time.ParseDuration(cfg.CircuitBreaker.Cooldown)
+		breaker = llmproxy.NewCircuitBreaker(cfg.CircuitBreaker.FailureThreshold, cooldown)
+		slog.Info("llm backend circuit breaker enabled",
+			"failure_threshold", cfg.CircuitBreaker.FailureThreshold, "cooldown", cfg.CircuitBreaker.Cooldown)
+	}
+
 	var llmHandler *llmproxy.Handler
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
@@ -366,6 +376,7 @@ func main() {
 		llmHandler.WithUsageTracker(usageTracker)
 	}
 	llmHandler.WithLangfuse(cfg.Otel.Enabled && cfg.Otel.Traces.Enabled && cfg.Otel.Traces.Langfuse.Enabled)
+	llmHandler.WithCircuitBreaker(breaker)
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -456,6 +467,7 @@ func main() {
 			llmHandler.WithUsageTracker(usageTracker)
 		}
 		llmHandler.WithLangfuse(newCfg.Otel.Enabled && newCfg.Otel.Traces.Enabled && newCfg.Otel.Traces.Langfuse.Enabled)
+		llmHandler.WithCircuitBreaker(breaker) // reuse the same breaker (state persists across reloads)
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine

@@ -54,6 +54,16 @@ type Handler struct {
 	guard           *guardrails.Checker    // output DLP scanner
 	usageTracker    usage.UsageTracker     // nil = calendar usage reporting disabled
 	langfuseEnabled bool                   // attach langfuse.observation.* span attrs; requires OTel traces enabled
+	breaker         *CircuitBreaker        // nil = circuit breaking disabled
+}
+
+// WithCircuitBreaker attaches a per-backend circuit breaker so dead backends are
+// skipped after repeated failures. The breaker is shared (state persists across
+// config reloads); pass the same instance when rebuilding the handler. nil
+// disables circuit breaking.
+func (h *Handler) WithCircuitBreaker(cb *CircuitBreaker) *Handler {
+	h.breaker = cb
+	return h
 }
 
 // WithLangfuse enables attaching Langfuse observability attributes
@@ -223,7 +233,13 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	var respBody []byte
 	var lastBackendErr string
 	var winningBackendModel, winningBackendURL string
+	tried := 0
 	for i, backend := range backends {
+		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
+			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
+			continue
+		}
+		tried++
 		effectiveModel := backend.Model
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
@@ -252,6 +268,9 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			slog.WarnContext(r.Context(), "llm backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastBackendErr = doErr.Error()
 			resp = nil
 			continue
@@ -261,17 +280,30 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
 				strconv.Itoa(resp.StatusCode)).Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastBackendErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		if h.breaker != nil {
+			h.breaker.RecordSuccess(def.Model, backend.URL)
+		}
 		winningBackendModel = effectiveModel
 		winningBackendURL = backend.URL
 		break // success or 4xx — do not retry
 	}
 	if resp == nil {
+		if tried == 0 {
+			// Every backend's circuit was open → fast-fail instead of a slow 502.
+			span.SetStatus(codes.Error, "all backends circuit-open")
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503").Inc()
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			return
+		}
 		span.RecordError(fmt.Errorf("all backends failed: %s", lastBackendErr))
 		span.SetStatus(codes.Error, "all backends failed")
 		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
@@ -519,7 +551,13 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	var resp *http.Response
 	var lastErr string
 	var winningBackendModel, winningBackendURL string
+	tried := 0
 	for i, backend := range backends {
+		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
+			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
+			continue
+		}
+		tried++
 		effectiveModel := backend.Model
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
@@ -548,6 +586,9 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			slog.WarnContext(r.Context(), "llm stream backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastErr = doErr.Error()
 			resp = nil
 			continue
@@ -557,17 +598,28 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
 				strconv.Itoa(resp.StatusCode)).Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		if h.breaker != nil {
+			h.breaker.RecordSuccess(def.Model, backend.URL)
+		}
 		winningBackendModel = effectiveModel
 		winningBackendURL = backend.URL
 		break
 	}
 	if resp == nil {
+		if tried == 0 {
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503").Inc()
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			return
+		}
 		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastErr)
 		return

@@ -33,6 +33,23 @@ type Config struct {
 	Usage    UsageConfig     `yaml:"usage"`
 	Webhooks WebhookConfig   `yaml:"webhooks"`
 	Jobs     JobsConfig      `yaml:"jobs"`
+	// CircuitBreaker guards LLM-proxy backends: after a run of consecutive
+	// failures a backend's circuit opens and it is skipped until a cooldown,
+	// so a dead backend is not hammered on every request. Opt-in (default off).
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+}
+
+// CircuitBreakerConfig tunes the per-backend circuit breaker for the LLM proxy.
+type CircuitBreakerConfig struct {
+	// Enabled activates the breaker. Default false.
+	Enabled bool `yaml:"enabled"`
+	// FailureThreshold is the number of consecutive failures (network error or
+	// 5xx) that opens a backend's circuit. A single success resets the count.
+	// Default 5.
+	FailureThreshold int `yaml:"failure_threshold"`
+	// Cooldown is how long a circuit stays open before a half-open probe is
+	// allowed through. Default "30s".
+	Cooldown string `yaml:"cooldown"`
 }
 
 // WebhookConfig tunes durable outbound webhook delivery. Retries are persisted
@@ -641,6 +658,14 @@ func (c *Config) applyDefaults() {
 	for i := range c.Services {
 		if c.Services[i].MaxFileSizeMB == 0 {
 			c.Services[i].MaxFileSizeMB = 100
+		}
+	}
+	if c.CircuitBreaker.Enabled {
+		if c.CircuitBreaker.FailureThreshold <= 0 {
+			c.CircuitBreaker.FailureThreshold = 5
+		}
+		if c.CircuitBreaker.Cooldown == "" {
+			c.CircuitBreaker.Cooldown = "30s"
 		}
 	}
 }
