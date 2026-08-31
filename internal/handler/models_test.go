@@ -15,7 +15,7 @@ func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName stri
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?model="+modelName, nil)
 	w := httptest.NewRecorder()
-	handler.ListModels(reg, "")(w, req)
+	handler.ListModels(reg, "", nil)(w, req)
 	return w
 }
 
@@ -38,6 +38,7 @@ type modelsResponse struct {
 			MaxFileSizeMB     int64    `json:"max_file_size_mb,omitempty"`
 			Operations        []string `json:"operations,omitempty"`
 			Deprecated        bool     `json:"deprecated,omitempty"`
+			Degraded          bool     `json:"degraded,omitempty"`
 		} `json:"capabilities"`
 	} `json:"data"`
 }
@@ -46,7 +47,7 @@ func callListModels(t *testing.T, reg *service.Registry) modelsResponse {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
-	handler.ListModels(reg, "")(w, req)
+	handler.ListModels(reg, "", nil)(w, req)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -383,7 +384,7 @@ func listModelsWithHeader(t *testing.T, reg *service.Registry, userTypeHeader, h
 		req.Header.Set(headerName, headerValue)
 	}
 	w := httptest.NewRecorder()
-	handler.ListModels(reg, userTypeHeader)(w, req)
+	handler.ListModels(reg, userTypeHeader, nil)(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
@@ -464,8 +465,73 @@ func TestListModels_ProxyModel_RestrictedHiddenAs404(t *testing.T) {
 	// Caller without the beta user type must get 404, not a proxied response.
 	req := httptest.NewRequest(http.MethodGet, "/v1/models?model=gpt-5-beta", nil)
 	w := httptest.NewRecorder()
-	handler.ListModels(reg, "X-User-Type")(w, req)
+	handler.ListModels(reg, "X-User-Type", nil)(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("expected 404 for hidden model, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// fakeHealth marks a fixed set of backend URLs as circuit-open.
+type fakeHealth struct{ open map[string]bool }
+
+func (f fakeHealth) IsOpen(url string) bool { return f.open[url] }
+
+func TestListModels_Degraded_WhenAllBackendsOpen(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type: "llm", Model: "chat", Provider: "passthrough",
+		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+		Backends: []config.BackendConfig{
+			{URL: "http://b1", Weight: 100},
+			{URL: "http://b2", Weight: 0},
+		},
+	}})
+
+	// Both backends open → degraded.
+	health := fakeHealth{open: map[string]bool{"http://b1": true, "http://b2": true}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	handler.ListModels(reg, "", health)(w, req)
+	var resp modelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 || !resp.Data[0].Capabilities.Degraded {
+		t.Fatalf("expected model to be degraded when all backends open: %+v", resp.Data)
+	}
+}
+
+func TestListModels_NotDegraded_WhenOneBackendHealthy(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type: "llm", Model: "chat", Provider: "passthrough",
+		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+		Backends: []config.BackendConfig{
+			{URL: "http://b1", Weight: 100},
+			{URL: "http://b2", Weight: 0},
+		},
+	}})
+
+	// b1 open, b2 healthy → not degraded (a request can still succeed).
+	health := fakeHealth{open: map[string]bool{"http://b1": true}}
+	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
+	w := httptest.NewRecorder()
+	handler.ListModels(reg, "", health)(w, req)
+	var resp modelsResponse
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Capabilities.Degraded {
+		t.Fatalf("model should not be degraded when a backend is healthy: %+v", resp.Data)
+	}
+}
+
+func TestListModels_NilHealth_NeverDegraded(t *testing.T) {
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type: "llm", Model: "chat", Provider: "passthrough",
+		Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+		Backends:   []config.BackendConfig{{URL: "http://b1", Weight: 100}},
+	}})
+	resp := callListModels(t, reg) // passes nil health
+	if len(resp.Data) != 1 || resp.Data[0].Capabilities.Degraded {
+		t.Fatalf("nil health must never mark degraded: %+v", resp.Data)
 	}
 }

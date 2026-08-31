@@ -189,7 +189,14 @@ func buildRouter(
 			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
-		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader))
+		// Surface degraded (all-circuits-open) models in GET /v1/models. Only pass
+		// the breaker when present so BackendHealth stays a nil interface (avoids a
+		// typed-nil wrapping a nil *CircuitBreaker).
+		var modelHealth handler.BackendHealth
+		if b := llmHandler.Breaker(); b != nil {
+			modelHealth = b
+		}
+		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader, modelHealth))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
 		// without needing a separate wildcard route.

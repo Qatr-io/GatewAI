@@ -66,6 +66,10 @@ func (h *Handler) WithCircuitBreaker(cb *CircuitBreaker) *Handler {
 	return h
 }
 
+// Breaker returns the attached circuit breaker (nil when disabled), so callers
+// such as GET /v1/models can surface degraded backends.
+func (h *Handler) Breaker() *CircuitBreaker { return h.breaker }
+
 // WithLangfuse enables attaching Langfuse observability attributes
 // (prompt/completion content, gen_ai.usage.*) to the request span.
 // Callers should pass cfg.Otel.Enabled && cfg.Otel.Traces.Enabled &&
