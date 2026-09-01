@@ -51,6 +51,15 @@ type SyncHandler struct {
 	usageTracker      usage.UsageTracker // nil = no usage tracking
 	maxBodyBytes      int64              // max request body on the JSON path; default 1 MiB
 	priorityHeader    string             // HTTP header that grants access to the reserved sync capacity pool (e.g. "X-Priority")
+	breaker           BackendHealth      // nil = no circuit-breaker-driven fallback
+}
+
+// WithCircuitBreaker attaches backend-health info so a request to a fully
+// circuit-open model can be re-routed to its configured fallback_model. nil
+// disables cross-model fallback.
+func (h *SyncHandler) WithCircuitBreaker(b BackendHealth) *SyncHandler {
+	h.breaker = b
+	return h
 }
 
 // defaultMaxBodyBytes caps the sync JSON request body when max_body_mb is unset.
@@ -301,6 +310,18 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
+	}
+
+	// Cross-model fallback: when the primary model's backends are all
+	// circuit-open, route to its configured fallback model instead. Done before
+	// visibility/authz so those are enforced against the model actually served.
+	if def.FallbackModel != "" && backendsDegraded(h.breaker, def.Backends) {
+		if fb, fbErr := h.registry.RouteSync(r.URL.Path, def.FallbackModel); fbErr == nil && fb.IsLLM() {
+			slog.WarnContext(r.Context(), "primary model degraded, routing to fallback",
+				"service_type", def.Type, "model", def.Model, "fallback", fb.Model)
+			metrics.LLMFallbackTotal.WithLabelValues(def.Type, def.Model, fb.Model).Inc()
+			def = fb
+		}
 	}
 
 	if !checkModelVisible(w, r, def, h.userTypeHeader) {

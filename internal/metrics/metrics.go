@@ -159,6 +159,33 @@ var (
 		Buckets: []float64{.05, .1, .25, .5, 1, 2, 5, 10, 30, 60, 120},
 	}, []string{"service_type", "model", "backend_model", "provider", "user_type"})
 
+	// BackendCircuitOpen is 1 while a backend's circuit is open (being skipped),
+	// 0 when closed. Per model+backend.
+	BackendCircuitOpen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gatewai_backend_circuit_open",
+		Help: "1 when an LLM backend's circuit is open (skipped), 0 when closed.",
+	}, []string{"model", "backend"})
+
+	// BackendCircuitOpensTotal counts how many times a backend's circuit opened.
+	BackendCircuitOpensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_backend_circuit_opens_total",
+		Help: "Number of times an LLM backend's circuit transitioned to open.",
+	}, []string{"model", "backend"})
+
+	// BackendCircuitSkippedTotal counts requests that skipped a backend because
+	// its circuit was open.
+	BackendCircuitSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_backend_circuit_skipped_total",
+		Help: "Requests that skipped an LLM backend because its circuit was open.",
+	}, []string{"model", "backend"})
+
+	// LLMFallbackTotal counts requests re-routed from a degraded model to its
+	// configured fallback model (all primary backends circuit-open).
+	LLMFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_llm_fallback_total",
+		Help: "Requests routed to a fallback model because the primary's backends were all circuit-open.",
+	}, []string{"service_type", "model", "fallback"})
+
 	// LLMTokensPerRequest is a histogram of tokens per request, enabling p50/p95/p99
 	// analysis by user_type. Useful to detect large contexts and capacity planning.
 	LLMTokensPerRequest = promauto.NewHistogramVec(prometheus.HistogramOpts{

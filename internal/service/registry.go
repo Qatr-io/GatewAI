@@ -19,6 +19,11 @@ type GuardrailsStage struct {
 	Checks  []string                 // resolved regex group names to run
 	Action  string                   // "block" | "redact" | "flag" (regex checks)
 	Models  []guardrails.Enforcement // model-backed detectors for this stage
+	// Streaming (output stage only) controls streaming enforcement:
+	// "flag" (default) | "block" | "buffer". StreamWindowTokens is the buffer
+	// window for block/buffer (0 = default).
+	Streaming          string
+	StreamWindowTokens int
 }
 
 // GuardrailsSpec holds resolved guardrails for the input, output, and async
@@ -50,6 +55,7 @@ type Def struct {
 	InferenceHeaders map[string]string   // headers injected on every sync-direct proxy request to the backend
 	Provider         string
 	BackendModel     string // real model name sent to backend; empty = use Model (the alias)
+	FallbackModel    string // model to route to when all backends are circuit-open; empty = none
 	ResponseCacheTTL time.Duration
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
@@ -238,6 +244,14 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 	var output GuardrailsStage
 	if cfg.Output != nil {
 		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
+		output.Streaming = cfg.Output.Streaming
+		if output.Streaming == "" {
+			output.Streaming = "flag" // safe default: observe only, no buffering
+		}
+		output.StreamWindowTokens = cfg.Output.StreamWindowTokens
+		if output.StreamWindowTokens <= 0 {
+			output.StreamWindowTokens = 64
+		}
 	}
 	var async GuardrailsStage
 	if cfg.Async != nil {
@@ -368,6 +382,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			InferenceHeaders:     cfg.InferenceHeaders,
 			Provider:             cfg.Provider,
 			BackendModel:         cfg.BackendModel,
+			FallbackModel:        cfg.FallbackModel,
 			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
 			Retries:              cfg.Retries,
 			Guardrails:           resolveGuardrails(cfg.Guardrails),
