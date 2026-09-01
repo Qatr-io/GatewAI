@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -1236,5 +1237,20 @@ func TestOutputGuardrails_Flag_LeavesBodyUnchanged(t *testing.T) {
 	// Body must be the original — flag does not modify it.
 	if !strings.Contains(rr.Body.String(), "test@example.com") {
 		t.Error("flag action must leave the email in the body unchanged")
+	}
+}
+
+// TestTruncateForSpan_RuneBoundary ensures oversized-body truncation for span
+// attributes snaps to a rune boundary instead of splitting a multi-byte char.
+func TestTruncateForSpan_RuneBoundary(t *testing.T) {
+	// Fill just under the cap with ASCII, then pad with 2-byte runes so the cut
+	// at maxSpanAttrBytes lands inside a rune.
+	body := append([]byte(strings.Repeat("a", maxSpanAttrBytes-1)), []byte("éééé")...)
+	out := truncateForSpan(body)
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncated span attribute is not valid UTF-8: %q", out[len(out)-8:])
+	}
+	if !strings.HasSuffix(out, "...[truncated]") {
+		t.Errorf("expected truncation marker, got tail %q", out[len(out)-16:])
 	}
 }
