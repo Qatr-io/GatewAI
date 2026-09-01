@@ -490,6 +490,35 @@ func TestProcessCompletion_UnknownJob(t *testing.T) {
 	h.Wait()
 }
 
+// TestProcessCompletion_AfterWait_NoOp verifies that once Wait has latched
+// shutdown, a late completion trigger (e.g. a pub/sub broadcast racing the drain)
+// does not start new work or deliver — closing the wg.Add-vs-Wait window.
+func TestProcessCompletion_AfterWait_NoOp(t *testing.T) {
+	var delivered int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		delivered++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-late", ServiceType: "transcription", Status: model.JobStatusCompleted,
+		CallbackURL: srv.URL, ResultRef: "job-late/result.json",
+	}
+	seedJob(t, mr, job)
+
+	h := NewRelayCompleteHandler(rc, &stubS3{getData: []byte(`{"text":"hi"}`)}, false, config.WebhookConfig{})
+	h.Wait() // shutdown latched before any trigger
+
+	h.ProcessCompletion(context.Background(), "job-late")
+	h.Wait() // drains nothing
+
+	if delivered != 0 {
+		t.Fatalf("no work should run after shutdown, got %d deliveries", delivered)
+	}
+}
+
 // TestComplete_AsyncGuardrail_ClearsScanGate verifies the completion scan clears
 // the armed DONE-gate (so the poll path can deliver) and applies the block.
 func TestComplete_AsyncGuardrail_ClearsScanGate(t *testing.T) {

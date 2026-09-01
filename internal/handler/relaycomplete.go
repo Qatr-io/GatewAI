@@ -42,7 +42,28 @@ type RelayCompleteHandler struct {
 	tokenLimiter          ratelimit.TokenChecker          // nil = disabled
 	usageTracker          usage.UsageTracker              // nil = no usage tracking
 
-	wg sync.WaitGroup // tracks in-flight webhook + result-scan goroutines
+	// wg tracks in-flight webhook + result-scan goroutines. lifeMu/closing
+	// serialize wg.Add against Wait so a completion trigger arriving during
+	// shutdown can never Add to a zero counter concurrently with Wait (which is
+	// an illegal WaitGroup use). ProcessCompletion is now driven from two
+	// sources — the pub/sub subscriber goroutine and the HTTP handler — so this
+	// guard is required, not merely defensive.
+	lifeMu  sync.RWMutex
+	closing bool
+	wg      sync.WaitGroup
+}
+
+// trackStart reserves a slot on the in-flight WaitGroup unless the handler is
+// shutting down. Returns false (do not start the goroutine) once Wait has been
+// called. Callers that get true MUST arrange a matching wg.Done.
+func (h *RelayCompleteHandler) trackStart() bool {
+	h.lifeMu.RLock()
+	defer h.lifeMu.RUnlock()
+	if h.closing {
+		return false
+	}
+	h.wg.Add(1)
+	return true
 }
 
 // NewRelayCompleteHandler creates a RelayCompleteHandler.
@@ -99,8 +120,15 @@ func (h *RelayCompleteHandler) UpdatePersistsResult(v bool) {
 	h.webhookSender.UpdatePersistsResult(v)
 }
 
-// Wait drains all in-flight webhook goroutines. Call during graceful shutdown.
+// Wait stops accepting new completion work and drains all in-flight webhook +
+// result-scan goroutines. Call during graceful shutdown. After Wait, further
+// ProcessCompletion calls are no-ops (their work is bounded by the async gate
+// timeout on the poll path). Latching closing under the write lock guarantees no
+// wg.Add races the wg.Wait below.
 func (h *RelayCompleteHandler) Wait() {
+	h.lifeMu.Lock()
+	h.closing = true
+	h.lifeMu.Unlock()
 	h.wg.Wait()
 }
 
@@ -141,7 +169,9 @@ func (h *RelayCompleteHandler) ProcessCompletion(ctx context.Context, jobID stri
 		slog.WarnContext(ctx, "completion: job not found after claim", "job_id", jobID, "error", err)
 		return
 	}
-	h.wg.Add(1)
+	if !h.trackStart() {
+		return // shutting down; the async gate timeout bounds the un-run work
+	}
 	go func() {
 		defer h.wg.Done()
 		h.runCompletionWork(context.WithoutCancel(ctx), job)
