@@ -589,13 +589,20 @@ type GuardrailsConfig struct {
 // in this slice they run in shadow (observe-only, emitting metrics) regardless
 // of Action, and enforcement (block/redact) is a later slice.
 type GuardrailsAsyncConfig struct {
-	// Action applied when a check matches: "block", "redact", or "flag".
-	// Honoured by a later slice; currently every match is shadowed (flag).
+	// Action applied when a check matches: "block", "redact", or "flag"
+	// (default flag/shadow — observe only).
 	Action string `yaml:"action"`
 	// Checks selects which regex guardrail groups to run on the result text.
 	Checks []string `yaml:"checks"`
 	// Models configures model-backed detectors run on the result text.
 	Models []GuardrailModelConfig `yaml:"models"`
+	// ScanTimeout (block/redact only) bounds how long the client-facing result is
+	// withheld awaiting the scan. If the scan hasn't completed by then, OnTimeout
+	// decides. Duration string; supports ${VAR:-default}. Default "30s".
+	ScanTimeout string `yaml:"scan_timeout"`
+	// OnTimeout (block/redact only): "fail_open" (default — deliver the un-scanned
+	// result once ScanTimeout lapses) or "fail_closed" (mark the job failed).
+	OnTimeout string `yaml:"on_timeout"`
 }
 
 // GuardrailModelConfig configures one model-backed guardrail detector (a

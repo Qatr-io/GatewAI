@@ -439,3 +439,40 @@ func TestComplete_DispatchesWebhookAndDrainsViaWait(t *testing.T) {
 		t.Error("expected webhook to be delivered before Wait() returned")
 	}
 }
+
+// TestComplete_AsyncGuardrail_ClearsScanGate verifies the completion scan clears
+// the armed DONE-gate (so the poll path can deliver) and applies the block.
+func TestComplete_AsyncGuardrail_ClearsScanGate(t *testing.T) {
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-gate", ServiceType: "transcription", Model: "whisper-large-v3",
+		Status: model.JobStatusCompleted, ResultRef: "job-gate/result.json",
+	}
+	seedJob(t, mr, job)
+	// Arm the gate as Submit would for an enforcing (block) async model.
+	if err := rc.SetScanGate(context.Background(), "job-gate", time.Time{}, false); err != nil {
+		t.Fatalf("arm gate: %v", err)
+	}
+
+	s3 := &stubS3{getData: []byte(`{"text":"contact alice@example.com"}`)}
+	h := NewRelayCompleteHandler(rc, s3, false, config.WebhookConfig{})
+	h.WithRegistry(asyncGuardrailRegistry("block", []string{"pii"}))
+
+	w := httptest.NewRecorder()
+	h.Complete(w, newCompleteRequest("job-gate"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("status: got %d, want 200", w.Code)
+	}
+	h.Wait()
+
+	if _, ok, err := rc.GetScanGate(context.Background(), "job-gate"); err != nil || ok {
+		t.Errorf("scan gate should be cleared after the scan (ok=%v err=%v)", ok, err)
+	}
+	updated, err := rc.GetJob(context.Background(), "job-gate")
+	if err != nil {
+		t.Fatalf("get job: %v", err)
+	}
+	if updated.Status != model.JobStatusFailed {
+		t.Errorf("blocked job should be failed, got %q", updated.Status)
+	}
+}

@@ -112,5 +112,11 @@ func (m *Manager) onComplete(ctx context.Context, jobID string) {
 
 	metrics.JobsTotal.WithLabelValues(job.ServiceType, job.Model, string(job.Status)).Inc()
 
+	// For enforcing (block/redact) async guardrails a result DONE-gate is armed;
+	// defer waking sync waiters until the completion handler's scan clears it and
+	// notifies. Non-gated jobs notify immediately as before.
+	if _, gated, gerr := m.redis.GetScanGate(ctx, jobID); gerr == nil && gated {
+		return
+	}
 	m.redis.NotifyJobDone(ctx, jobID)
 }

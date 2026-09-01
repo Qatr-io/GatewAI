@@ -28,6 +28,7 @@ import (
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/storage"
 	"gatewai/gateway/internal/usage"
 )
 
@@ -52,6 +53,8 @@ type asyncJobStore interface {
 	GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error)
 	ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error
 	JobEverExisted(ctx context.Context, id string) (bool, error)
+	SetScanGate(ctx context.Context, id string, deadline time.Time, failClosed bool) error
+	GetScanGate(ctx context.Context, id string) (storage.ScanGate, bool, error)
 }
 
 // reservedJobFields are multipart form fields consumed by the gateway
@@ -523,6 +526,17 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Arm the result DONE-gate for enforcing (block/redact) async guardrails, so
+	// a poll of this job — once the relay marks it completed — withholds the
+	// result until the gateway has scanned it. Deadline is zero ("scan not
+	// started") until the completion handler arms it; a scan failure/absence is
+	// bounded by the gate's own Redis TTL. Shadow (flag) jobs are not gated.
+	if def.Guardrails.Async.Enforcing() {
+		if err := h.redis.SetScanGate(ctx, jobID, time.Time{}, def.Guardrails.Async.OnTimeoutFailClosed); err != nil {
+			slog.WarnContext(ctx, "failed to arm result scan gate", "job_id", jobID, "error", err)
+		}
+	}
+
 	slog.InfoContext(ctx, "job submitted",
 		"job_id", jobID,
 		"service_type", serviceType,
@@ -626,6 +640,28 @@ func (h *JobHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 		Error:       job.Error,
 		CreatedAt:   job.CreatedAt,
 		UpdatedAt:   job.UpdatedAt,
+	}
+
+	// Result DONE-gate: for enforcing (block/redact) async guardrails the relay
+	// marks the job completed before the gateway has scanned the result, so
+	// withhold it until the scan clears the gate. If the scan hasn't finished by
+	// the gate's deadline, apply on_timeout (fail-open delivers below; fail-closed
+	// reports the job failed).
+	if job.Status == model.JobStatusCompleted {
+		if gate, ok, gerr := h.redis.GetScanGate(r.Context(), id); gerr == nil && ok {
+			if gate.Deadline.IsZero() || time.Now().Before(gate.Deadline) {
+				resp.Status = model.JobStatusProcessing // still finalizing (scan in progress)
+				writeStatusJSON(w, resp)
+				return
+			}
+			if gate.FailClosed {
+				resp.Status = model.JobStatusFailed
+				resp.Error = "guardrail result scan timed out"
+				writeStatusJSON(w, resp)
+				return
+			}
+			// fail_open: gate lapsed → deliver the un-scanned result below.
+		}
 	}
 
 	if job.Status == model.JobStatusPending {
@@ -863,6 +899,13 @@ func (h *JobHandler) AdminPurge(w http.ResponseWriter, r *http.Request) {
 		"purged":     purged,
 		"truncated":  truncated,
 	})
+}
+
+func writeStatusJSON(w http.ResponseWriter, resp statusResponse) {
+	w.Header().Set("Content-Type", "application/json")
+	enc := json.NewEncoder(w)
+	enc.SetEscapeHTML(false)
+	_ = enc.Encode(resp)
 }
 
 func writeError(w http.ResponseWriter, code int, msg string) {

@@ -23,6 +23,7 @@ import (
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/storage"
 )
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -61,6 +62,21 @@ type mockAsyncStore struct {
 	staleJobsErr    error
 	idem            map[string]string // idempotency key → jobID (SETNX semantics)
 	everExisted     bool              // returned by JobEverExisted
+	scanGate        *storage.ScanGate // non-nil = an armed result DONE-gate
+	scanGateSet     bool              // SetScanGate was called
+}
+
+func (m *mockAsyncStore) SetScanGate(_ context.Context, _ string, deadline time.Time, failClosed bool) error {
+	m.scanGate = &storage.ScanGate{Deadline: deadline, FailClosed: failClosed}
+	m.scanGateSet = true
+	return nil
+}
+
+func (m *mockAsyncStore) GetScanGate(_ context.Context, _ string) (storage.ScanGate, bool, error) {
+	if m.scanGate == nil {
+		return storage.ScanGate{}, false, nil
+	}
+	return *m.scanGate, true, nil
 }
 
 func (m *mockAsyncStore) SaveJob(_ context.Context, _ *model.Job) error {
@@ -1363,5 +1379,89 @@ func TestSubmit_TokenLimit_Allowed(t *testing.T) {
 	}
 	if !store.saved {
 		t.Error("Redis SaveJob should have been called")
+	}
+}
+
+// ── async result DONE-gate ─────────────────────────────────────────────────────
+
+func gatedStore(gate *storage.ScanGate) *mockAsyncStore {
+	now := time.Now().UTC()
+	return &mockAsyncStore{
+		job: &model.Job{
+			ID: "g1", ServiceType: "transcription", Model: "faster-whisper",
+			Status: model.JobStatusCompleted, ResultRef: "g1/result.json",
+			CreatedAt: now, UpdatedAt: now,
+		},
+		scanGate: gate,
+	}
+}
+
+func gatedStatus(t *testing.T, store *mockAsyncStore) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	newHandlerWithConsumer(singleOpRegistry(), &mockJobS3{}, store).
+		GetStatus(w, statusReq(t, "transcription", "g1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	s, _ := resp["status"].(string)
+	return s
+}
+
+func TestGetStatus_ScanGate_Armed_WithholdsResult(t *testing.T) {
+	// Zero deadline = scan not yet started; a completed job must read as processing.
+	if s := gatedStatus(t, gatedStore(&storage.ScanGate{})); s != string(model.JobStatusProcessing) {
+		t.Fatalf("armed gate should withhold (processing), got %q", s)
+	}
+}
+
+func TestGetStatus_ScanGate_FailOpen_Delivers(t *testing.T) {
+	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: false}
+	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusCompleted) {
+		t.Fatalf("expired fail-open gate should deliver (completed), got %q", s)
+	}
+}
+
+func TestGetStatus_ScanGate_FailClosed_ReportsFailed(t *testing.T) {
+	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: true}
+	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusFailed) {
+		t.Fatalf("expired fail-closed gate should report failed, got %q", s)
+	}
+}
+
+func asyncActionRegistry(action string) *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{{
+		Type: "transcription", Model: "faster-whisper",
+		Operations:    map[string][]string{"transcription": {"/v1/audio/transcriptions"}},
+		AcceptedExts:  []string{".wav"},
+		MaxFileSizeMB: 100,
+		Guardrails:    config.GuardrailsConfig{Async: &config.GuardrailsAsyncConfig{Checks: []string{"pii"}, Action: action}},
+	}})
+}
+
+func TestSubmit_EnforcingAsync_ArmsScanGate(t *testing.T) {
+	store := &mockAsyncStore{}
+	req := submitReq(t, "transcription", "faster-whisper", "transcription", "a.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncActionRegistry("block"), &mockJobS3{}, store).Submit(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if !store.scanGateSet {
+		t.Error("enforcing (block) async must arm the result scan gate at submit")
+	}
+}
+
+func TestSubmit_ShadowAsync_NoScanGate(t *testing.T) {
+	store := &mockAsyncStore{}
+	req := submitReq(t, "transcription", "faster-whisper", "transcription", "a.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncActionRegistry("flag"), &mockJobS3{}, store).Submit(w, req)
+	if store.scanGateSet {
+		t.Error("shadow (flag) async must not arm a scan gate")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -427,6 +428,55 @@ func (r *RedisClient) OverrideJobResult(ctx context.Context, jobID string, statu
 		return fmt.Errorf("overriding job %q result in redis: %w", jobID, err)
 	}
 	return nil
+}
+
+func scanGateKey(id string) string { return "jobscan:" + id }
+
+// ScanGate is a job's result DONE-gate: its client-facing result is withheld
+// until the async guardrail scan finishes, or until Deadline lapses (then the
+// FailClosed policy decides). Only set for enforcing (block/redact) async jobs.
+type ScanGate struct {
+	Deadline   time.Time
+	FailClosed bool
+}
+
+// SetScanGate marks a job as awaiting its async result scan. It is kept for the
+// job's completed-status TTL (so a fail-closed timeout is observable) and is
+// deleted by ClearScanGate when the scan finishes.
+func (r *RedisClient) SetScanGate(ctx context.Context, id string, deadline time.Time, failClosed bool) error {
+	policy := "fail_open"
+	if failClosed {
+		policy = "fail_closed"
+	}
+	val := fmt.Sprintf("%d|%s", deadline.Unix(), policy)
+	if err := r.client.Set(ctx, scanGateKey(id), val, r.ttlForStatus(model.JobStatusCompleted)).Err(); err != nil {
+		return fmt.Errorf("set scan gate %q: %w", id, err)
+	}
+	return nil
+}
+
+// GetScanGate returns a job's scan gate, or ok=false when none exists (never
+// gated, or already cleared by the scan).
+func (r *RedisClient) GetScanGate(ctx context.Context, id string) (ScanGate, bool, error) {
+	v, err := r.client.Get(ctx, scanGateKey(id)).Result()
+	if err == redis.Nil {
+		return ScanGate{}, false, nil
+	}
+	if err != nil {
+		return ScanGate{}, false, fmt.Errorf("get scan gate %q: %w", id, err)
+	}
+	parts := strings.SplitN(v, "|", 2)
+	sec, _ := strconv.ParseInt(parts[0], 10, 64)
+	g := ScanGate{Deadline: time.Unix(sec, 0)}
+	if len(parts) > 1 && parts[1] == "fail_closed" {
+		g.FailClosed = true
+	}
+	return g, true, nil
+}
+
+// ClearScanGate removes a job's DONE-gate — the scan finished, result deliverable.
+func (r *RedisClient) ClearScanGate(ctx context.Context, id string) error {
+	return r.client.Del(ctx, scanGateKey(id)).Err()
 }
 
 // PopJob atomically moves a job ID from relay:{model}:pending to
