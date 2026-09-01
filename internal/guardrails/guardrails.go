@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // Check group names used in the enabled filter of Scan and Redact.
@@ -509,6 +510,11 @@ func SafeRedactPrefix(text string, enabled []string, hold int) (redacted string,
 		if sp[0] < boundary && boundary < sp[1] {
 			boundary = sp[0] // don't finalize inside a match
 		}
+	}
+	// Snap back to a UTF-8 rune boundary so a multi-byte character straddling the
+	// cut is never split (a half-rune would be mangled to U+FFFD downstream).
+	for boundary > 0 && boundary < len(text) && !utf8.RuneStart(text[boundary]) {
+		boundary--
 	}
 	if boundary <= 0 {
 		return "", 0, false

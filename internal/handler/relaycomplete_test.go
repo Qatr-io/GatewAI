@@ -450,7 +450,7 @@ func TestComplete_AsyncGuardrail_ClearsScanGate(t *testing.T) {
 	}
 	seedJob(t, mr, job)
 	// Arm the gate as Submit would for an enforcing (block) async model.
-	if err := rc.SetScanGate(context.Background(), "job-gate", time.Time{}, false); err != nil {
+	if err := rc.SetScanGate(context.Background(), "job-gate", time.Minute, false); err != nil {
 		t.Fatalf("arm gate: %v", err)
 	}
 

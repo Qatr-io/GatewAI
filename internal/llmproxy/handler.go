@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -459,7 +460,13 @@ func truncateForSpan(body []byte) string {
 	if len(body) <= maxSpanAttrBytes {
 		return string(body)
 	}
-	return string(body[:maxSpanAttrBytes]) + "...[truncated]"
+	// Snap the cut back to a rune boundary so the truncated span attribute stays
+	// valid UTF-8 (a byte cut mid-rune would leave a trailing U+FFFD).
+	end := maxSpanAttrBytes
+	for end > 0 && !utf8.RuneStart(body[end]) {
+		end--
+	}
+	return string(body[:end]) + "...[truncated]"
 }
 
 func emitTokenMetrics(ctx context.Context, def *service.Def, backendModel, userType string, body []byte) *provider.Usage {
