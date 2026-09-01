@@ -430,6 +430,22 @@ func (r *RedisClient) OverrideJobResult(ctx context.Context, jobID string, statu
 	return nil
 }
 
+func completionClaimKey(id string) string { return "complete:" + id }
+
+// ClaimCompletion atomically claims the exactly-once completion work for a job
+// (webhook delivery, result-stage guardrail scan, rate/token debit, usage).
+// Returns true for the single caller that wins the claim; false if it is already
+// held. The claim lives for the job's completed-status TTL so a late duplicate
+// trigger — the relay's /complete fast-path racing the pub/sub broadcast, or a
+// second broadcast — cannot re-run the work.
+func (r *RedisClient) ClaimCompletion(ctx context.Context, id string) (bool, error) {
+	ok, err := r.client.SetNX(ctx, completionClaimKey(id), "1", r.ttlForStatus(model.JobStatusCompleted)).Result()
+	if err != nil {
+		return false, fmt.Errorf("claim completion %q: %w", id, err)
+	}
+	return ok, nil
+}
+
 func scanGateKey(id string) string { return "jobscan:" + id }
 
 // ScanGate is a job's result DONE-gate: its client-facing result is withheld
