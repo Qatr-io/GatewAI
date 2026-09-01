@@ -58,6 +58,9 @@ type Def struct {
 	// PriorityReservedSync reserves this many MaxConcurrentSync slots exclusively
 	// for requests carrying server.priority_header. 0 = no reservation.
 	PriorityReservedSync int
+	// MaxOutputTokens caps output length for this LLM model on the sync LLM-proxy
+	// path (max_tokens/max_completion_tokens clamped/injected). 0 = no cap.
+	MaxOutputTokens int
 
 	// Sync / OpenAI-compatible mode (optional).
 	InferenceURL     string              // primary backend URL (derived from Backends; kept for compatibility)
@@ -398,6 +401,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			SupportsAsync:        len(cfg.AcceptedExts) > 0,
 			MaxConcurrentSync:    cfg.MaxConcurrentSync,
 			PriorityReservedSync: cfg.PriorityReservedSync,
+			MaxOutputTokens:      cfg.MaxOutputTokens,
 			InferenceURL:         primaryURL,
 			Backends:             backends,
 			Operations:           cfg.Operations,

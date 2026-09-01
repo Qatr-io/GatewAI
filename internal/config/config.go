@@ -467,6 +467,11 @@ type ServiceConfig struct {
 	// too, once their reserved slots are full). 0 (default) = no reservation;
 	// priority requests compete in the shared pool like everyone else.
 	PriorityReservedSync int `yaml:"priority_reserved_sync"`
+	// MaxOutputTokens caps the output length for this LLM model (sync LLM-proxy
+	// path only). When > 0, the request's max_tokens / max_completion_tokens is
+	// clamped to this value before forwarding, and injected when the client omits
+	// it — so the backend never generates beyond the cap. 0 (default) = no cap.
+	MaxOutputTokens int `yaml:"max_output_tokens"`
 	// SwaggerURL is an optional URL to an OpenAPI JSON spec for this service.
 	// Fetched once at startup; served at GET /swagger/{type}/{model}.
 	// Failures are logged as warnings and do not block startup.
