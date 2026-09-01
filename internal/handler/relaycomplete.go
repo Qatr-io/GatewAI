@@ -9,7 +9,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -159,17 +158,13 @@ func (h *RelayCompleteHandler) Complete(w http.ResponseWriter, r *http.Request) 
 		defer h.wg.Done()
 		bg := context.WithoutCancel(ctx)
 		if def != nil {
-			// Enforcing async guardrails gate the client-facing result: arm the
-			// scan deadline now (the gate was armed with a zero deadline at submit),
-			// run the scan, then clear the gate and wake sync waiters so the poll
-			// path delivers only the scanned (block/redact) outcome.
+			// Enforcing async guardrails gate the client-facing result. The gate is
+			// armed at submit (so a lost /complete cannot leave the result ungated),
+			// with the effective deadline derived from the completion time on the
+			// poll path. Here we run the scan, then clear the gate and wake sync
+			// waiters so the poll path delivers only the scanned (block/redact)
+			// outcome.
 			gated := def.Guardrails.Async.Enforcing()
-			if gated {
-				deadline := time.Now().Add(def.Guardrails.Async.ScanTimeout)
-				if err := h.redis.SetScanGate(bg, job.ID, deadline, def.Guardrails.Async.OnTimeoutFailClosed); err != nil {
-					slog.WarnContext(bg, "async guardrails: failed to arm scan deadline", "job_id", job.ID, "error", err)
-				}
-			}
 			h.applyResultGuardrails(bg, def, job)
 			if gated {
 				if err := h.redis.ClearScanGate(bg, job.ID); err != nil {

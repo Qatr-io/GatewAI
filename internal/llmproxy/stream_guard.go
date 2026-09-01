@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"gatewai/gateway/internal/guardrails"
 )
@@ -28,12 +29,15 @@ import (
 // Non-content chunks (role, finish_reason, usage, tool_calls) pass through after
 // the buffer is flushed. Content chunks are re-emitted as synthesized
 // chat.completion.chunk deltas carrying the original id/model/created; a chunk
-// that carries BOTH content and finish_reason has its content buffered and its
-// finish_reason forwarded (content stripped) so the stop reason is never lost.
+// that carries BOTH content and sibling fields (finish_reason, tool_calls,
+// refusal, …) has its content buffered and the remainder forwarded with
+// delta.content stripped, so neither the stop reason nor the siblings are lost.
+// Array-form content (delta.content: [{type:"text",text:…}]) is flattened to text
+// so it is scanned like string content rather than passing through unscanned.
 //
-// NOTE: streamed tool-call argument deltas (delta.tool_calls) are treated as
-// control and forwarded unscanned — streaming tool-call redaction is not yet
-// covered (use the non-streaming path for tool-heavy guarded flows).
+// NOTE: streamed tool-call argument deltas (delta.tool_calls) are forwarded
+// unscanned — streaming tool-call redaction is not yet covered (use the
+// non-streaming path for tool-heavy guarded flows).
 type streamGuard struct {
 	w       io.Writer
 	flusher http.Flusher
@@ -86,7 +90,7 @@ func (g *streamGuard) line(raw string) bool {
 		return false
 	}
 
-	content, hasContent, hasFinish, rawNoContent := parseChunk(data)
+	content, hasContent, hasExtra, rawNoContent := parseChunk(data)
 	g.captureEnvelope(data)
 
 	if !hasContent {
@@ -98,9 +102,11 @@ func (g *streamGuard) line(raw string) bool {
 	}
 
 	g.pending += content
-	if hasFinish {
-		// Final content chunk: flush everything, then forward the finish_reason
-		// (content stripped so it isn't duplicated).
+	if hasExtra {
+		// The chunk carries content AND sibling fields (finish_reason, tool_calls,
+		// refusal, …). Flush the buffered content first (preserving order), then
+		// forward the chunk with delta.content stripped so the siblings are never
+		// lost and the content isn't duplicated.
 		if !g.emit(true) {
 			return false
 		}
@@ -146,6 +152,10 @@ func (g *streamGuard) emit(final bool) bool {
 	end := len(g.pending)
 	if !final {
 		end -= g.window
+	}
+	// Snap to a UTF-8 rune boundary so a multi-byte char at the cut isn't split.
+	for end > 0 && end < len(g.pending) && !utf8.RuneStart(g.pending[end]) {
+		end--
 	}
 	if end <= 0 {
 		return true
@@ -213,10 +223,13 @@ func cutData(raw string) (string, bool) {
 	return "", false
 }
 
-// parseChunk extracts choices[0].delta.content and whether the chunk carries a
-// finish_reason. rawNoContent is the chunk re-serialized with delta.content
-// removed (only computed when content and finish_reason coexist).
-func parseChunk(data string) (content string, hasContent, hasFinish bool, rawNoContent string) {
+// parseChunk extracts choices[0].delta.content (string or array-of-parts form)
+// and whether the chunk carries sibling fields that must be forwarded separately.
+// hasExtra is true when the choice has a finish_reason OR the delta carries any
+// key besides "content" (tool_calls, refusal, function_call, …). rawNoContent is
+// the chunk re-serialized with delta.content removed (computed whenever hasExtra),
+// so the siblings survive while the buffered content is scanned.
+func parseChunk(data string) (content string, hasContent, hasExtra bool, rawNoContent string) {
 	var obj map[string]any
 	if json.Unmarshal([]byte(data), &obj) != nil {
 		return "", false, false, data
@@ -230,18 +243,52 @@ func parseChunk(data string) (content string, hasContent, hasFinish bool, rawNoC
 		return "", false, false, data
 	}
 	if fr, ok := c0["finish_reason"]; ok && fr != nil {
-		hasFinish = true
+		hasExtra = true
 	}
-	if delta, _ := c0["delta"].(map[string]any); delta != nil {
-		if cv, ok := delta["content"].(string); ok && cv != "" {
-			content, hasContent = cv, true
-			if hasFinish {
-				delete(delta, "content")
-				if b, err := json.Marshal(obj); err == nil {
-					rawNoContent = string(b)
-				}
+	delta, _ := c0["delta"].(map[string]any)
+	if delta != nil {
+		content, hasContent = extractDeltaContent(delta["content"])
+		// Any delta key other than "content" is a sibling that must be preserved.
+		for k := range delta {
+			if k != "content" {
+				hasExtra = true
+				break
 			}
 		}
 	}
-	return content, hasContent, hasFinish, rawNoContent
+	if hasContent && hasExtra {
+		delete(delta, "content")
+		if b, err := json.Marshal(obj); err == nil {
+			rawNoContent = string(b)
+		}
+	}
+	return content, hasContent, hasExtra, rawNoContent
+}
+
+// extractDeltaContent reads delta.content in either the string form or the
+// array-of-parts form (content: [{type:"text",text:"…"}, …]); array parts are
+// concatenated so array-form content is scanned like string content rather than
+// slipping through as an unscanned control chunk.
+func extractDeltaContent(v any) (string, bool) {
+	switch cv := v.(type) {
+	case string:
+		if cv != "" {
+			return cv, true
+		}
+	case []any:
+		var b strings.Builder
+		for _, part := range cv {
+			p, _ := part.(map[string]any)
+			if p == nil {
+				continue
+			}
+			if t, ok := p["text"].(string); ok {
+				b.WriteString(t)
+			}
+		}
+		if b.Len() > 0 {
+			return b.String(), true
+		}
+	}
+	return "", false
 }

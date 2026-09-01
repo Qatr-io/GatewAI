@@ -53,8 +53,10 @@ type asyncJobStore interface {
 	GetIdempotencyKey(ctx context.Context, consumer, key string) (string, error)
 	ReleaseIdempotencyKey(ctx context.Context, consumer, key string) error
 	JobEverExisted(ctx context.Context, id string) (bool, error)
-	SetScanGate(ctx context.Context, id string, deadline time.Time, failClosed bool) error
+	SetScanGate(ctx context.Context, id string, timeout time.Duration, failClosed bool) error
 	GetScanGate(ctx context.Context, id string) (storage.ScanGate, bool, error)
+	ClearScanGate(ctx context.Context, id string) error
+	OverrideJobResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string) error
 }
 
 // reservedJobFields are multipart form fields consumed by the gateway
@@ -514,27 +516,41 @@ func (h *JobHandler) Submit(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Arm the result DONE-gate BEFORE the job becomes discoverable, for enforcing
+	// (block/redact) async guardrails: a poll of this job — once the relay marks it
+	// completed — then withholds the result until the gateway has scanned it. The
+	// gate stores the scan-timeout duration; the effective deadline is derived on
+	// the poll path as (completion time + timeout), so a lost /complete cannot
+	// leave the result ungated. Arming is FATAL for enforcing jobs — proceeding
+	// without a gate would deliver unscanned content, defeating enforcement.
+	// Shadow (flag) jobs are not gated.
+	enforcingAsync := def.Guardrails.Async.Enforcing()
+	if enforcingAsync {
+		if err := h.redis.SetScanGate(ctx, jobID, def.Guardrails.Async.ScanTimeout, def.Guardrails.Async.OnTimeoutFailClosed); err != nil {
+			if idemKey != "" {
+				_ = h.redis.ReleaseIdempotencyKey(ctx, consumerName, idemKey)
+			}
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			slog.ErrorContext(ctx, "failed to arm result scan gate", "job_id", jobID, "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to arm guardrail scan gate")
+			return
+		}
+	}
+
 	// Step 2 — persist the job record in Redis (also enqueues to relay:<model>:pending).
 	if err := h.redis.SaveJob(ctx, job); err != nil {
 		if idemKey != "" {
 			_ = h.redis.ReleaseIdempotencyKey(ctx, consumerName, idemKey)
+		}
+		if enforcingAsync {
+			_ = h.redis.ClearScanGate(ctx, jobID)
 		}
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		slog.ErrorContext(ctx, "redis save failed", "job_id", jobID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to save job")
 		return
-	}
-
-	// Arm the result DONE-gate for enforcing (block/redact) async guardrails, so
-	// a poll of this job — once the relay marks it completed — withholds the
-	// result until the gateway has scanned it. Deadline is zero ("scan not
-	// started") until the completion handler arms it; a scan failure/absence is
-	// bounded by the gate's own Redis TTL. Shadow (flag) jobs are not gated.
-	if def.Guardrails.Async.Enforcing() {
-		if err := h.redis.SetScanGate(ctx, jobID, time.Time{}, def.Guardrails.Async.OnTimeoutFailClosed); err != nil {
-			slog.WarnContext(ctx, "failed to arm result scan gate", "job_id", jobID, "error", err)
-		}
 	}
 
 	slog.InfoContext(ctx, "job submitted",
@@ -644,23 +660,38 @@ func (h *JobHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Result DONE-gate: for enforcing (block/redact) async guardrails the relay
 	// marks the job completed before the gateway has scanned the result, so
-	// withhold it until the scan clears the gate. If the scan hasn't finished by
-	// the gate's deadline, apply on_timeout (fail-open delivers below; fail-closed
-	// reports the job failed).
+	// withhold it until the scan clears the gate. The effective deadline is
+	// derived from the completion time (job.UpdatedAt) + the gate's scan-timeout,
+	// so a lost /complete (the scan goroutine never runs) still resolves: once the
+	// deadline lapses, apply on_timeout — fail-open delivers the un-scanned result
+	// below, fail-closed durably fails the job so the flagged content is never
+	// served on this or any later poll.
+	gateLapsedOpen := false
 	if job.Status == model.JobStatusCompleted {
 		if gate, ok, gerr := h.redis.GetScanGate(r.Context(), id); gerr == nil && ok {
-			if gate.Deadline.IsZero() || time.Now().Before(gate.Deadline) {
+			deadline := job.UpdatedAt.Add(gate.Timeout)
+			if time.Now().Before(deadline) {
 				resp.Status = model.JobStatusProcessing // still finalizing (scan in progress)
 				writeStatusJSON(w, resp)
 				return
 			}
 			if gate.FailClosed {
+				// Durably fail the job so the timeout verdict survives restarts and
+				// repeat polls (the gate itself only lives for the completed-TTL).
+				if err := h.redis.OverrideJobResult(r.Context(), id, model.JobStatusFailed, "", "guardrail result scan timed out"); err != nil {
+					slog.WarnContext(r.Context(), "failed to persist fail-closed scan timeout", "job_id", id, "error", err)
+				}
+				_ = h.redis.ClearScanGate(r.Context(), id)
 				resp.Status = model.JobStatusFailed
 				resp.Error = "guardrail result scan timed out"
 				writeStatusJSON(w, resp)
 				return
 			}
-			// fail_open: gate lapsed → deliver the un-scanned result below.
+			// fail_open: gate lapsed → clear it and deliver the un-scanned result
+			// below. Skip the post-delivery cleanup so a still-in-flight slow scan
+			// can't race a deleted job record.
+			_ = h.redis.ClearScanGate(r.Context(), id)
+			gateLapsedOpen = true
 		}
 	}
 
@@ -689,7 +720,7 @@ func (h *JobHandler) GetStatus(w http.ResponseWriter, r *http.Request) {
 
 	// When persists_result is false, clean up immediately after delivery to
 	// minimise storage usage. When true, records persist until their TTL expires.
-	if job.Status == model.JobStatusCompleted && !h.lifecycle.PersistsResult {
+	if job.Status == model.JobStatusCompleted && !h.lifecycle.PersistsResult && !gateLapsedOpen {
 		go func(resultRef, jobID string) {
 			ctx := context.Background()
 			if resultRef != "" {

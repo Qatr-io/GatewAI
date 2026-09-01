@@ -433,22 +433,28 @@ func (r *RedisClient) OverrideJobResult(ctx context.Context, jobID string, statu
 func scanGateKey(id string) string { return "jobscan:" + id }
 
 // ScanGate is a job's result DONE-gate: its client-facing result is withheld
-// until the async guardrail scan finishes, or until Deadline lapses (then the
-// FailClosed policy decides). Only set for enforcing (block/redact) async jobs.
+// until the async guardrail scan finishes, or until the scan Timeout lapses
+// measured from the job's completion time (then the FailClosed policy decides).
+// Only set for enforcing (block/redact) async jobs.
+//
+// The gate stores the timeout *duration*, not an absolute deadline: it is armed
+// at submit — before the completion time is known — so the effective deadline is
+// derived by the reader as job.UpdatedAt + Timeout (UpdatedAt is the completion
+// timestamp once the result lands).
 type ScanGate struct {
-	Deadline   time.Time
+	Timeout    time.Duration
 	FailClosed bool
 }
 
 // SetScanGate marks a job as awaiting its async result scan. It is kept for the
 // job's completed-status TTL (so a fail-closed timeout is observable) and is
 // deleted by ClearScanGate when the scan finishes.
-func (r *RedisClient) SetScanGate(ctx context.Context, id string, deadline time.Time, failClosed bool) error {
+func (r *RedisClient) SetScanGate(ctx context.Context, id string, timeout time.Duration, failClosed bool) error {
 	policy := "fail_open"
 	if failClosed {
 		policy = "fail_closed"
 	}
-	val := fmt.Sprintf("%d|%s", deadline.Unix(), policy)
+	val := fmt.Sprintf("%d|%s", int64(timeout.Seconds()), policy)
 	if err := r.client.Set(ctx, scanGateKey(id), val, r.ttlForStatus(model.JobStatusCompleted)).Err(); err != nil {
 		return fmt.Errorf("set scan gate %q: %w", id, err)
 	}
@@ -467,7 +473,7 @@ func (r *RedisClient) GetScanGate(ctx context.Context, id string) (ScanGate, boo
 	}
 	parts := strings.SplitN(v, "|", 2)
 	sec, _ := strconv.ParseInt(parts[0], 10, 64)
-	g := ScanGate{Deadline: time.Unix(sec, 0)}
+	g := ScanGate{Timeout: time.Duration(sec) * time.Second}
 	if len(parts) > 1 && parts[1] == "fail_closed" {
 		g.FailClosed = true
 	}

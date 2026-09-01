@@ -202,3 +202,62 @@ func TestStreamGuard_DataNoSpaceStillScanned(t *testing.T) {
 		t.Fatalf("no-space data: line bypassed scanning: %q", out)
 	}
 }
+
+// TestStreamGuard_MultibyteNotSplitAcrossFlush drives multi-byte runes one byte
+// at a time is impossible over JSON, so instead we push accented text through a
+// tiny window that forces the release cut to land mid-string; the reassembled
+// output must be valid UTF-8 (no U+FFFD from a rune split at the window edge).
+func TestStreamGuard_MultibyteNotSplitAcrossFlush(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 2) // 2 tokens → 8 bytes
+	text := "café déçu à Noël — garçon éphémère" // many 2-byte runes
+	feed(g, []string{
+		`data: {"choices":[{"delta":{"content":"` + text + `"}}]}`, ``,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, ``,
+		`data: [DONE]`, ``,
+	})
+	got := reassemble(buf.String())
+	if got != text {
+		t.Fatalf("multibyte content mangled across flush: got %q want %q", got, text)
+	}
+	if strings.ContainsRune(got, '�') {
+		t.Fatalf("rune split at window boundary produced U+FFFD: %q", got)
+	}
+}
+
+// TestStreamGuard_PreservesToolCallsWithContent ensures a delta carrying BOTH
+// content and a sibling field (tool_calls) forwards the sibling — the content is
+// buffered/scanned, the tool_calls chunk is emitted with content stripped.
+func TestStreamGuard_PreservesToolCallsWithContent(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 64)
+	feed(g, []string{
+		`data: {"id":"c1","model":"m","choices":[{"delta":{"content":"hi","tool_calls":[{"index":0,"function":{"name":"f"}}]}}]}`, ``,
+		`data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`, ``,
+		`data: [DONE]`, ``,
+	})
+	out := buf.String()
+	if !strings.Contains(reassemble(out), "hi") {
+		t.Errorf("content lost: %q", out)
+	}
+	if !strings.Contains(out, `"tool_calls"`) || !strings.Contains(out, `"name":"f"`) {
+		t.Errorf("tool_calls sibling must be preserved: %q", out)
+	}
+}
+
+// TestStreamGuard_ArrayContentScanned ensures array-of-parts content
+// (delta.content: [{type:text,text:…}]) is flattened and scanned, not passed
+// through unscanned as if it were a control chunk.
+func TestStreamGuard_ArrayContentScanned(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 64)
+	feed(g, []string{
+		`data: {"choices":[{"delta":{"content":[{"type":"text","text":"mail bob@example.com"}]}}]}`, ``,
+		`data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, ``,
+		`data: [DONE]`, ``,
+	})
+	out := buf.String()
+	if strings.Contains(out, "bob@example.com") {
+		t.Fatalf("array-form content bypassed scanning: %q", out)
+	}
+}

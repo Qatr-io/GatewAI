@@ -64,10 +64,13 @@ type mockAsyncStore struct {
 	everExisted     bool              // returned by JobEverExisted
 	scanGate        *storage.ScanGate // non-nil = an armed result DONE-gate
 	scanGateSet     bool              // SetScanGate was called
+	scanGateCleared bool              // ClearScanGate was called
+	overrideStatus  model.JobStatus   // last OverrideJobResult status
+	overrideCalled  bool              // OverrideJobResult was called
 }
 
-func (m *mockAsyncStore) SetScanGate(_ context.Context, _ string, deadline time.Time, failClosed bool) error {
-	m.scanGate = &storage.ScanGate{Deadline: deadline, FailClosed: failClosed}
+func (m *mockAsyncStore) SetScanGate(_ context.Context, _ string, timeout time.Duration, failClosed bool) error {
+	m.scanGate = &storage.ScanGate{Timeout: timeout, FailClosed: failClosed}
 	m.scanGateSet = true
 	return nil
 }
@@ -77,6 +80,22 @@ func (m *mockAsyncStore) GetScanGate(_ context.Context, _ string) (storage.ScanG
 		return storage.ScanGate{}, false, nil
 	}
 	return *m.scanGate, true, nil
+}
+
+func (m *mockAsyncStore) ClearScanGate(_ context.Context, _ string) error {
+	m.scanGate = nil
+	m.scanGateCleared = true
+	return nil
+}
+
+func (m *mockAsyncStore) OverrideJobResult(_ context.Context, _ string, status model.JobStatus, _, errMsg string) error {
+	m.overrideCalled = true
+	m.overrideStatus = status
+	if m.job != nil {
+		m.job.Status = status
+		m.job.Error = errMsg
+	}
+	return nil
 }
 
 func (m *mockAsyncStore) SaveJob(_ context.Context, _ *model.Job) error {
@@ -1413,23 +1432,36 @@ func gatedStatus(t *testing.T, store *mockAsyncStore) string {
 }
 
 func TestGetStatus_ScanGate_Armed_WithholdsResult(t *testing.T) {
-	// Zero deadline = scan not yet started; a completed job must read as processing.
-	if s := gatedStatus(t, gatedStore(&storage.ScanGate{})); s != string(model.JobStatusProcessing) {
+	// Completion just now + a live timeout = deadline in the future (scan in
+	// progress); a completed job must read as processing.
+	store := gatedStore(&storage.ScanGate{Timeout: time.Minute})
+	if s := gatedStatus(t, store); s != string(model.JobStatusProcessing) {
 		t.Fatalf("armed gate should withhold (processing), got %q", s)
 	}
 }
 
 func TestGetStatus_ScanGate_FailOpen_Delivers(t *testing.T) {
-	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: false}
-	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusCompleted) {
-		t.Fatalf("expired fail-open gate should deliver (completed), got %q", s)
+	store := gatedStore(&storage.ScanGate{Timeout: time.Minute, FailClosed: false})
+	store.job.UpdatedAt = time.Now().Add(-time.Hour) // completed long ago → deadline lapsed
+	if s := gatedStatus(t, store); s != string(model.JobStatusCompleted) {
+		t.Fatalf("lapsed fail-open gate should deliver (completed), got %q", s)
+	}
+	if !store.scanGateCleared {
+		t.Error("lapsed fail-open gate should be cleared")
 	}
 }
 
 func TestGetStatus_ScanGate_FailClosed_ReportsFailed(t *testing.T) {
-	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: true}
-	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusFailed) {
-		t.Fatalf("expired fail-closed gate should report failed, got %q", s)
+	store := gatedStore(&storage.ScanGate{Timeout: time.Minute, FailClosed: true})
+	store.job.UpdatedAt = time.Now().Add(-time.Hour) // completed long ago → deadline lapsed
+	if s := gatedStatus(t, store); s != string(model.JobStatusFailed) {
+		t.Fatalf("lapsed fail-closed gate should report failed, got %q", s)
+	}
+	if !store.overrideCalled || store.overrideStatus != model.JobStatusFailed {
+		t.Error("lapsed fail-closed gate must durably persist the job as failed")
+	}
+	if !store.scanGateCleared {
+		t.Error("lapsed fail-closed gate should be cleared")
 	}
 }
 
