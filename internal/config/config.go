@@ -546,6 +546,17 @@ type GuardrailsStageConfig struct {
 	// Checks selects which guardrail groups to run:
 	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
 	Checks []string `yaml:"checks"`
+	// Streaming controls how the output stage acts on STREAMING responses:
+	//   "flag"   (default) — observe only; content streams through unbuffered.
+	//   "block"  — buffer a window, and terminate the stream on a violation.
+	//   "buffer" — buffer a window, redact matches, then release it.
+	// block/buffer trade first-token latency for enforcement — opt-in per service.
+	Streaming string `yaml:"streaming"`
+	// StreamWindowTokens is the buffer size (in ~tokens) held before a window is
+	// scanned and released, for Streaming block/buffer. Larger = better detection
+	// (a match is less likely to straddle a boundary) but higher latency to first
+	// visible token. 0 = default (64).
+	StreamWindowTokens int `yaml:"stream_window_tokens"`
 }
 
 // GuardrailsConfig controls PII/secrets detection for a service's LLM requests.
@@ -771,6 +782,13 @@ func (c *Config) validate() error {
 		}
 		if svc.ResponseCacheTTL < 0 {
 			return fmt.Errorf("service %q: response_cache_ttl must be >= 0", svc.Type)
+		}
+		if svc.Guardrails.Output != nil {
+			switch svc.Guardrails.Output.Streaming {
+			case "", "flag", "block", "buffer":
+			default:
+				return fmt.Errorf("service %q: guardrails.output.streaming %q is invalid (valid: flag, block, buffer)", svc.Type, svc.Guardrails.Output.Streaming)
+			}
 		}
 		for i, b := range svc.Backends {
 			if b.URL == "" {
