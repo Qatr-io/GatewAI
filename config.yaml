@@ -194,6 +194,28 @@ jobs:
   expired_marker_ttl: "${JOBS_EXPIRED_MARKER_TTL:-168h}"
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Circuit breaker — LLM-proxy backend health
+# ─────────────────────────────────────────────────────────────────────────────
+# Opt-in. When enabled, a backend that fails (network error or 5xx)
+# failure_threshold times in a row has its circuit opened: requests skip it for
+# `cooldown`, then one half-open probe is allowed through (success closes it, a
+# failure re-opens it). When every backend for a model is open, the request
+# fast-fails 503 instead of a slow 502 — and a dead backend is no longer hammered
+# on every request. State is in-memory per replica. Metrics:
+# gatewai_backend_circuit_open{model,backend}, _opens_total, _skipped_total.
+circuit_breaker:
+  enabled: ${CIRCUIT_BREAKER_ENABLED:-false}
+  failure_threshold: 5
+  cooldown: "30s"
+  # probe_interval: when set, actively health-checks each LLM backend (per replica)
+  # so idle/dead backends open and recovered ones close without waiting for live
+  # request traffic. Uses each service's health.path/health.timeout. Empty = passive
+  # only (open only on real request failures).
+  probe_interval: "${CIRCUIT_BREAKER_PROBE_INTERVAL:-}"
+  # A model may also set `fallback_model` (on the service entry) to transparently
+  # route to another model on the same path when all its backends are circuit-open.
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Metrics — consumer tracking
 # Ces options activent un suivi fin de la consommation LLM par consumer.
 # Les deux mécanismes sont indépendants et peuvent être activés simultanément.

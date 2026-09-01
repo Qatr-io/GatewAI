@@ -47,6 +47,29 @@ func checkModelVisible(w http.ResponseWriter, r *http.Request, def *service.Def,
 
 var modelsProxyClient = &http.Client{Timeout: 30 * time.Second}
 
+// BackendHealth reports per-backend circuit state so GET /v1/models can mark a
+// model whose backends are all unavailable as degraded. Satisfied by the LLM
+// proxy's circuit breaker. A nil BackendHealth means no health info — nothing is
+// marked degraded.
+type BackendHealth interface {
+	IsOpen(url string) bool
+}
+
+// backendsDegraded reports whether every backend of a model has an open circuit
+// (so requests would fast-fail). False when there is no health source or the
+// model has no backends.
+func backendsDegraded(health BackendHealth, backends []service.Backend) bool {
+	if health == nil || len(backends) == 0 {
+		return false
+	}
+	for _, b := range backends {
+		if !health.IsOpen(b.URL) {
+			return false
+		}
+	}
+	return true
+}
+
 // modelCapabilities describes what a model supports.
 type modelCapabilities struct {
 	SupportsAsync     bool     `json:"supports_async"`
@@ -56,6 +79,9 @@ type modelCapabilities struct {
 	MaxFileSizeMB     int64    `json:"max_file_size_mb,omitempty"`
 	Operations        []string `json:"operations,omitempty"`
 	Deprecated        bool     `json:"deprecated,omitempty"`
+	// Degraded is true when every backend behind this model has an open circuit
+	// (the model is currently failing fast). Omitted when healthy.
+	Degraded bool `json:"degraded,omitempty"`
 }
 
 // modelObject mirrors the OpenAI model object returned by GET /v1/models,
@@ -79,7 +105,7 @@ type modelsListResponse struct {
 // ListModels handles GET /v1/models.
 // Without query params, returns all configured models in OpenAI-compatible format.
 // With ?model=<name>, proxies to the underlying model backend to retrieve its native info.
-func ListModels(registry *service.Registry, userTypeHeader string) http.HandlerFunc {
+func ListModels(registry *service.Registry, userTypeHeader string, health BackendHealth) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if modelName := r.URL.Query().Get("model"); modelName != "" {
 			proxyModelsToBackend(w, r, registry, modelName, userTypeHeader)
@@ -109,6 +135,7 @@ func ListModels(registry *service.Registry, userTypeHeader string) http.HandlerF
 					MaxFileSizeMB:     d.MaxFileSizeMB,
 					Operations:        sortedKeys(d.Operations),
 					Deprecated:        d.Deprecated,
+					Degraded:          backendsDegraded(health, d.Backends),
 				},
 			}
 			if len(bm) > 0 {

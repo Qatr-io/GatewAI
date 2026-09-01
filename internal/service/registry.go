@@ -48,6 +48,7 @@ type Def struct {
 	InferenceHeaders map[string]string   // headers injected on every sync-direct proxy request to the backend
 	Provider         string
 	BackendModel     string // real model name sent to backend; empty = use Model (the alias)
+	FallbackModel    string // model to route to when all backends are circuit-open; empty = none
 	ResponseCacheTTL time.Duration
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
@@ -351,6 +352,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			InferenceHeaders:     cfg.InferenceHeaders,
 			Provider:             cfg.Provider,
 			BackendModel:         cfg.BackendModel,
+			FallbackModel:        cfg.FallbackModel,
 			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
 			Retries:              cfg.Retries,
 			Guardrails:           resolveGuardrails(cfg.Guardrails),
