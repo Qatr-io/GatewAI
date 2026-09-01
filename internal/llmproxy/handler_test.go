@@ -157,6 +157,50 @@ const fakeResponse = `{"id":"chatcmpl-1","object":"chat.completion","model":"my-
 
 // ── tests ────────────────────────────────────────────────────────────────────
 
+func TestServeJSON_CircuitBreaker_OpensAndFastFails(t *testing.T) {
+	// Backend always 500s.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer backend.Close()
+
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithCircuitBreaker(NewCircuitBreaker(2, time.Minute))
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	// Two 5xx responses reach the backend → 502, tripping the breaker (threshold 2).
+	for i := 0; i < 2; i++ {
+		if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusBadGateway {
+			t.Fatalf("attempt %d: got %d, want 502", i, rr.Code)
+		}
+	}
+	// Circuit now open → the next request is skipped and fast-fails 503.
+	if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 (circuit open)", rr.Code)
+	}
+}
+
+func TestServeJSON_CircuitBreaker_HealthyBackendPasses(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithCircuitBreaker(NewCircuitBreaker(2, time.Minute))
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	// Repeated healthy requests keep the circuit closed (success resets).
+	for i := 0; i < 3; i++ {
+		if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusOK {
+			t.Fatalf("attempt %d: got %d, want 200", i, rr.Code)
+		}
+	}
+}
+
 func TestServeJSON_CacheMiss_ThenHit(t *testing.T) {
 	// Fake backend returns a valid response.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
