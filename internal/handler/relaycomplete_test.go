@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -181,6 +182,7 @@ func TestComplete_DebitsAndTracksUsage(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	h.Complete(w, newCompleteRequest("job-1"))
+	h.Wait() // debit/usage work runs in the claimed background goroutine
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", w.Code)
@@ -220,6 +222,7 @@ func TestComplete_ZeroProcessingTimeAndTokens_NoDebitOrTrack(t *testing.T) {
 
 	w := httptest.NewRecorder()
 	h.Complete(w, newCompleteRequest("job-3"))
+	h.Wait() // debit/usage work runs in the claimed background goroutine
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status: got %d, want 200", w.Code)
@@ -438,6 +441,53 @@ func TestComplete_DispatchesWebhookAndDrainsViaWait(t *testing.T) {
 	default:
 		t.Error("expected webhook to be delivered before Wait() returned")
 	}
+}
+
+// TestProcessCompletion_ExactlyOnce verifies the Redis claim dedupes the two
+// triggers (pub/sub broadcast + /complete fast-path): the completion work — a
+// webhook here — runs exactly once no matter how many times ProcessCompletion
+// is invoked for the same job.
+func TestProcessCompletion_ExactlyOnce(t *testing.T) {
+	var mu sync.Mutex
+	deliveries := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		deliveries++
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	rc, mr := newTestRedis(t)
+	job := &model.Job{
+		ID: "job-once", ServiceType: "transcription", Status: model.JobStatusCompleted,
+		CallbackURL: srv.URL, ResultRef: "job-once/result.json",
+	}
+	seedJob(t, mr, job)
+
+	h := NewRelayCompleteHandler(rc, &stubS3{getData: []byte(`{"text":"hi"}`)}, false, config.WebhookConfig{})
+
+	// Fire the completion trigger three times (as pub/sub on N replicas plus the
+	// HTTP fast-path would); the claim must let only the first through.
+	for i := 0; i < 3; i++ {
+		h.ProcessCompletion(context.Background(), "job-once")
+	}
+	h.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	if deliveries != 1 {
+		t.Fatalf("expected exactly one webhook delivery, got %d", deliveries)
+	}
+}
+
+// TestProcessCompletion_UnknownJob is a no-op (job never existed) and must not
+// panic or deliver anything.
+func TestProcessCompletion_UnknownJob(t *testing.T) {
+	rc, _ := newTestRedis(t)
+	h := NewRelayCompleteHandler(rc, &stubS3{}, false, config.WebhookConfig{})
+	h.ProcessCompletion(context.Background(), "nope")
+	h.Wait()
 }
 
 // TestComplete_AsyncGuardrail_ClearsScanGate verifies the completion scan clears

@@ -104,27 +104,64 @@ func (h *RelayCompleteHandler) Wait() {
 	h.wg.Wait()
 }
 
-// Complete handles POST /-/relay/jobs/{id}/complete.
+// Complete handles POST /-/relay/jobs/{id}/complete. This is a redundant
+// fast-path trigger for the completion work: the reliable driver is the Redis
+// pub/sub broadcast (consumer.Manager.onComplete), which every replica receives.
+// This HTTP call lets the work fire promptly and still run if a broadcast is
+// missed; the exactly-once claim inside ProcessCompletion dedupes the two.
 func (h *RelayCompleteHandler) Complete(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	ctx := r.Context()
-
-	job, err := h.redis.GetJob(ctx, id)
-	if err != nil {
+	if _, err := h.redis.GetJob(r.Context(), id); err != nil {
 		writeError(w, http.StatusNotFound, fmt.Sprintf("job %q not found", id))
 		return
 	}
+	w.WriteHeader(http.StatusOK)
+	h.ProcessCompletion(context.WithoutCancel(r.Context()), id)
+}
 
+// ProcessCompletion runs the exactly-once completion work for a job. It is
+// invoked from BOTH triggers — the pub/sub broadcast (on every replica) and the
+// /complete HTTP fast-path — and claims the job in Redis so exactly one caller
+// performs the work regardless of how many triggers fire. The heavy work runs
+// in a tracked background goroutine so neither trigger blocks. A no-op for the
+// callers that lose the claim.
+func (h *RelayCompleteHandler) ProcessCompletion(ctx context.Context, jobID string) {
+	won, err := h.redis.ClaimCompletion(ctx, jobID)
+	if err != nil {
+		// Redis unreachable: skip rather than risk N replicas all running the work
+		// undeduped. A missed completion is bounded by the async gate's timeout.
+		slog.WarnContext(ctx, "completion claim failed", "job_id", jobID, "error", err)
+		return
+	}
+	if !won {
+		return // another trigger already owns this job's completion work
+	}
+	job, err := h.redis.GetJob(ctx, jobID)
+	if err != nil || job == nil {
+		slog.WarnContext(ctx, "completion: job not found after claim", "job_id", jobID, "error", err)
+		return
+	}
+	h.wg.Add(1)
+	go func() {
+		defer h.wg.Done()
+		h.runCompletionWork(context.WithoutCancel(ctx), job)
+	}()
+}
+
+// runCompletionWork performs the once-per-job completion work: rate-limit and
+// token debit, usage tracking, result-stage (async) guardrails, and webhook
+// delivery. Callers must have won the completion claim first.
+func (h *RelayCompleteHandler) runCompletionWork(ctx context.Context, job *model.Job) {
 	if h.processingTimeLimiter != nil && job.ProcessingTime > 0 {
 		if err := h.processingTimeLimiter.AddProcessingTime(ctx, job.ConsumerName, job.UserType, job.ServiceType, job.ProcessingTime); err != nil {
-			slog.Error("relaycomplete: failed to add processing time", "job_id", id, "error", err)
+			slog.ErrorContext(ctx, "relaycomplete: failed to add processing time", "job_id", job.ID, "error", err)
 		}
 	}
 
 	totalTokens := job.PromptTokens + job.CompletionTokens
 	if h.tokenLimiter != nil && totalTokens > 0 {
 		if err := h.tokenLimiter.AddTokensFor(ctx, job.ConsumerName, job.UserType, job.ServiceType, int(totalTokens)); err != nil {
-			slog.Error("relaycomplete: failed to add tokens", "job_id", id, "error", err)
+			slog.ErrorContext(ctx, "relaycomplete: failed to add tokens", "job_id", job.ID, "error", err)
 		}
 	}
 
@@ -141,42 +178,29 @@ func (h *RelayCompleteHandler) Complete(w http.ResponseWriter, r *http.Request) 
 		h.usageTracker.TrackUserType(ctx, job.ConsumerName, job.ServiceType, job.UserType)
 	}
 
-	w.WriteHeader(http.StatusOK)
-
 	// Result-stage (async) guardrails run before webhook delivery so a blocked
 	// job is failed and a redacted result is repointed before the client is
-	// notified. Both the scan and the webhook run in one background goroutine
-	// (tracked for graceful shutdown), so the relay's ack above is not delayed
-	// while scan-then-deliver ordering is preserved. When no async guardrails
-	// apply this is exactly the previous behaviour (deliver the webhook).
+	// notified. When no async guardrails apply this is exactly the previous
+	// behaviour (deliver the webhook).
 	def := h.asyncGuardrailsFor(job)
-	if def == nil && job.CallbackURL == "" {
-		return
-	}
-	h.wg.Add(1)
-	go func() {
-		defer h.wg.Done()
-		bg := context.WithoutCancel(ctx)
-		if def != nil {
-			// Enforcing async guardrails gate the client-facing result. The gate is
-			// armed at submit (so a lost /complete cannot leave the result ungated),
-			// with the effective deadline derived from the completion time on the
-			// poll path. Here we run the scan, then clear the gate and wake sync
-			// waiters so the poll path delivers only the scanned (block/redact)
-			// outcome.
-			gated := def.Guardrails.Async.Enforcing()
-			h.applyResultGuardrails(bg, def, job)
-			if gated {
-				if err := h.redis.ClearScanGate(bg, job.ID); err != nil {
-					slog.WarnContext(bg, "async guardrails: failed to clear scan gate", "job_id", job.ID, "error", err)
-				}
-				h.redis.NotifyJobDone(bg, job.ID)
+	if def != nil {
+		// Enforcing async guardrails gate the client-facing result. The gate is
+		// armed at submit (so a lost trigger cannot leave the result ungated), with
+		// the effective deadline derived from the completion time on the poll path.
+		// Here we run the scan, then clear the gate and wake sync waiters so the
+		// poll path delivers only the scanned (block/redact) outcome.
+		gated := def.Guardrails.Async.Enforcing()
+		h.applyResultGuardrails(ctx, def, job)
+		if gated {
+			if err := h.redis.ClearScanGate(ctx, job.ID); err != nil {
+				slog.WarnContext(ctx, "async guardrails: failed to clear scan gate", "job_id", job.ID, "error", err)
 			}
+			h.redis.NotifyJobDone(ctx, job.ID)
 		}
-		if job.CallbackURL != "" {
-			h.webhookSender.Send(job)
-		}
-	}()
+	}
+	if job.CallbackURL != "" {
+		h.webhookSender.Send(job)
+	}
 }
 
 // asyncGuardrailsFor returns the resolved service Def when the job is eligible

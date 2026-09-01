@@ -516,6 +516,10 @@ func main() {
 		gmetrics.StartUsageTopNRefresh(ctx, redisClient.Raw(), cfg.Metrics.TopConsumers, 60*time.Second, initialRegistry.Types())
 	}
 
+	// Drive the once-per-job completion work (webhook, result scan, debits) from
+	// the reliable pub/sub broadcast; the relay's /complete HTTP call remains a
+	// redundant fast-path onto the same Redis claim.
+	manager.WithCompletionProcessor(relayCompleteHandler)
 	manager.Start(ctx, initialRegistry)
 	go healthChecker.Start(ctx)
 	relayCompleteHandler.StartRetryLoop(ctx)
