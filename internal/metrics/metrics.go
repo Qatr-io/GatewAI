@@ -263,6 +263,16 @@ var (
 		Help: "Model-backed guardrail detections by detector, mode and result (blocked|flagged).",
 	}, []string{"service_type", "model", "stage", "detector", "mode", "result"})
 
+	// GuardrailsAsyncTotal counts result-stage guardrail detections on async job
+	// results, by detector and result ("flagged"|"blocked"|"redacted"|"error").
+	// The async completion path runs once per job, so this is not per-replica
+	// inflated (unlike pub/sub broadcast metrics). In the shadow slice only
+	// "flagged" and "error" are emitted.
+	GuardrailsAsyncTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_async_total",
+		Help: "Result-stage async guardrail detections by detector and result (flagged|blocked|redacted|error).",
+	}, []string{"service_type", "model", "detector", "result"})
+
 	// GuardrailsModelCacheTotal counts verdict-cache lookups by detector and
 	// result ("hit"|"miss").
 	GuardrailsModelCacheTotal = promauto.NewCounterVec(prometheus.CounterOpts{

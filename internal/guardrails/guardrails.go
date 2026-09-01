@@ -573,6 +573,93 @@ func extractResponseTexts(body []byte) []string {
 	return texts
 }
 
+// extractResultTexts collects every string leaf value from an arbitrary JSON
+// result body. Async job results (transcripts, OCR, ...) have no fixed schema,
+// so each string value is a candidate for content scanning. When the body is
+// not JSON it is returned verbatim as a single fragment.
+func extractResultTexts(body []byte) []string {
+	var root any
+	if err := json.Unmarshal(body, &root); err != nil {
+		if s := strings.TrimSpace(string(body)); s != "" {
+			return []string{s}
+		}
+		return nil
+	}
+	var texts []string
+	var walk func(n any)
+	walk = func(n any) {
+		switch t := n.(type) {
+		case string:
+			if s := strings.TrimSpace(t); s != "" {
+				texts = append(texts, s)
+			}
+		case []any:
+			for _, e := range t {
+				walk(e)
+			}
+		case map[string]any:
+			for _, e := range t {
+				walk(e)
+			}
+		}
+	}
+	walk(root)
+	return texts
+}
+
+// RedactResultTexts redacts matches of the enabled regex groups inside every
+// string leaf of a JSON result body, returning the rewritten body and the
+// distinct categories redacted. A body that is not JSON is redacted as a single
+// string. Used by the async result stage, whose payloads have no fixed schema.
+// When nothing matched, the original body is returned unchanged.
+func RedactResultTexts(body []byte, enabled []string) ([]byte, []string) {
+	var root any
+	if err := json.Unmarshal(body, &root); err != nil {
+		red, matched := applyRedactions(string(body), enabled)
+		if len(matched) == 0 {
+			return body, nil
+		}
+		return []byte(red), matched
+	}
+	seen := map[string]bool{}
+	var cats []string
+	var walk func(n any) any
+	walk = func(n any) any {
+		switch t := n.(type) {
+		case string:
+			red, matched := applyRedactions(t, enabled)
+			for _, c := range matched {
+				if !seen[c] {
+					seen[c] = true
+					cats = append(cats, c)
+				}
+			}
+			return red
+		case []any:
+			for i, e := range t {
+				t[i] = walk(e)
+			}
+			return t
+		case map[string]any:
+			for k, e := range t {
+				t[k] = walk(e)
+			}
+			return t
+		default:
+			return n
+		}
+	}
+	root = walk(root)
+	if len(cats) == 0 {
+		return body, nil
+	}
+	out, err := json.Marshal(root)
+	if err != nil {
+		return body, nil
+	}
+	return out, cats
+}
+
 // extractMessageTexts pulls plaintext from the "messages[*].content" field
 // of an OpenAI-compatible payload. Content may be a string or an array of
 // content parts (each with a "text" field).

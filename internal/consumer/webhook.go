@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -29,6 +30,9 @@ import (
 type S3Store interface {
 	GetObject(ctx context.Context, objectKey string) ([]byte, error)
 	DeleteObject(ctx context.Context, objectKey string) error
+	// Upload stores objectKey (used by async result-stage redaction to write a
+	// redacted sibling object). size is the byte length of the reader's content.
+	Upload(ctx context.Context, objectKey string, reader io.Reader, size int64, contentType string) error
 }
 
 // WebhookSender delivers job result notifications to client callback URLs.

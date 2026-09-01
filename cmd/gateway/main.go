@@ -337,6 +337,7 @@ func main() {
 	manager := consumer.NewManager(redisClient)
 
 	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult, cfg.Webhooks)
+	relayCompleteHandler.WithRegistry(initialRegistry) // result-stage (async) guardrails
 	if limiter != nil {
 		relayCompleteHandler.WithProcessingTimeLimiter(limiter)
 		relayCompleteHandler.WithTokenLimiter(limiter)
@@ -437,6 +438,7 @@ func main() {
 		// Update infrastructure state that survives across reloads.
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
 		relayCompleteHandler.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
+		relayCompleteHandler.UpdateRegistry(newReg)
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
 		relayQueueDepth.UpdateRegistry(newReg)

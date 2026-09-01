@@ -574,6 +574,35 @@ type GuardrailsConfig struct {
 	// Output configures output-stage DLP guardrails (applied to LLM responses).
 	// When nil, output guardrails are disabled.
 	Output *GuardrailsStageConfig `yaml:"output"`
+	// Async configures result-stage guardrails applied to ASYNC job results
+	// (transcripts, OCR text, ...) in the once-per-job completion path. Unlike
+	// the input path (whose async submit carries only an uploaded file), the
+	// scannable content of an async job is its result text, so this stage runs
+	// against the job's result object after completion. Like the input stage it
+	// supports both regex checks and model-backed detectors. When nil, async
+	// result guardrails are disabled.
+	Async *GuardrailsAsyncConfig `yaml:"async"`
+}
+
+// GuardrailsAsyncConfig controls result-stage detection for async job results.
+// Detectors run out-of-band in the gateway's once-per-job completion handler;
+// in this slice they run in shadow (observe-only, emitting metrics) regardless
+// of Action, and enforcement (block/redact) is a later slice.
+type GuardrailsAsyncConfig struct {
+	// Action applied when a check matches: "block", "redact", or "flag"
+	// (default flag/shadow — observe only).
+	Action string `yaml:"action"`
+	// Checks selects which regex guardrail groups to run on the result text.
+	Checks []string `yaml:"checks"`
+	// Models configures model-backed detectors run on the result text.
+	Models []GuardrailModelConfig `yaml:"models"`
+	// ScanTimeout (block/redact only) bounds how long the client-facing result is
+	// withheld awaiting the scan. If the scan hasn't completed by then, OnTimeout
+	// decides. Duration string; supports ${VAR:-default}. Default "30s".
+	ScanTimeout string `yaml:"scan_timeout"`
+	// OnTimeout (block/redact only): "fail_open" (default — deliver the un-scanned
+	// result once ScanTimeout lapses) or "fail_closed" (mark the job failed).
+	OnTimeout string `yaml:"on_timeout"`
 }
 
 // GuardrailModelConfig configures one model-backed guardrail detector (a

@@ -24,12 +24,25 @@ type GuardrailsStage struct {
 	// window for block/buffer (0 = default).
 	Streaming          string
 	StreamWindowTokens int
+	// ScanTimeout / OnTimeoutFailClosed (async stage, block/redact only) gate how
+	// long the client-facing result is withheld awaiting the scan, and what to do
+	// if it lapses (fail-open = deliver un-scanned; fail-closed = fail the job).
+	ScanTimeout         time.Duration
+	OnTimeoutFailClosed bool
 }
 
-// GuardrailsSpec holds resolved guardrails for both the input and output stages.
+// Enforcing reports whether this stage's action modifies delivery (block or
+// redact) rather than just observing (flag).
+func (s GuardrailsStage) Enforcing() bool {
+	return s.Action == "block" || s.Action == "redact"
+}
+
+// GuardrailsSpec holds resolved guardrails for the input, output, and async
+// (result) stages.
 type GuardrailsSpec struct {
 	Input  GuardrailsStage
 	Output GuardrailsStage
+	Async  GuardrailsStage // applied to async job results in the completion path
 }
 
 // Def describes a registered inference service type.
@@ -251,7 +264,33 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 			output.StreamWindowTokens = 64
 		}
 	}
-	return GuardrailsSpec{Input: input, Output: output}
+	var async GuardrailsStage
+	if cfg.Async != nil {
+		async = resolveStage(cfg.Async.Checks, cfg.Async.Action)
+		async.Models = resolveModels(cfg.Async.Models)
+		if len(async.Models) > 0 {
+			async.Enabled = true // a stage with only model detectors is still active
+		}
+		// The async result stage is stage-action driven (block|redact|flag applied
+		// to any fired detector). Default to "flag" (shadow) so enabling it never
+		// starts blocking/redacting results by accident — enforcement is opt-in.
+		// (resolveStage defaults an unset action to "block"; async overrides that.)
+		if async.Enabled && cfg.Async.Action == "" {
+			async.Action = "flag"
+		}
+		// DONE-gating knobs (only meaningful when async enforces).
+		async.ScanTimeout = parseDurationOr(cfg.Async.ScanTimeout, 30*time.Second)
+		async.OnTimeoutFailClosed = cfg.Async.OnTimeout == "fail_closed"
+	}
+	return GuardrailsSpec{Input: input, Output: output, Async: async}
+}
+
+// parseDurationOr parses a duration string, falling back to def on empty/invalid.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return def
 }
 
 // resolveModels builds runtime model-detector Enforcements from config, applying

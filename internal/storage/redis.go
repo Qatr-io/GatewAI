@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -388,6 +389,94 @@ func (r *RedisClient) UpdateJobResult(ctx context.Context, jobID string, status 
 		return fmt.Errorf("updating job %q in redis: %w", jobID, err)
 	}
 	return nil
+}
+
+// overrideJobScript updates an existing job's status/result_ref/error even when
+// it is already terminal. Unlike updateJobScript (which no-ops on completed jobs
+// for idempotent completion), this is used by post-completion result-stage
+// guardrails, which must be able to fail a completed job (block) or repoint its
+// result (redact) after the fact.
+var overrideJobScript = redis.NewScript(`
+local data = redis.call('GET', KEYS[1])
+if not data then
+    return redis.error_reply('job not found: ' .. KEYS[1])
+end
+local job = cjson.decode(data)
+job['status']     = ARGV[1]
+job['result_ref'] = ARGV[2]
+job['error']      = ARGV[3]
+job['updated_at'] = ARGV[4]
+redis.call('SET', KEYS[1], cjson.encode(job), 'EX', tonumber(ARGV[5]))
+return redis.status_reply('OK')
+`)
+
+// OverrideJobResult sets an existing job's status/result_ref/error regardless of
+// its current (possibly terminal) state. Intended for result-stage guardrails
+// that act after completion: block (status=failed, result_ref cleared) or redact
+// (result_ref repointed to the redacted object).
+func (r *RedisClient) OverrideJobResult(ctx context.Context, jobID string, status model.JobStatus, resultRef, errMsg string) error {
+	updatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	ttlSecs := int64(r.ttlForStatus(status).Seconds())
+	start := time.Now()
+	err := overrideJobScript.Run(ctx, r.client,
+		[]string{jobKey(jobID)},
+		string(status), resultRef, errMsg, updatedAt, ttlSecs,
+	).Err()
+	metrics.ObserveWithExemplar(ctx, metrics.RedisOperationDuration.WithLabelValues("override_job"), time.Since(start).Seconds())
+	if err != nil {
+		metrics.RedisErrorsTotal.WithLabelValues("override_job").Inc()
+		return fmt.Errorf("overriding job %q result in redis: %w", jobID, err)
+	}
+	return nil
+}
+
+func scanGateKey(id string) string { return "jobscan:" + id }
+
+// ScanGate is a job's result DONE-gate: its client-facing result is withheld
+// until the async guardrail scan finishes, or until Deadline lapses (then the
+// FailClosed policy decides). Only set for enforcing (block/redact) async jobs.
+type ScanGate struct {
+	Deadline   time.Time
+	FailClosed bool
+}
+
+// SetScanGate marks a job as awaiting its async result scan. It is kept for the
+// job's completed-status TTL (so a fail-closed timeout is observable) and is
+// deleted by ClearScanGate when the scan finishes.
+func (r *RedisClient) SetScanGate(ctx context.Context, id string, deadline time.Time, failClosed bool) error {
+	policy := "fail_open"
+	if failClosed {
+		policy = "fail_closed"
+	}
+	val := fmt.Sprintf("%d|%s", deadline.Unix(), policy)
+	if err := r.client.Set(ctx, scanGateKey(id), val, r.ttlForStatus(model.JobStatusCompleted)).Err(); err != nil {
+		return fmt.Errorf("set scan gate %q: %w", id, err)
+	}
+	return nil
+}
+
+// GetScanGate returns a job's scan gate, or ok=false when none exists (never
+// gated, or already cleared by the scan).
+func (r *RedisClient) GetScanGate(ctx context.Context, id string) (ScanGate, bool, error) {
+	v, err := r.client.Get(ctx, scanGateKey(id)).Result()
+	if err == redis.Nil {
+		return ScanGate{}, false, nil
+	}
+	if err != nil {
+		return ScanGate{}, false, fmt.Errorf("get scan gate %q: %w", id, err)
+	}
+	parts := strings.SplitN(v, "|", 2)
+	sec, _ := strconv.ParseInt(parts[0], 10, 64)
+	g := ScanGate{Deadline: time.Unix(sec, 0)}
+	if len(parts) > 1 && parts[1] == "fail_closed" {
+		g.FailClosed = true
+	}
+	return g, true, nil
+}
+
+// ClearScanGate removes a job's DONE-gate — the scan finished, result deliverable.
+func (r *RedisClient) ClearScanGate(ctx context.Context, id string) error {
+	return r.client.Del(ctx, scanGateKey(id)).Err()
 }
 
 // PopJob atomically moves a job ID from relay:{model}:pending to

@@ -91,3 +91,9 @@ func MessageTexts(body []byte) []string { return extractMessageTexts(body) }
 // ResponseTexts extracts the scannable text fragments from an OpenAI-compatible
 // response body (choices[*].message.content).
 func ResponseTexts(body []byte) []string { return extractResponseTexts(body) }
+
+// ResultTexts extracts scannable text from an arbitrary async job result body
+// (transcript, OCR, ...). Async results have no fixed schema, so every JSON
+// string leaf value is collected as a candidate for content scanning. A body
+// that is not JSON is returned as a single text fragment.
+func ResultTexts(body []byte) []string { return extractResultTexts(body) }

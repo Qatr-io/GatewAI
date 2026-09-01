@@ -336,6 +336,33 @@ services:
   #       # stream_window_tokens: buffer size (~tokens) held before a window is
   #       # scanned/released. Larger = better detection, higher latency. Default 64.
   #       stream_window_tokens: 64
+  #     # Optional async (result) stage — scan the RESULT of async /jobs jobs
+  #     # (transcripts, OCR text, ...) in the once-per-job completion path. The
+  #     # async input is a file, so this is where content is scanned. Supports
+  #     # regex checks and model detectors. action: flag (shadow, default) |
+  #     # block (fail the job, suppress the result) | redact (write a redacted
+  #     # sibling object and repoint the job to it; the original is retained).
+  #     # Defaults to flag when unset so enabling it never enforces by accident.
+  #     # (The top-level input stage above also guards text params on async
+  #     # submit, e.g. a prompt; the uploaded file itself is not text-scanned.)
+  #     async:
+  #       checks: [pii]
+  #       action: flag
+  #       # For block/redact only: the client-facing result is withheld until the
+  #       # scan finishes (poll shows still-processing; webhook fires post-scan),
+  #       # so flagged content is never delivered. If the scan hasn't completed
+  #       # within scan_timeout, on_timeout decides: fail_open (default, deliver
+  #       # the un-scanned result) or fail_closed (mark the job failed).
+  #       scan_timeout: "30s"
+  #       on_timeout: fail_open
+  #       models:
+  #         - name: injection
+  #           endpoint: "http://guardrail-api-predictor.<ns>.svc.cluster.local/guardrail/injection"
+  #           kind: classifier
+  #           categories: [injection]
+  #           threshold: 0.8
+  #           timeout: "500ms"
+  #           on_error: fail_open
   #
   # Anthropic — translate OpenAI-format requests to the Messages API automatically.
   # - type: llm

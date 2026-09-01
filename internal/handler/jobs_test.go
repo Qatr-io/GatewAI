@@ -23,6 +23,7 @@ import (
 	"gatewai/gateway/internal/model"
 	"gatewai/gateway/internal/ratelimit"
 	"gatewai/gateway/internal/service"
+	"gatewai/gateway/internal/storage"
 )
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
@@ -61,6 +62,21 @@ type mockAsyncStore struct {
 	staleJobsErr    error
 	idem            map[string]string // idempotency key → jobID (SETNX semantics)
 	everExisted     bool              // returned by JobEverExisted
+	scanGate        *storage.ScanGate // non-nil = an armed result DONE-gate
+	scanGateSet     bool              // SetScanGate was called
+}
+
+func (m *mockAsyncStore) SetScanGate(_ context.Context, _ string, deadline time.Time, failClosed bool) error {
+	m.scanGate = &storage.ScanGate{Deadline: deadline, FailClosed: failClosed}
+	m.scanGateSet = true
+	return nil
+}
+
+func (m *mockAsyncStore) GetScanGate(_ context.Context, _ string) (storage.ScanGate, bool, error) {
+	if m.scanGate == nil {
+		return storage.ScanGate{}, false, nil
+	}
+	return *m.scanGate, true, nil
 }
 
 func (m *mockAsyncStore) SaveJob(_ context.Context, _ *model.Job) error {
@@ -170,6 +186,42 @@ func newAsyncHandler(reg *service.Registry, s3 *mockJobS3, store *mockAsyncStore
 	return handler.NewJobHandler(reg, s3, store, "", "", nil, config.LifecycleConfig{})
 }
 
+// asyncInputGuardrailRegistry adds a blocking input-stage regex guardrail (pii)
+// to the single transcription model, for testing async-submit param scanning.
+func asyncInputGuardrailRegistry() *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{{
+		Type:  "transcription",
+		Model: "faster-whisper",
+		Operations: map[string][]string{
+			"transcription": {"/v1/audio/transcriptions"},
+		},
+		AcceptedExts:  []string{".mp3", ".wav"},
+		MaxFileSizeMB: 100,
+		Guardrails:    config.GuardrailsConfig{Action: "block", Checks: []string{"pii"}},
+	}})
+}
+
+// submitReqWithParam builds a submit request that also carries one extra text
+// form field (e.g. a prompt) alongside the file.
+func submitReqWithParam(t *testing.T, serviceType, modelName, paramKey, paramVal, filename string, body []byte) *http.Request {
+	t.Helper()
+	buf := &bytes.Buffer{}
+	mw := multipart.NewWriter(buf)
+	if modelName != "" {
+		_ = mw.WriteField("model", modelName)
+	}
+	_ = mw.WriteField(paramKey, paramVal)
+	fw, _ := mw.CreateFormFile("file", filename)
+	_, _ = fw.Write(body)
+	_ = mw.Close()
+
+	req := httptest.NewRequest(http.MethodPost, "/jobs/"+serviceType, buf)
+	req.Header.Set("Content-Type", mw.FormDataContentType())
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("service_type", serviceType)
+	return req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 // TestSubmit_InvalidOperation_NoSideEffects is the regression test for the bug
@@ -231,6 +283,45 @@ func TestSubmit_NominalPath(t *testing.T) {
 	}
 	if !store.saved {
 		t.Error("Redis save should have been called")
+	}
+}
+
+// TestSubmit_AsyncInputGuardrail_BlocksPIIParam verifies that a text param with
+// PII is rejected (422) by the input stage before any S3/Redis side effects.
+func TestSubmit_AsyncInputGuardrail_BlocksPIIParam(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	req := submitReqWithParam(t, "transcription", "faster-whisper", "prompt", "transcribe for alice@example.com", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncInputGuardrailRegistry(), s3, store).Submit(w, req)
+
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+	}
+	if s3.uploaded {
+		t.Error("blocked submit must not upload to S3")
+	}
+	if store.saved {
+		t.Error("blocked submit must not save the job")
+	}
+}
+
+// TestSubmit_AsyncInputGuardrail_AllowsCleanParam verifies a clean text param
+// passes the input stage and the job is accepted.
+func TestSubmit_AsyncInputGuardrail_AllowsCleanParam(t *testing.T) {
+	s3 := &mockJobS3{}
+	store := &mockAsyncStore{}
+
+	req := submitReqWithParam(t, "transcription", "faster-whisper", "prompt", "please transcribe the meeting", "audio.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncInputGuardrailRegistry(), s3, store).Submit(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if !s3.uploaded || !store.saved {
+		t.Error("clean submit should upload and save")
 	}
 }
 
@@ -1288,5 +1379,89 @@ func TestSubmit_TokenLimit_Allowed(t *testing.T) {
 	}
 	if !store.saved {
 		t.Error("Redis SaveJob should have been called")
+	}
+}
+
+// ── async result DONE-gate ─────────────────────────────────────────────────────
+
+func gatedStore(gate *storage.ScanGate) *mockAsyncStore {
+	now := time.Now().UTC()
+	return &mockAsyncStore{
+		job: &model.Job{
+			ID: "g1", ServiceType: "transcription", Model: "faster-whisper",
+			Status: model.JobStatusCompleted, ResultRef: "g1/result.json",
+			CreatedAt: now, UpdatedAt: now,
+		},
+		scanGate: gate,
+	}
+}
+
+func gatedStatus(t *testing.T, store *mockAsyncStore) string {
+	t.Helper()
+	w := httptest.NewRecorder()
+	newHandlerWithConsumer(singleOpRegistry(), &mockJobS3{}, store).
+		GetStatus(w, statusReq(t, "transcription", "g1"))
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	s, _ := resp["status"].(string)
+	return s
+}
+
+func TestGetStatus_ScanGate_Armed_WithholdsResult(t *testing.T) {
+	// Zero deadline = scan not yet started; a completed job must read as processing.
+	if s := gatedStatus(t, gatedStore(&storage.ScanGate{})); s != string(model.JobStatusProcessing) {
+		t.Fatalf("armed gate should withhold (processing), got %q", s)
+	}
+}
+
+func TestGetStatus_ScanGate_FailOpen_Delivers(t *testing.T) {
+	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: false}
+	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusCompleted) {
+		t.Fatalf("expired fail-open gate should deliver (completed), got %q", s)
+	}
+}
+
+func TestGetStatus_ScanGate_FailClosed_ReportsFailed(t *testing.T) {
+	gate := &storage.ScanGate{Deadline: time.Now().Add(-time.Minute), FailClosed: true}
+	if s := gatedStatus(t, gatedStore(gate)); s != string(model.JobStatusFailed) {
+		t.Fatalf("expired fail-closed gate should report failed, got %q", s)
+	}
+}
+
+func asyncActionRegistry(action string) *service.Registry {
+	return service.NewRegistry([]config.ServiceConfig{{
+		Type: "transcription", Model: "faster-whisper",
+		Operations:    map[string][]string{"transcription": {"/v1/audio/transcriptions"}},
+		AcceptedExts:  []string{".wav"},
+		MaxFileSizeMB: 100,
+		Guardrails:    config.GuardrailsConfig{Async: &config.GuardrailsAsyncConfig{Checks: []string{"pii"}, Action: action}},
+	}})
+}
+
+func TestSubmit_EnforcingAsync_ArmsScanGate(t *testing.T) {
+	store := &mockAsyncStore{}
+	req := submitReq(t, "transcription", "faster-whisper", "transcription", "a.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncActionRegistry("block"), &mockJobS3{}, store).Submit(w, req)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d: %s", w.Code, w.Body.String())
+	}
+	if !store.scanGateSet {
+		t.Error("enforcing (block) async must arm the result scan gate at submit")
+	}
+}
+
+func TestSubmit_ShadowAsync_NoScanGate(t *testing.T) {
+	store := &mockAsyncStore{}
+	req := submitReq(t, "transcription", "faster-whisper", "transcription", "a.wav", []byte("data"))
+	w := httptest.NewRecorder()
+	newAsyncHandler(asyncActionRegistry("flag"), &mockJobS3{}, store).Submit(w, req)
+	if store.scanGateSet {
+		t.Error("shadow (flag) async must not arm a scan gate")
 	}
 }
