@@ -245,6 +245,43 @@ func TestStreamGuard_PreservesToolCallsWithContent(t *testing.T) {
 	}
 }
 
+// TestStreamGuard_InterleavedControlChunksDoNotDefeatWindow reproduces the live
+// failure: some backends (vLLM/OpenAI reasoning models) emit a content-less
+// reasoning_content chunk after EVERY content token. Those must not flush the
+// buffer, or a match split across content deltas (an email here) is released
+// piecemeal and never redacted. Only a real finish_reason may flush.
+func TestStreamGuard_InterleavedControlChunksDoNotDefeatWindow(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 24)
+	// Email split across content deltas, each followed by a reasoning control chunk.
+	pieces := []string{"mail ", "bob", "@", "exa", "mple", ".com", " now"}
+	var lines []string
+	// leading role chunk (content-less, with siblings)
+	lines = append(lines, `data: {"choices":[{"delta":{"role":"assistant","content":"","reasoning_content":null},"index":0}]}`, ``)
+	for _, p := range pieces {
+		pb, _ := json.Marshal(p)
+		lines = append(lines,
+			`data: {"choices":[{"delta":{"content":`+string(pb)+`},"index":0}]}`, ``,
+			`data: {"choices":[{"delta":{"reasoning_content":null},"finish_reason":null,"index":0}]}`, ``,
+		)
+	}
+	lines = append(lines,
+		`data: {"choices":[{"delta":{"content":"","reasoning_content":null},"finish_reason":"stop","index":0}]}`, ``,
+		`data: [DONE]`, ``,
+	)
+	feed(g, lines)
+	got := reassemble(buf.String())
+	if strings.Contains(got, "bob@example.com") {
+		t.Fatalf("email leaked despite interleaved control chunks: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED_EMAIL]") {
+		t.Fatalf("email not redacted: %q", got)
+	}
+	if !g.violated {
+		t.Error("violated should be set")
+	}
+}
+
 // TestStreamGuard_ArrayContentScanned ensures array-of-parts content
 // (delta.content: [{type:text,text:…}]) is flattened and scanned, not passed
 // through unscanned as if it were a control chunk.
