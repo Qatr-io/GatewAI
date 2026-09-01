@@ -26,8 +26,12 @@ import (
 // the window (e.g. a large secret block) may have a prefix released before it
 // completes — use a larger window or the non-streaming output stage for those.
 //
-// Non-content chunks (role, finish_reason, usage, tool_calls) pass through after
-// the buffer is flushed. Content chunks are re-emitted as synthesized
+// The buffer is flushed ONLY at a true end of content — a real (non-null)
+// finish_reason, [DONE], or end of stream. Other content-less chunks (role,
+// usage, and the reasoning_content deltas some backends interleave between every
+// content token) pass through WITHOUT flushing, so the held window survives
+// across them; flushing on those would release the buffer token-by-token and let
+// a split match leak. Content chunks are re-emitted as synthesized
 // chat.completion.chunk deltas carrying the original id/model/created; a chunk
 // that carries BOTH content and sibling fields (finish_reason, tool_calls,
 // refusal, …) has its content buffered and the remainder forwarded with
@@ -90,24 +94,41 @@ func (g *streamGuard) line(raw string) bool {
 		return false
 	}
 
-	content, hasContent, hasExtra, rawNoContent := parseChunk(data)
+	content, hasContent, hasFinish, hasSiblings, rawNoContent := parseChunk(data)
 	g.captureEnvelope(data)
 
 	if !hasContent {
-		// Control chunk (role/finish/usage/tool_calls) — flush, then forward.
-		if !g.emit(true) {
-			return false
+		// Content-less chunk. Only a TERMINAL chunk (a real, non-null
+		// finish_reason) means the content is complete and the buffer must be
+		// flushed. Other content-less chunks — role, usage, and the
+		// reasoning_content deltas some backends (vLLM/OpenAI reasoning models)
+		// interleave between EVERY content token — must NOT flush the buffer, or
+		// the held window (and thus cross-chunk match detection) is defeated and
+		// a split match leaks. They carry no content, so forwarding them ahead of
+		// the held tail is safe.
+		if hasFinish {
+			if !g.emit(true) {
+				return false
+			}
 		}
 		return g.write("data: " + data + "\n\n")
 	}
 
 	g.pending += content
-	if hasExtra {
-		// The chunk carries content AND sibling fields (finish_reason, tool_calls,
-		// refusal, …). Flush the buffered content first (preserving order), then
-		// forward the chunk with delta.content stripped so the siblings are never
-		// lost and the content isn't duplicated.
+	if hasFinish {
+		// Terminal content chunk: flush everything, then forward the finish
+		// (content stripped so it isn't duplicated).
 		if !g.emit(true) {
+			return false
+		}
+		return g.write("data: " + rawNoContent + "\n\n")
+	}
+	if hasSiblings {
+		// Content chunk carrying NON-terminal siblings (tool_calls/refusal/…):
+		// release the safe prefix (keeping the window) and forward the siblings
+		// with content stripped, so they are preserved without collapsing the
+		// buffer the way a full flush would.
+		if !g.emit(false) {
 			return false
 		}
 		return g.write("data: " + rawNoContent + "\n\n")
@@ -224,26 +245,28 @@ func cutData(raw string) (string, bool) {
 }
 
 // parseChunk extracts choices[0].delta.content (string or array-of-parts form)
-// and whether the chunk carries sibling fields that must be forwarded separately.
-// hasExtra is true when the choice has a finish_reason OR the delta carries any
-// key besides "content" (tool_calls, refusal, function_call, …). rawNoContent is
-// the chunk re-serialized with delta.content removed (computed whenever hasExtra),
-// so the siblings survive while the buffered content is scanned.
-func parseChunk(data string) (content string, hasContent, hasExtra bool, rawNoContent string) {
+// and classifies the chunk. hasFinish is true when the choice carries a real
+// (non-null) finish_reason — the ONLY signal that the content is complete and
+// the buffer may be flushed. hasSiblings is true when the delta carries a key
+// besides "content" (tool_calls, refusal, reasoning_content, …), which must be
+// forwarded but must NOT by itself trigger a flush. rawNoContent is the chunk
+// re-serialized with delta.content removed (computed when we forward the chunk
+// separately from the buffered content it carried).
+func parseChunk(data string) (content string, hasContent, hasFinish, hasSiblings bool, rawNoContent string) {
 	var obj map[string]any
 	if json.Unmarshal([]byte(data), &obj) != nil {
-		return "", false, false, data
+		return "", false, false, false, data
 	}
 	choices, _ := obj["choices"].([]any)
 	if len(choices) == 0 {
-		return "", false, false, data
+		return "", false, false, false, data
 	}
 	c0, _ := choices[0].(map[string]any)
 	if c0 == nil {
-		return "", false, false, data
+		return "", false, false, false, data
 	}
 	if fr, ok := c0["finish_reason"]; ok && fr != nil {
-		hasExtra = true
+		hasFinish = true
 	}
 	delta, _ := c0["delta"].(map[string]any)
 	if delta != nil {
@@ -251,18 +274,18 @@ func parseChunk(data string) (content string, hasContent, hasExtra bool, rawNoCo
 		// Any delta key other than "content" is a sibling that must be preserved.
 		for k := range delta {
 			if k != "content" {
-				hasExtra = true
+				hasSiblings = true
 				break
 			}
 		}
 	}
-	if hasContent && hasExtra {
+	if hasContent && (hasFinish || hasSiblings) {
 		delete(delta, "content")
 		if b, err := json.Marshal(obj); err == nil {
 			rawNoContent = string(b)
 		}
 	}
-	return content, hasContent, hasExtra, rawNoContent
+	return content, hasContent, hasFinish, hasSiblings, rawNoContent
 }
 
 // extractDeltaContent reads delta.content in either the string form or the
