@@ -262,44 +262,42 @@ func (c *Checker) Redact(body []byte, enabled []string) ([]byte, []string) {
 		if !ok {
 			continue
 		}
-		contentRaw, exists := msg["content"]
-		if !exists {
-			continue
-		}
-
-		switch cv := contentRaw.(type) {
-		case string:
-			newText, cats := applyRedactions(cv, enabled)
-			for _, cat := range cats {
-				redacted[cat] = struct{}{}
-			}
-			msg["content"] = newText
-			msgs[i] = msg
-
-		case []any:
-			for j, partRaw := range cv {
-				part, ok := partRaw.(map[string]any)
-				if !ok {
-					continue
-				}
-				textRaw, hasText := part["text"]
-				if !hasText {
-					continue
-				}
-				textStr, ok := textRaw.(string)
-				if !ok {
-					continue
-				}
-				newText, cats := applyRedactions(textStr, enabled)
+		// content may be absent (assistant tool-call turns) — still scan tool_calls.
+		if contentRaw, exists := msg["content"]; exists {
+			switch cv := contentRaw.(type) {
+			case string:
+				newText, cats := applyRedactions(cv, enabled)
 				for _, cat := range cats {
 					redacted[cat] = struct{}{}
 				}
-				part["text"] = newText
-				cv[j] = part
+				msg["content"] = newText
+
+			case []any:
+				for j, partRaw := range cv {
+					part, ok := partRaw.(map[string]any)
+					if !ok {
+						continue
+					}
+					textRaw, hasText := part["text"]
+					if !hasText {
+						continue
+					}
+					textStr, ok := textRaw.(string)
+					if !ok {
+						continue
+					}
+					newText, cats := applyRedactions(textStr, enabled)
+					for _, cat := range cats {
+						redacted[cat] = struct{}{}
+					}
+					part["text"] = newText
+					cv[j] = part
+				}
+				msg["content"] = cv
 			}
-			msg["content"] = cv
-			msgs[i] = msg
 		}
+		redactToolCalls(msg, enabled, redacted)
+		msgs[i] = msg
 	}
 
 	payload["messages"] = msgs
@@ -357,46 +355,42 @@ func (c *Checker) RedactResponse(body []byte, enabled []string) ([]byte, []strin
 		if !ok {
 			continue
 		}
-		contentRaw, exists := msg["content"]
-		if !exists {
-			continue
-		}
-
-		switch cv := contentRaw.(type) {
-		case string:
-			newText, cats := applyRedactions(cv, enabled)
-			for _, cat := range cats {
-				redacted[cat] = struct{}{}
-			}
-			msg["content"] = newText
-			choice["message"] = msg
-			choices[i] = choice
-
-		case []any:
-			for j, partRaw := range cv {
-				part, ok := partRaw.(map[string]any)
-				if !ok {
-					continue
-				}
-				textRaw, hasText := part["text"]
-				if !hasText {
-					continue
-				}
-				textStr, ok := textRaw.(string)
-				if !ok {
-					continue
-				}
-				newText, cats := applyRedactions(textStr, enabled)
+		if contentRaw, exists := msg["content"]; exists {
+			switch cv := contentRaw.(type) {
+			case string:
+				newText, cats := applyRedactions(cv, enabled)
 				for _, cat := range cats {
 					redacted[cat] = struct{}{}
 				}
-				part["text"] = newText
-				cv[j] = part
+				msg["content"] = newText
+
+			case []any:
+				for j, partRaw := range cv {
+					part, ok := partRaw.(map[string]any)
+					if !ok {
+						continue
+					}
+					textRaw, hasText := part["text"]
+					if !hasText {
+						continue
+					}
+					textStr, ok := textRaw.(string)
+					if !ok {
+						continue
+					}
+					newText, cats := applyRedactions(textStr, enabled)
+					for _, cat := range cats {
+						redacted[cat] = struct{}{}
+					}
+					part["text"] = newText
+					cv[j] = part
+				}
+				msg["content"] = cv
 			}
-			msg["content"] = cv
-			choice["message"] = msg
-			choices[i] = choice
 		}
+		redactToolCalls(msg, enabled, redacted)
+		choice["message"] = msg
+		choices[i] = choice
 	}
 
 	payload["choices"] = choices
@@ -421,11 +415,106 @@ func (c *Checker) RedactResponse(body []byte, enabled []string) ([]byte, []strin
 
 // applyRedactions applies all active-group patterns to text and returns the
 // rewritten string plus the list of category names that actually matched.
+// redactToolCalls redacts matches inside each tool_calls[*].function.arguments
+// string of an OpenAI message map (arguments is a JSON-encoded string). Matched
+// categories are recorded into `into`. Mutates msg in place.
+func redactToolCalls(msg map[string]any, enabled []string, into map[string]struct{}) {
+	tcRaw, ok := msg["tool_calls"].([]any)
+	if !ok {
+		return
+	}
+	for k, tcAny := range tcRaw {
+		tc, ok := tcAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := tc["function"].(map[string]any)
+		if !ok {
+			continue
+		}
+		argStr, ok := fn["arguments"].(string)
+		if !ok || argStr == "" {
+			continue
+		}
+		newArg, cats := applyRedactions(argStr, enabled)
+		if len(cats) == 0 {
+			continue
+		}
+		for _, cat := range cats {
+			into[cat] = struct{}{}
+		}
+		fn["arguments"] = newArg
+		tc["function"] = fn
+		tcRaw[k] = tc
+	}
+	msg["tool_calls"] = tcRaw
+}
+
 // RedactText redacts matches of the enabled regex groups in a plain string,
 // returning the redacted text and the categories that matched. Used for
 // scanning already-extracted text such as buffered streaming content.
 func RedactText(text string, enabled []string) (string, []string) {
 	return applyRedactions(text, enabled)
+}
+
+// matchSpans returns the merged [start,end) byte ranges of all matches of the
+// enabled groups in text (sorted, non-overlapping). Only complete matches are
+// reported — an unfinished pattern at the very end of text produces no span.
+func matchSpans(text string, enabled []string) [][2]int {
+	var spans [][2]int
+	for _, p := range compiledPatterns {
+		if !groupEnabled(p.group, enabled) {
+			continue
+		}
+		for _, loc := range p.re.FindAllStringIndex(text, -1) {
+			spans = append(spans, [2]int{loc[0], loc[1]})
+		}
+	}
+	if len(spans) < 2 {
+		return spans
+	}
+	sort.Slice(spans, func(i, j int) bool { return spans[i][0] < spans[j][0] })
+	merged := spans[:1]
+	for _, s := range spans[1:] {
+		last := &merged[len(merged)-1]
+		if s[0] <= last[1] {
+			if s[1] > last[1] {
+				last[1] = s[1]
+			}
+		} else {
+			merged = append(merged, s)
+		}
+	}
+	return merged
+}
+
+// SafeRedactPrefix supports incremental streaming redaction. It redacts the
+// largest prefix of text that (a) leaves at least `hold` trailing characters
+// unfinalized and (b) does not cut through a match span, and returns that
+// redacted prefix, the number of ORIGINAL characters consumed (so the caller
+// carries text[consumed:]), and whether anything was redacted. When nothing is
+// safe to finalize yet (text no longer than `hold`, or a match straddles the
+// boundary), consumed is 0. A `hold` of 0 finalizes everything (end of stream).
+//
+// Guarantees correct redaction for any match up to `hold` characters long; a
+// match longer than `hold` may have a prefix finalized before it completes
+// (inherent to windowed streaming — use a larger window or the non-streaming
+// output stage for very long secrets).
+func SafeRedactPrefix(text string, enabled []string, hold int) (redacted string, consumed int, matched bool) {
+	boundary := len(text) - hold
+	if boundary <= 0 {
+		return "", 0, false
+	}
+	for _, sp := range matchSpans(text, enabled) {
+		if sp[0] < boundary && boundary < sp[1] {
+			boundary = sp[0] // don't finalize inside a match
+		}
+	}
+	if boundary <= 0 {
+		return "", 0, false
+	}
+	red, cats := applyRedactions(text[:boundary], enabled)
+	return red, boundary, len(cats) > 0
 }
 
 func applyRedactions(text string, enabled []string) (string, []string) {

@@ -36,3 +36,26 @@ func TestMessageTexts_NoToolCalls_StillWorks(t *testing.T) {
 		t.Errorf("plain message extraction regressed: %v", got)
 	}
 }
+
+func TestRedact_ToolCallArguments(t *testing.T) {
+	// Assistant tool-call turn with content:null — must still redact args.
+	body := []byte(`{"messages":[{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"f","arguments":"{\"email\":\"bob@example.com\"}"}}]}]}`)
+	out, cats := guardrails.New().Redact(body, []string{"pii"})
+	if strings.Contains(string(out), "bob@example.com") {
+		t.Fatalf("tool-call argument not redacted: %s", out)
+	}
+	if len(cats) == 0 {
+		t.Error("expected a redacted category (email)")
+	}
+}
+
+func TestRedactResponse_ToolCallArguments(t *testing.T) {
+	body := []byte(`{"choices":[{"message":{"role":"assistant","content":null,"tool_calls":[{"function":{"name":"send","arguments":"{\"to\":\"bob@example.com\"}"}}]}}]}`)
+	out, cats := guardrails.New().RedactResponse(body, []string{"pii"})
+	if strings.Contains(string(out), "bob@example.com") {
+		t.Fatalf("response tool-call argument not redacted: %s", out)
+	}
+	if len(cats) == 0 {
+		t.Error("expected a redacted category (email)")
+	}
+}

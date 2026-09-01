@@ -783,6 +783,13 @@ func (c *Config) validate() error {
 		if svc.ResponseCacheTTL < 0 {
 			return fmt.Errorf("service %q: response_cache_ttl must be >= 0", svc.Type)
 		}
+		if svc.Guardrails.Output != nil {
+			switch svc.Guardrails.Output.Streaming {
+			case "", "flag", "block", "buffer":
+			default:
+				return fmt.Errorf("service %q: guardrails.output.streaming %q is invalid (valid: flag, block, buffer)", svc.Type, svc.Guardrails.Output.Streaming)
+			}
+		}
 		for i, b := range svc.Backends {
 			if b.URL == "" {
 				return fmt.Errorf("service %q: backends[%d].url must not be empty", svc.Type, i)

@@ -2,6 +2,7 @@ package llmproxy
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -89,5 +90,115 @@ func TestStreamGuard_WindowFlush(t *testing.T) {
 	})
 	if !strings.Contains(buf.String(), "hello") {
 		t.Errorf("windowed content should have been emitted: %s", buf.String())
+	}
+}
+
+// chunkLines turns content parts into SSE content-delta lines (each followed by
+// the blank separator), then a finish chunk and [DONE].
+func chunkLines(parts ...string) []string {
+	var out []string
+	for _, p := range parts {
+		out = append(out, `data: {"id":"c1","model":"m","choices":[{"delta":{"content":"`+p+`"}}]}`, ``)
+	}
+	out = append(out, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`, ``, `data: [DONE]`, ``)
+	return out
+}
+
+// reassemble extracts and concatenates all delta.content from an SSE dump.
+func reassemble(sse string) string {
+	var b strings.Builder
+	for _, ln := range strings.Split(sse, "\n") {
+		s, ok := strings.CutPrefix(ln, "data: ")
+		if !ok || s == "[DONE]" {
+			continue
+		}
+		var c struct {
+			Choices []struct {
+				Delta struct {
+					Content string `json:"content"`
+				} `json:"delta"`
+			} `json:"choices"`
+		}
+		if json.Unmarshal([]byte(s), &c) == nil && len(c.Choices) > 0 {
+			b.WriteString(c.Choices[0].Delta.Content)
+		}
+	}
+	return b.String()
+}
+
+// emailByChar returns the email split into one-character deltas — the pathological
+// streaming case where a match arrives token-by-token and straddles boundaries.
+func emailByChar() []string {
+	var cs []string
+	for _, r := range "bob@example.com" {
+		cs = append(cs, string(r))
+	}
+	return cs
+}
+
+func TestStreamGuard_RedactStraddlesWindowBoundary(t *testing.T) {
+	// Window (8 tokens = 32 chars) comfortably exceeds the 15-char email, but the
+	// email is fed one char at a time between two 40-char fillers, so it straddles
+	// an incremental release boundary. It must be fully redacted, never leaked.
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 8)
+	parts := append([]string{strings.Repeat("a", 40) + " "}, emailByChar()...)
+	parts = append(parts, " "+strings.Repeat("b", 40))
+	feed(g, chunkLines(parts...))
+	got := reassemble(buf.String())
+	if strings.Contains(got, "bob@example.com") {
+		t.Fatalf("email leaked across a window boundary: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED_EMAIL]") {
+		t.Fatalf("email not redacted: %q", got)
+	}
+	if !g.violated {
+		t.Error("violated should be set")
+	}
+}
+
+func TestStreamGuard_BlockStraddlesWindowBoundary(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, false, 8)
+	parts := append([]string{strings.Repeat("a", 40) + " "}, emailByChar()...)
+	parts = append(parts, " "+strings.Repeat("b", 40))
+	feed(g, chunkLines(parts...))
+	got := reassemble(buf.String())
+	if !g.aborted {
+		t.Error("block should abort on an email straddling a window boundary")
+	}
+	if strings.Contains(got, "bob@example.com") {
+		t.Fatalf("blocked email leaked: %q", got)
+	}
+}
+
+func TestStreamGuard_PreservesFinishReasonWithContent(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 64)
+	// One chunk carrying BOTH content and finish_reason.
+	feed(g, []string{
+		`data: {"id":"c1","model":"m","choices":[{"delta":{"content":"all good"},"finish_reason":"stop"}]}`, ``,
+		`data: [DONE]`, ``,
+	})
+	out := buf.String()
+	if !strings.Contains(reassemble(out), "all good") {
+		t.Errorf("content lost: %q", out)
+	}
+	if !strings.Contains(out, `"finish_reason":"stop"`) {
+		t.Errorf("finish_reason must be preserved: %q", out)
+	}
+}
+
+func TestStreamGuard_DataNoSpaceStillScanned(t *testing.T) {
+	var buf bytes.Buffer
+	g := newStreamGuard(&buf, nil, guardrails.New(), []string{"pii"}, true, 64)
+	// "data:" with no following space must still be parsed + redacted.
+	feed(g, []string{
+		`data:{"choices":[{"delta":{"content":"mail bob@example.com"}}]}`,
+		`data:[DONE]`,
+	})
+	out := buf.String()
+	if strings.Contains(out, "bob@example.com") {
+		t.Fatalf("no-space data: line bypassed scanning: %q", out)
 	}
 }
