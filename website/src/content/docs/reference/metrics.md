@@ -26,6 +26,7 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_async_jobs_purged_total` | counter | `model` | Jobs deleted via admin purge endpoint |
 | `gatewai_async_stale_jobs_swept_total` | counter | `model` | Pending jobs marked failed by the stale-job GC |
 | `gatewai_async_jobs_reaped_total` | counter | `model`, `outcome` (`requeued`\|`deadletter`\|`dropped`) | Orphaned processing jobs handled by the GC phase-0 lease reaper |
+| `gatewai_jobs_total` | counter | `service_type`, `model`, `status` (`completed`\|`failed`) | Async jobs reaching a terminal outcome, incremented once on the gateway side (not the relay) so it stays reliable regardless of relay deployment shape |
 | `gatewai_idempotency_requests_total` | counter | `service_type`, `outcome` (`created`\|`replayed`\|`conflict`) | Async submissions carrying an `Idempotency-Key`, by outcome |
 | `gatewai_jobs_by_consumer_total` | counter | `mode`, `service_type`, `model`, `consumer` | Jobs submitted per consumer. Requires `metricsConfig.consumerLabels: true` |
 | `gatewai_webhook_deliveries_total` | counter | `result` (`delivered`\|`deadletter`) | Terminal webhook outcomes |
@@ -44,6 +45,7 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_token_ratelimit_errors_total` | counter | `service_type` | Redis errors during token budget checks |
 | `gatewai_concurrent_job_checks_total` | counter | `service_type`, `user_type`, `result` | Concurrent job limit checks |
 | `gatewai_processingtime_checks_total` | counter | `service_type`, `user_type`, `result` | Processing time budget checks |
+| `gatewai_quota_resets_total` | counter | `service_type` | Per-consumer quota resets performed via the admin quota-reset endpoint |
 
 ### LLM proxy
 
@@ -55,6 +57,10 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | `gatewai_llm_time_to_first_token_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | Streaming only: delay from the gateway writing SSE headers to the first chunk received from the backend. Buckets: 0.01s–30s |
 | `gatewai_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Total tokens (prompt+completion) per request. Buckets: 50–100 000 |
 | `gatewai_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Token usage for top-N consumers (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_llm_fallback_total` | counter | `service_type`, `model`, `fallback` | Requests re-routed to `services[].fallback_model` because the primary model's backends were all circuit-open |
+| `gatewai_backend_circuit_open` | gauge | `model`, `backend` | `1` while an LLM backend's circuit breaker is open (skipped), `0` when closed |
+| `gatewai_backend_circuit_opens_total` | counter | `model`, `backend` | Number of times a backend's circuit transitioned to open |
+| `gatewai_backend_circuit_skipped_total` | counter | `model`, `backend` | Requests that skipped a backend because its circuit was open |
 
 ### Usage tracking (top consumers)
 
@@ -78,6 +84,12 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 |--------|------|--------|-------------|
 | `gatewai_guardrails_pii_blocked_total` | counter | `service_type`, `model` | Requests blocked by PII guardrail |
 | `gatewai_guardrails_evaluations_total` | counter | `service_type`, `model`, `stage` (`input`\|`output`) | Every guardrails-enabled evaluation, regardless of outcome — the denominator for a hit rate against `gatewai_guardrails_total` |
+| `gatewai_guardrails_async_total` | counter | `service_type`, `model`, `detector`, `result` (`flagged`\|`blocked`\|`redacted`\|`error`) | Result-stage guardrail detections on async job results |
+| `gatewai_guardrails_model_detections_total` | counter | `service_type`, `model`, `stage`, `detector`, `mode` (`sync`\|`async`), `result` (`blocked`\|`flagged`) | Detections from a model-backed guardrail detector |
+| `gatewai_guardrails_model_latency_seconds` | histogram | `detector` | Latency of a model-backed guardrail detector call. Buckets: 10ms–5s |
+| `gatewai_guardrails_model_errors_total` | counter | `detector`, `reason` (`timeout`\|`unreachable`\|`bad_response`) | Model-backed guardrail detector call failures |
+| `gatewai_guardrails_model_cache_total` | counter | `detector`, `result` (`hit`\|`miss`) | Model-backed guardrail verdict-cache lookups |
+| `gatewai_guardrails_model_skipped_total` | counter | `detector`, `reason` | Model-backed guardrail calls skipped by a guard (e.g. the input-length gate) |
 
 ### Authentication
 
@@ -85,6 +97,12 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 |--------|------|--------|-------------|
 | `gatewai_auth_oauth2_duration_seconds` | histogram | `operation` (`jwt`\|`introspection`) | OAuth2 token verification latency. Buckets: 1ms–2.5s |
 | `gatewai_auth_oauth2_errors_total` | counter | `operation`, `reason` (`invalid_token`\|`unreachable`) | OAuth2 token verification failures |
+
+### Access control
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `gatewai_authz_decisions_total` | counter | `service_type`, `model`, `decision` (`allow`\|`deny`) | Authorization decisions evaluated against `policies.rules` |
 
 ### Infrastructure
 
