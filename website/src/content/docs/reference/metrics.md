@@ -49,9 +49,10 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `gatewai_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status` | LLM requests by provider and HTTP status |
+| `gatewai_llm_requests_total` | counter | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `status`, `stream` | LLM requests by provider, HTTP status, and whether the request was streamed (`stream`: `true`\|`false`) |
 | `gatewai_llm_tokens_total` | counter | `service_type`, `model`, `backend_model`, `user_type`, `type` | Tokens served (`type`: `prompt`\|`completion`), includes cache hits |
-| `gatewai_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | End-to-end LLM request latency. Buckets: 0.05s–120s |
+| `gatewai_llm_request_duration_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type`, `stream` | End-to-end LLM request latency. Buckets: 0.05s–120s |
+| `gatewai_llm_time_to_first_token_seconds` | histogram | `service_type`, `model`, `backend_model`, `provider`, `user_type` | Streaming only: delay from the gateway writing SSE headers to the first chunk received from the backend. Buckets: 0.01s–30s |
 | `gatewai_llm_tokens_per_request` | histogram | `service_type`, `model`, `backend_model`, `user_type` | Total tokens (prompt+completion) per request. Buckets: 50–100 000 |
 | `gatewai_llm_consumer_tokens_top` | gauge | `consumer`, `user_type`, `type` | Token usage for top-N consumers (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
 
@@ -76,6 +77,14 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
 | `gatewai_guardrails_pii_blocked_total` | counter | `service_type`, `model` | Requests blocked by PII guardrail |
+| `gatewai_guardrails_evaluations_total` | counter | `service_type`, `model`, `stage` (`input`\|`output`) | Every guardrails-enabled evaluation, regardless of outcome — the denominator for a hit rate against `gatewai_guardrails_total` |
+
+### Authentication
+
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `gatewai_auth_oauth2_duration_seconds` | histogram | `operation` (`jwt`\|`introspection`) | OAuth2 token verification latency. Buckets: 1ms–2.5s |
+| `gatewai_auth_oauth2_errors_total` | counter | `operation`, `reason` (`invalid_token`\|`unreachable`) | OAuth2 token verification failures |
 
 ### Infrastructure
 

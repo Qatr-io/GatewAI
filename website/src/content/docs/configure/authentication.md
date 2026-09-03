@@ -53,6 +53,13 @@ auth:
 
 Introspection fails closed: if the endpoint is unreachable or returns a non-2xx, the request is rejected.
 
+### Metrics
+
+```
+gatewai_auth_oauth2_duration_seconds{operation}          # operation = jwt | introspection
+gatewai_auth_oauth2_errors_total{operation, reason}       # reason = invalid_token | unreachable
+```
+
 ## Proxy mode
 
 The gateway trusts identity headers set by an upstream reverse proxy that has already authenticated the caller.

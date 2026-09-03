@@ -84,8 +84,9 @@ Content-Type: application/json
 ## Metrics
 
 ```
-gatewai_guardrails_total{service_type, model, stage, action, result}   # stage = input | output; result = blocked | redacted | flagged
-gatewai_guardrails_pii_blocked_total{service_type, model}        # retained for continuity (block only)
+gatewai_guardrails_total{service_type, model, stage, action, result}         # stage = input | output; result = blocked | redacted | flagged
+gatewai_guardrails_pii_blocked_total{service_type, model}                    # retained for continuity (block only)
+gatewai_guardrails_evaluations_total{service_type, model, stage}             # every evaluation, regardless of outcome — denominator for a hit rate
 ```
 
 ## False positives
