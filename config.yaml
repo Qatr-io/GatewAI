@@ -307,6 +307,10 @@ services:
   #   default: true
   #   provider: openai
   #   response_cache_ttl: 3600        # seconds; 0 = disabled
+  #   # Per-model load controls (protect the backend under heavy traffic; size
+  #   # each from the model's measured saturation point — they differ per model):
+  #   max_concurrent_sync: 60         # cap simultaneous in-flight calls (Redis-distributed); excess → 503. 0 = unlimited
+  #   max_output_tokens: 1024         # clamp/inject max_tokens so one request can't hog a slot. 0 = no cap
   #   operations:
   #     chat:
   #       - "/v1/chat/completions"

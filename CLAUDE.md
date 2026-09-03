@@ -121,6 +121,10 @@ Configured via `services[].operations`, `services[].model`, `services[].inferenc
 
 **Request body limit**: the sync JSON path caps the body at `server.max_body_mb` MiB (default 1 MiB), enforced with `http.MaxBytesReader` — oversized requests get `413`. Raise it for vision models sending base64-embedded images (base64 inflates ~33%). Independent of `services[].max_file_size_mb`, which bounds only the multipart upload path.
 
+**Per-model load controls** (protect a backend under heavy traffic — size each from its measured saturation point, they differ widely per model):
+- **`services[].max_concurrent_sync`** (+ optional `priority_reserved_sync`): caps simultaneous in-flight sync calls to a model via a Redis-distributed semaphore (`internal/concurrency/`), enforced across all replicas; excess gets a fast `503` (retryable) instead of everyone queuing into multi-second latency. Applies to both direct-proxy and LLM-proxy sync paths. `0` = unlimited.
+- **`services[].max_output_tokens`** (LLM-proxy sync path): clamps `max_tokens`/`max_completion_tokens` down to the cap before forwarding, and injects it when the client omits it, so the backend never generates beyond the cap — bounding worst-case GPU time per request. Handled in `llmproxy.clampOutputTokens` at the top of `ServeJSON` (before the stream/non-stream split and cache key). Metric `gatewai_llm_output_tokens_clamped_total{service_type, model}`. `0` = no cap.
+
 **LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
 
 - **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM). The real backend model is surfaced to clients in `GET /v1/models` as `backend_model` (and `backend_models[]` when backends serve distinct models) — default-on, no config.

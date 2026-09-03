@@ -195,6 +195,14 @@ var (
 		Help: "Requests routed to a fallback model because the primary's backends were all circuit-open.",
 	}, []string{"service_type", "model", "fallback"})
 
+	// LLMOutputTokensClampedTotal counts requests whose max_tokens /
+	// max_completion_tokens was clamped down or injected to enforce a model's
+	// max_output_tokens cap.
+	LLMOutputTokensClampedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_llm_output_tokens_clamped_total",
+		Help: "Requests whose output-token limit was clamped/injected to the model's max_output_tokens cap.",
+	}, []string{"service_type", "model"})
+
 	// LLMTokensPerRequest is a histogram of tokens per request, enabling p50/p95/p99
 	// analysis by user_type. Useful to detect large contexts and capacity planning.
 	LLMTokensPerRequest = promauto.NewHistogramVec(prometheus.HistogramOpts{

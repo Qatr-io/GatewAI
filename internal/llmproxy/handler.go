@@ -164,6 +164,16 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		return
 	}
 
+	// Per-model output-token cap: clamp/inject max_tokens before forwarding (and
+	// before the stream/non-stream split + cache key), so the backend never
+	// generates beyond the cap regardless of what the client asked for.
+	if def.MaxOutputTokens > 0 {
+		if clamped, changed := clampOutputTokens(body, def.MaxOutputTokens); changed {
+			body = clamped
+			metrics.LLMOutputTokensClampedTotal.WithLabelValues(def.Type, def.Model).Inc()
+		}
+	}
+
 	// Streaming requests bypass cache and response translation entirely.
 	// The SSE stream is piped directly to the client with per-chunk flushing.
 	if isStreamingRequest(body) {
@@ -509,6 +519,60 @@ func rewriteBodyModel(body []byte, newModel string) ([]byte, error) {
 		return nil, fmt.Errorf("rewrite model: marshal: %w", err)
 	}
 	return out, nil
+}
+
+// clampOutputTokens enforces a per-model output ceiling on an OpenAI-format
+// request body: max_tokens and max_completion_tokens are each clamped down to
+// limit, and max_tokens is injected when the client supplies neither (so the
+// backend's own — often large — default cannot exceed the cap). Returns the
+// possibly-rewritten body and whether anything changed. On a JSON parse failure
+// the body is returned unchanged (the backend still applies its own limits).
+func clampOutputTokens(body []byte, limit int) ([]byte, bool) {
+	if limit <= 0 {
+		return body, false
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body, false
+	}
+	changed, present := false, false
+	for _, field := range []string{"max_tokens", "max_completion_tokens"} {
+		v, ok := raw[field]
+		if !ok || v == nil {
+			continue
+		}
+		present = true
+		if n, ok := jsonToInt(v); ok && n > limit {
+			raw[field] = limit
+			changed = true
+		}
+	}
+	if !present {
+		raw["max_tokens"] = limit
+		changed = true
+	}
+	if !changed {
+		return body, false
+	}
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body, false
+	}
+	return out, true
+}
+
+// jsonToInt coerces a JSON-decoded number (float64 by default) to an int.
+func jsonToInt(v any) (int, bool) {
+	switch n := v.(type) {
+	case float64:
+		return int(n), true
+	case int:
+		return n, true
+	case json.Number:
+		i, err := n.Int64()
+		return int(i), err == nil
+	}
+	return 0, false
 }
 
 // isStreamingRequest reports whether the JSON body sets "stream": true.
