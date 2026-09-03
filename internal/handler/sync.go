@@ -381,6 +381,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	if h.llm != nil && def.IsLLM() {
 		if def.Guardrails.Input.Enabled {
 			g := def.Guardrails.Input
+			metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "input").Inc()
 			consumer := ""
 			if h.consumerHeader != "" {
 				consumer = r.Header.Get(h.consumerHeader)

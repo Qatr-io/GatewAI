@@ -200,8 +200,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			metrics.CacheHitsTotal.WithLabelValues(def.Type, def.Model).Inc()
 			// Tokens are counted on every delivery (including cache hits) for billing purposes.
 			usage := emitTokenMetrics(ctx, def, "", userType, entry.Body)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "cache", userType, "200").Inc()
-			metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType), time.Since(start).Seconds())
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "cache", userType, "200", "false").Inc()
+			metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType, "false"), time.Since(start).Seconds())
 			if consumer != "" && usage != nil {
 				tCtx := context.WithoutCancel(r.Context())
 				h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
@@ -272,7 +272,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		if doErr != nil {
 			slog.WarnContext(r.Context(), "llm backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502", "false").Inc()
 			if h.breaker != nil {
 				h.breaker.RecordFailure(def.Model, backend.URL)
 			}
@@ -284,7 +284,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			slog.WarnContext(r.Context(), "llm backend returned 5xx, trying next",
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
-				strconv.Itoa(resp.StatusCode)).Inc()
+				strconv.Itoa(resp.StatusCode), "false").Inc()
 			if h.breaker != nil {
 				h.breaker.RecordFailure(def.Model, backend.URL)
 			}
@@ -305,13 +305,13 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		if tried == 0 {
 			// Every backend's circuit was open → fast-fail instead of a slow 502.
 			span.SetStatus(codes.Error, "all backends circuit-open")
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "false").Inc()
 			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
 			return
 		}
 		span.RecordError(fmt.Errorf("all backends failed: %s", lastBackendErr))
 		span.SetStatus(codes.Error, "all backends failed")
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502", "false").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastBackendErr)
 		return
 	}
@@ -320,7 +320,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	var readErr error
 	respBody, readErr = io.ReadAll(resp.Body)
 	if readErr != nil {
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "502").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "502", "false").Inc()
 		writeError(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
@@ -329,7 +329,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	finalStatus, finalBody, usage, err := prov.TranslateResponse(r.Context(), resp.StatusCode, resp.Header, respBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "llm response translation failed", "provider", def.Provider, "error", err)
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "500").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "500", "false").Inc()
 		writeError(w, http.StatusInternalServerError, "failed to translate provider response")
 		return
 	}
@@ -342,8 +342,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	if finalStatus >= 500 {
 		span.SetStatus(codes.Error, "backend error")
 	}
-	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
+	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr, "false").Inc()
+	metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "false"), time.Since(start).Seconds())
 
 	if usage != nil {
 		total := usage.PromptTokens + usage.CompletionTokens
@@ -366,6 +366,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	// Applied after response translation; only on successful (2xx) responses.
 	outputBlocked := false
 	if def.Guardrails.Output.Enabled && h.guard != nil && finalStatus < 300 {
+		metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "output").Inc()
 		switch def.Guardrails.Output.Action {
 		case "redact":
 			redacted, found := h.guard.RedactResponse(finalBody, def.Guardrails.Output.Checks)
@@ -596,7 +597,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if doErr != nil {
 			slog.WarnContext(r.Context(), "llm stream backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502", "true").Inc()
 			if h.breaker != nil {
 				h.breaker.RecordFailure(def.Model, backend.URL)
 			}
@@ -608,7 +609,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			slog.WarnContext(r.Context(), "llm stream backend returned 5xx, trying next",
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
-				strconv.Itoa(resp.StatusCode)).Inc()
+				strconv.Itoa(resp.StatusCode), "true").Inc()
 			if h.breaker != nil {
 				h.breaker.RecordFailure(def.Model, backend.URL)
 			}
@@ -627,11 +628,11 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	}
 	if resp == nil {
 		if tried == 0 {
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "true").Inc()
 			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
 			return
 		}
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502", "true").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastErr)
 		return
 	}
@@ -650,8 +651,22 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	w.WriteHeader(resp.StatusCode)
 
 	statusStr := strconv.Itoa(resp.StatusCode)
-	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.ObserveWithExemplar(r.Context(), metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
+	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr, "true").Inc()
+	metrics.ObserveWithExemplar(r.Context(), metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "true"), time.Since(start).Seconds())
+
+	// chunkStart anchors time-to-first-token: the delay between the gateway
+	// forwarding SSE headers and the first chunk of the backend's stream body.
+	chunkStart := time.Now()
+	firstChunkSeen := false
+	recordFirstChunk := func() {
+		if firstChunkSeen {
+			return
+		}
+		firstChunkSeen = true
+		metrics.ObserveWithExemplar(r.Context(),
+			metrics.LLMTimeToFirstToken.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType),
+			time.Since(chunkStart).Seconds())
+	}
 
 	// Pipe SSE lines to the client, flushing after each line.
 	// We track the last non-[DONE] data payload to extract usage counts once
@@ -668,6 +683,9 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	// default ("flag") streams unbuffered and only observes.
 	enforceStream := out.Enabled && h.guard != nil && len(out.Checks) > 0 &&
 		(out.Streaming == "block" || out.Streaming == "buffer")
+	if out.Enabled && h.guard != nil && len(out.Checks) > 0 {
+		metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "output").Inc()
+	}
 
 	if enforceStream {
 		var fl http.Flusher
@@ -676,6 +694,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		}
 		guard := newStreamGuard(w, fl, h.guard, out.Checks, out.Streaming == "buffer", out.StreamWindowTokens)
 		for scanner.Scan() {
+			recordFirstChunk()
 			line := scanner.Text()
 			if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
 				lastDataPayload = after
@@ -700,6 +719,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	} else {
 		var deltaTexts []string
 		for scanner.Scan() {
+			recordFirstChunk()
 			line := scanner.Text()
 			if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
 				return // client disconnected
