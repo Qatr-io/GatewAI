@@ -3,12 +3,20 @@
   "uid": "gatewai-audit-trail",
   "title": "GatewAI — Audit Trail LLM",
   "description": "Supervision des requêtes LLM : flux audit, guardrails PII, cache, backend health, tokens par consumer.",
-  "tags": ["GatewAI", "llm", "audit", "guardrails"],
+  "tags": [
+    "GatewAI",
+    "llm",
+    "audit",
+    "guardrails"
+  ],
   "timezone": "browser",
   "schemaVersion": 37,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
-  "time": { "from": "now-3h", "to": "now" },
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
   "timepicker": {},
   "links": [
     {
@@ -51,7 +59,10 @@
         "name": "namespace",
         "type": "query",
         "label": "Namespace",
-        "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+        "datasource": {
+          "type": "loki",
+          "uid": "${loki_datasource}"
+        },
         "query": "label_values(namespace)",
         "current": {},
         "hide": 0,
@@ -66,7 +77,10 @@
         "name": "service_type",
         "type": "query",
         "label": "Service type",
-        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "query": {
           "query": "label_values(gatewai_llm_requests_total, service_type)",
           "refId": "StandardVariableQuery"
@@ -84,7 +98,10 @@
         "name": "model",
         "type": "query",
         "label": "Modèle",
-        "datasource": { "type": "prometheus", "uid": "${datasource}" },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
         "query": {
           "query": "label_values(gatewai_llm_requests_total{service_type=~\"$service_type\"}, model)",
           "refId": "StandardVariableQuery"
@@ -101,23 +118,40 @@
     ]
   },
   "panels": [
-
     {
       "type": "row",
       "id": 1,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
       "title": "Vue globale",
       "collapsed": false
     },
-
     {
       "type": "stat",
       "id": 2,
-      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 0,
+        "y": 1
+      },
       "title": "Requêtes LLM (fenêtre)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -125,10 +159,17 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
-            "steps": [{ "color": "blue", "value": null }]
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
           },
           "unit": "short",
           "decimals": 0
@@ -137,22 +178,38 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum(increase(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[$__range]))",
           "legendFormat": "total",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "stat",
       "id": 3,
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 4,
+        "y": 1
+      },
       "title": "Taux d'erreur 5xx",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -160,13 +217,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "red", "value": 5 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
             ]
           },
           "unit": "percent",
@@ -176,22 +244,38 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "100 * sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) > 0)",
           "legendFormat": "erreurs 5xx %",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "stat",
       "id": 4,
-      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 8,
+        "y": 1
+      },
       "title": "Cache hit rate (exact)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -199,13 +283,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 20 },
-              { "color": "green", "value": 50 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 20
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
             ]
           },
           "unit": "percent",
@@ -215,22 +310,38 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "100 * sum(rate(gatewai_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(gatewai_cache_hits_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) + sum(rate(gatewai_cache_misses_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
           "legendFormat": "exact hit %",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "stat",
       "id": 5,
-      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
       "title": "Cache hit rate (sémantique)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -238,13 +349,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 10 },
-              { "color": "green", "value": 30 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 10
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
             ]
           },
           "unit": "percent",
@@ -254,22 +376,38 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "100 * sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider=\"semantic-cache\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache\"}[5m])) > 0)",
           "legendFormat": "semantic hit %",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "stat",
       "id": 6,
-      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 1 },
+      "gridPos": {
+        "h": 4,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
       "title": "Requêtes bloquées PII",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["sum"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "auto",
         "textMode": "auto",
         "colorMode": "background",
@@ -277,13 +415,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 10 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
             ]
           },
           "unit": "short",
@@ -293,153 +442,340 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum(increase(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[$__range]))",
           "legendFormat": "bloquées",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 7,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 5 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 5
+      },
       "title": "Taux de requêtes/s par provider",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 10 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
           "unit": "reqps"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (provider) (rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{provider}}",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 8,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 5 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 5
+      },
       "title": "Latence LLM p50 / p95 / p99",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 5 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 5
+          },
           "unit": "s"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p50",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.95, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p95",
           "refId": "B"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.99, sum by (le) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "p99",
           "refId": "C"
         }
       ]
     },
-
     {
       "type": "row",
       "id": 10,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 13 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 13
+      },
       "title": "Guardrails PII",
       "collapsed": false
     },
-
     {
       "type": "timeseries",
       "id": 11,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 14
+      },
       "title": "Requêtes bloquées PII / s",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 2, "fillOpacity": 20 },
-          "unit": "reqps",
-          "color": { "fixedColor": "orange", "mode": "fixed" }
+          "color": {
+            "fixedColor": "orange",
+            "mode": "fixed"
+          },
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 20
+          },
+          "unit": "reqps"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (service_type, model) (rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{service_type}}/{{model}}",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 12,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 14
+      },
       "title": "Ratio requêtes bloquées PII (%)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 10 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
           "unit": "percent"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "100 * sum(rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) / (sum(rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])) + sum(rate(gatewai_guardrails_pii_blocked_total{service_type=~\"$service_type\", model=~\"$model\"}[5m])) > 0)",
           "legendFormat": "% bloquées",
           "refId": "A"
         }
       ]
     },
-
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "Taux de détection guardrails : évaluations ayant matché (gatewai_guardrails_total) rapportées au total des évaluations (gatewai_guardrails_evaluations_total), par stage.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 22
+      },
+      "id": 14,
+      "options": {
+        "legend": {
+          "calcs": [
+            "mean",
+            "lastNotNull"
+          ],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "title": "Taux de détection guardrails (%) — par stage",
+      "type": "timeseries",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * sum by (stage) (rate(gatewai_guardrails_total[5m]))\n/ sum by (stage) (rate(gatewai_guardrails_evaluations_total[5m]))",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ]
+    },
     {
       "type": "logs",
       "id": 13,
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 22 },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 30
+      },
       "title": "Logs PII bloqués",
-      "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki_datasource}"
+      },
       "options": {
         "dedupStrategy": "none",
         "enableLogDetails": true,
@@ -451,30 +787,50 @@
       },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki_datasource}"
+          },
           "expr": "{namespace=\"$namespace\"} | json | msg=`llm request blocked: PII detected`",
           "legendFormat": "",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "row",
       "id": 20,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 32 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
       "title": "Backend Health",
       "collapsed": false
     },
-
     {
       "type": "bargauge",
       "id": 21,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 33 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 41
+      },
       "title": "Poids effectifs backends (0 = exclu)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "horizontal",
         "displayMode": "gradient",
         "valueMode": "color",
@@ -482,13 +838,24 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 1 },
-              { "color": "green", "value": 50 }
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 50
+              }
             ]
           },
           "unit": "short",
@@ -498,56 +865,91 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "gatewai_backend_effective_weight",
           "legendFormat": "{{url}}",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 22,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 33 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 41
+      },
       "title": "Erreurs 5xx/s par backend",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 15 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 15
+          },
           "unit": "reqps"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (backend_model, provider) (rate(gatewai_llm_requests_total{service_type=~\"$service_type\", model=~\"$model\", status=~\"5..\", provider!~\"cache|semantic-cache\"}[5m]))",
           "legendFormat": "{{provider}}/{{backend_model}}",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "row",
       "id": 30,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 49
+      },
       "title": "Flux Audit LLM (Loki)",
       "collapsed": false
     },
-
     {
       "type": "logs",
       "id": 31,
-      "gridPos": { "h": 14, "w": 24, "x": 0, "y": 42 },
+      "gridPos": {
+        "h": 14,
+        "w": 24,
+        "x": 0,
+        "y": 50
+      },
       "title": "Audit — requêtes LLM",
-      "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki_datasource}"
+      },
       "options": {
         "dedupStrategy": "none",
         "enableLogDetails": true,
@@ -559,93 +961,158 @@
       },
       "targets": [
         {
-          "datasource": { "type": "loki", "uid": "${loki_datasource}" },
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki_datasource}"
+          },
           "expr": "{namespace=\"$namespace\"} | json | msg=`llm request` | service_type=~`$service_type` | model=~`$model`",
           "legendFormat": "",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 32,
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 56 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 64
+      },
       "title": "Tokens/s par user_type (audit)",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 10 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 10
+          },
           "unit": "short"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sum by (user_type, type) (rate(gatewai_llm_tokens_total{service_type=~\"$service_type\", model=~\"$model\"}[5m]))",
           "legendFormat": "{{user_type}} — {{type}}",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "timeseries",
       "id": 33,
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 56 },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 64
+      },
       "title": "Durée de traitement (audit) — p50 / p95",
       "description": "Latence mesurée côté gateway et loguée dans l'audit trail (duration_ms). Ce panel exploite les métriques Prometheus équivalentes.",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "tooltip": { "mode": "multi", "sort": "desc" },
-        "legend": { "displayMode": "list", "placement": "bottom" }
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        },
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": { "lineWidth": 1, "fillOpacity": 5 },
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "lineWidth": 1,
+            "fillOpacity": 5
+          },
           "unit": "s"
         },
         "overrides": []
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.50, sum by (le, service_type) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "{{service_type}} p50",
           "refId": "A"
         },
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "histogram_quantile(0.95, sum by (le, service_type) (rate(gatewai_llm_request_duration_seconds_bucket{service_type=~\"$service_type\", model=~\"$model\", provider!~\"cache|semantic-cache\"}[5m])))",
           "legendFormat": "{{service_type}} p95",
           "refId": "B"
         }
       ]
     },
-
     {
       "type": "row",
       "id": 40,
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 64 },
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
       "title": "Top Consumers",
       "collapsed": false
     },
-
     {
       "type": "bargauge",
       "id": 41,
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 65 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 73
+      },
       "title": "Top consumers — prompt tokens",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "horizontal",
         "displayMode": "gradient",
         "valueMode": "color",
@@ -653,12 +1120,20 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "purple", "value": 100000 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "purple",
+                "value": 100000
+              }
             ]
           },
           "unit": "short"
@@ -667,22 +1142,38 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sort_desc(gatewai_llm_consumer_tokens_top{type=\"prompt\"})",
           "legendFormat": "{{consumer}} ({{user_type}})",
           "refId": "A"
         }
       ]
     },
-
     {
       "type": "bargauge",
       "id": 42,
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 65 },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
       "title": "Top consumers — completion tokens",
-      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
         "orientation": "horizontal",
         "displayMode": "gradient",
         "valueMode": "color",
@@ -690,12 +1181,20 @@
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "purple", "value": 50000 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "purple",
+                "value": 50000
+              }
             ]
           },
           "unit": "short"
@@ -704,13 +1203,15 @@
       },
       "targets": [
         {
-          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
           "expr": "sort_desc(gatewai_llm_consumer_tokens_top{type=\"completion\"})",
           "legendFormat": "{{consumer}} ({{user_type}})",
           "refId": "A"
         }
       ]
     }
-
   ]
 }
