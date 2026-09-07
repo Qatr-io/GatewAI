@@ -164,7 +164,7 @@ Returns an OpenAI-compatible model list for all registered services with a `mode
 }
 ```
 
-`backend_model` is omitted when the alias is forwarded unchanged. If the backends behind one alias serve distinct real models, a `backend_models` array lists all of them (the first matches `backend_model`).
+`backend_model` is omitted when the alias is forwarded unchanged. It only ever reflects the service-level `backend_model` — a per-backend `backends[].model` override is not surfaced here.
 
 **Backend passthrough** — `GET /v1/models?model=<name>` proxies to that model's backend and returns its native model info (context size, etc.).
 
