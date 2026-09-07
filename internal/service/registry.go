@@ -62,6 +62,7 @@ type Def struct {
 	// Sync / OpenAI-compatible mode (optional).
 	InferenceURL     string              // primary backend URL (derived from Backends; kept for compatibility)
 	Backends         []Backend           // ordered list of backends; always non-empty when InferenceURL != ""
+	PoolName         string              // name of the backend_pools entry Backends was resolved from; empty when Backends came from inline config
 	Operations       map[string][]string // operation name → URL paths (all indexed; first used for async)
 	InferenceHeaders map[string]string   // headers injected on every sync-direct proxy request to the backend
 	Provider         string
@@ -367,7 +368,26 @@ func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement 
 	return out
 }
 
-func NewRegistry(cfgs []config.ServiceConfig) *Registry {
+// RegistryOption configures optional NewRegistry behavior.
+type RegistryOption func(*registryOptions)
+
+type registryOptions struct {
+	pools map[string]config.BackendPoolConfig
+}
+
+// WithBackendPools makes the named backend_pools available for services[]
+// entries that reference one via backend_pool.
+func WithBackendPools(pools map[string]config.BackendPoolConfig) RegistryOption {
+	return func(o *registryOptions) {
+		o.pools = pools
+	}
+}
+
+func NewRegistry(cfgs []config.ServiceConfig, opts ...RegistryOption) *Registry {
+	ro := &registryOptions{}
+	for _, opt := range opts {
+		opt(ro)
+	}
 	r := &Registry{
 		byTypeModel:   make(map[string]map[string]*Def, len(cfgs)),
 		defaultByType: make(map[string]*Def),
@@ -379,7 +399,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 		for _, ext := range cfg.AcceptedExts {
 			exts[strings.ToLower(ext)] = struct{}{}
 		}
-		backends := normalizeBackends(cfg.Backends, cfg.InferenceURL)
+		backends, poolName := resolveBackends(cfg, ro.pools)
 		primaryURL := cfg.InferenceURL
 		for _, b := range backends {
 			if b.Weight > 0 {
@@ -400,6 +420,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			PriorityReservedSync: cfg.PriorityReservedSync,
 			InferenceURL:         primaryURL,
 			Backends:             backends,
+			PoolName:             poolName,
 			Operations:           cfg.Operations,
 			InferenceHeaders:     cfg.InferenceHeaders,
 			Provider:             cfg.Provider,
@@ -424,7 +445,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 
 		// Build the sync routing index — one entry per configured path across all operations.
 		// Index when a direct proxy backend is configured.
-		hasBackend := cfg.InferenceURL != "" || len(cfg.Backends) > 0
+		hasBackend := cfg.InferenceURL != "" || len(cfg.Backends) > 0 || cfg.BackendPool != ""
 		if cfg.Model != "" && hasBackend {
 			for _, paths := range cfg.Operations {
 				for _, path := range paths {
@@ -468,6 +489,54 @@ func normalizeBackends(cfgBackends []config.BackendConfig, legacyURL string) []B
 		return []Backend{{URL: legacyURL, Weight: 1}}
 	}
 	return nil
+}
+
+// resolveBackends produces the runtime Backend slice for a service, and the
+// name of the backend_pools entry it came from (empty when not pool-based).
+// Priority: inline cfg.Backends → cfg.BackendPool lookup → legacy
+// cfg.InferenceURL. Config validation guarantees backend_pool is mutually
+// exclusive with backends/inference_url and, when set, references an
+// existing pool — so an unresolvable reference here (nil pools map, e.g. in
+// tests that build a Registry without WithBackendPools) degrades to no
+// backends rather than panicking.
+func resolveBackends(cfg config.ServiceConfig, pools map[string]config.BackendPoolConfig) (backends []Backend, poolName string) {
+	if len(cfg.Backends) > 0 {
+		return normalizeBackends(cfg.Backends, cfg.InferenceURL), ""
+	}
+	if cfg.BackendPool != "" {
+		pool, ok := pools[cfg.BackendPool]
+		if !ok {
+			return nil, ""
+		}
+		out := make([]Backend, len(pool.Members))
+		for i, m := range pool.Members {
+			out[i] = Backend{
+				URL:     m.URL,
+				Weight:  m.Weight,
+				Headers: mergeHeaders(pool.Headers, m.Headers),
+				Model:   m.Model,
+			}
+		}
+		return out, cfg.BackendPool
+	}
+	return normalizeBackends(nil, cfg.InferenceURL), ""
+}
+
+// mergeHeaders combines pool-level and member-level headers, with member
+// headers taking precedence on key collision. Returns nil when both are
+// empty (matching normalizeBackends/inline-backend behavior).
+func mergeHeaders(poolHeaders, memberHeaders map[string]string) map[string]string {
+	if len(poolHeaders) == 0 && len(memberHeaders) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(poolHeaders)+len(memberHeaders))
+	for k, v := range poolHeaders {
+		out[k] = v
+	}
+	for k, v := range memberHeaders {
+		out[k] = v
+	}
+	return out
 }
 
 // indexPattern adds def to the pattern index, merging into an existing pattern

@@ -47,11 +47,25 @@ type SyncHandler struct {
 	processingLimiter ratelimit.ProcessingTimeChecker // nil = no processing time limit
 	tokenLimiter      ratelimit.TokenChecker          // nil = no token limit
 	userTypeHeader    string
-	authz             *authz.Engine      // nil = no enforcement
-	usageTracker      usage.UsageTracker // nil = no usage tracking
-	maxBodyBytes      int64              // max request body on the JSON path; default 1 MiB
-	priorityHeader    string             // HTTP header that grants access to the reserved sync capacity pool (e.g. "X-Priority")
-	breaker           BackendHealth      // nil = no circuit-breaker-driven fallback
+	authz             *authz.Engine               // nil = no enforcement
+	usageTracker      usage.UsageTracker          // nil = no usage tracking
+	maxBodyBytes      int64                       // max request body on the JSON path; default 1 MiB
+	priorityHeader    string                      // HTTP header that grants access to the reserved sync capacity pool (e.g. "X-Priority")
+	breaker           BackendHealth               // nil = no circuit-breaker-driven fallback
+	poolSemaphore     *concurrency.ModelSemaphore // nil = no backend_pools concurrency limit
+	poolLimiter       ratelimit.PoolChecker       // nil = no backend_pools rate limit
+}
+
+// WithPoolSemaphore sets the backend_pools concurrency limiter for sync calls.
+func (h *SyncHandler) WithPoolSemaphore(s *concurrency.ModelSemaphore) *SyncHandler {
+	h.poolSemaphore = s
+	return h
+}
+
+// WithPoolLimiter sets the backend_pools rate limiter for sync calls.
+func (h *SyncHandler) WithPoolLimiter(pl ratelimit.PoolChecker) *SyncHandler {
+	h.poolLimiter = pl
+	return h
 }
 
 // WithCircuitBreaker attaches backend-health info so a request to a fully
@@ -378,6 +392,11 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// JSON requests: route through LLM proxy if configured, else direct proxy.
+	// NOTE: backend_pools concurrency/rate limiting for the LLM branch below is
+	// enforced inside llmproxy.Handler itself (WithPoolSemaphore/WithPoolLimiter);
+	// duplicating it here would double-acquire one pool slot per request. The
+	// direct-proxy branch (proxyToInference, reached both here and from
+	// handleMultipart) enforces it itself instead — see proxyToInference.
 	if h.llm != nil && def.IsLLM() {
 		if def.Guardrails.Input.Enabled {
 			g := def.Guardrails.Input
@@ -523,6 +542,22 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 		return
 	}
 
+	// Pool concurrency is acquired once per logical request (like the per-model
+	// semaphore above), covering the whole retry loop below. The single defer
+	// here correctly releases on every exit path (success, all-backends-failed,
+	// or a cancelled retry wait).
+	if def.PoolName != "" && h.poolSemaphore != nil {
+		isPriority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
+		acquired, usedReserved := h.poolSemaphore.TryAcquire(def.PoolName, isPriority)
+		if !acquired {
+			metrics.BackendPoolConcurrencyRejectedTotal.WithLabelValues(def.PoolName).Inc()
+			metrics.RequestsTotal.WithLabelValues("sync-direct", def.Type, def.Model, "503").Inc()
+			writeError(w, http.StatusServiceUnavailable, "backend pool too busy, retry later")
+			return
+		}
+		defer h.poolSemaphore.Release(def.PoolName, usedReserved)
+	}
+
 	auth := r.Header.Get("Authorization")
 	maxAttempts := 1 + def.Retries
 	backoff := h.retryBackoff
@@ -547,6 +582,16 @@ func (h *SyncHandler) proxyToInference(w http.ResponseWriter, r *http.Request, d
 
 		var lastErr string
 		for i, backend := range service.OrderedBackends(def.Backends) {
+			if def.PoolName != "" && h.poolLimiter != nil {
+				res, err := h.poolLimiter.CheckBackendPool(r.Context(), def.PoolName, backend.URL)
+				if err != nil {
+					slog.WarnContext(r.Context(), "backend pool rate limit check error", "pool", def.PoolName, "error", err)
+				}
+				if !res.Allowed {
+					lastErr = "backend pool rate limit exceeded"
+					continue
+				}
+			}
 			target, err := url.Parse(backend.URL)
 			if err != nil {
 				slog.WarnContext(r.Context(), "invalid backend url, skipping",
