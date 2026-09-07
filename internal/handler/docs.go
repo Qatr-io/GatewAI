@@ -6,11 +6,23 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"gopkg.in/yaml.v3"
 
 	"gatewai/gateway/internal/service"
 )
+
+// capitalizeFirstRune upper-cases the first rune of s (rune-aware, so a leading
+// multi-byte character — e.g. a non-ASCII operation name — is never split).
+func capitalizeFirstRune(s string) string {
+	if s == "" {
+		return s
+	}
+	r, size := utf8.DecodeRuneInString(s)
+	return string(unicode.ToUpper(r)) + s[size:]
+}
 
 // GenerateSpec builds an OpenAPI 3.0.3 spec dynamically from the service registry.
 // Call once at startup after the registry is initialised; serve the result statically.
@@ -798,7 +810,7 @@ func syncPathItems(reg *service.Registry) map[string]any {
 		// Summary from operation names
 		summary := strings.Join(e.opNames, " / ")
 		if summary != "" {
-			summary = strings.ToUpper(summary[:1]) + summary[1:] + " (sync)"
+			summary = capitalizeFirstRune(summary) + " (sync)"
 		} else {
 			summary = "Inference (sync)"
 		}

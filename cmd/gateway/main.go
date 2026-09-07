@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 	chimw "github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/redis/go-redis/v9"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -25,6 +27,7 @@ import (
 	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/consumer"
+	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/handler"
 	"gatewai/gateway/internal/health"
 	"gatewai/gateway/internal/llmproxy"
@@ -171,10 +174,18 @@ func buildRouter(
 	}
 
 	if reg.HasSyncServices() {
+		// Backend health for degraded-model listing + cross-model fallback. Only
+		// set when a breaker is present so BackendHealth stays a nil interface
+		// (avoids a typed-nil wrapping a nil *CircuitBreaker).
+		var modelHealth handler.BackendHealth
+		if b := llmHandler.Breaker(); b != nil {
+			modelHealth = b
+		}
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw())).
 			WithPriorityHeader(cfg.Server.PriorityHeader).
-			WithMaxBodyMB(cfg.Server.MaxBodyMB)
+			WithMaxBodyMB(cfg.Server.MaxBodyMB).
+			WithCircuitBreaker(modelHealth)
 		if limiter != nil {
 			sh.WithProcessingLimiter(limiter, cfg.Server.UserTypeHeader)
 			sh.WithTokenLimiter(limiter)
@@ -186,7 +197,7 @@ func buildRouter(
 			sh.WithUsageTracker(usageTracker)
 		}
 		syncHandler := sh
-		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader))
+		r.Get("/v1/models", handler.ListModels(reg, cfg.Server.UserTypeHeader, modelHealth))
 		// Register each configured path exactly. Chi handles {model} parameter
 		// patterns natively. Single-segment paths (e.g. /rerank) are reachable
 		// without needing a separate wildcard route.
@@ -204,12 +215,59 @@ func buildRouter(
 	return r
 }
 
+// guardrailMetricsObserver forwards model-detector telemetry from the guardrails
+// package (a leaf) to the metrics package.
+type guardrailMetricsObserver struct{}
+
+func (guardrailMetricsObserver) ObserveModelLatency(detector string, seconds float64) {
+	gmetrics.GuardrailsModelLatency.WithLabelValues(detector).Observe(seconds)
+}
+
+func (guardrailMetricsObserver) IncModelError(detector, reason string) {
+	gmetrics.GuardrailsModelErrorsTotal.WithLabelValues(detector, reason).Inc()
+}
+
+func (guardrailMetricsObserver) IncModelCache(detector, result string) {
+	gmetrics.GuardrailsModelCacheTotal.WithLabelValues(detector, result).Inc()
+}
+
+func (guardrailMetricsObserver) IncModelSkipped(detector, reason string) {
+	gmetrics.GuardrailsModelSkippedTotal.WithLabelValues(detector, reason).Inc()
+}
+
+// guardrailVerdictCache adapts the Redis client to guardrails.VerdictCache,
+// storing findings as JSON under a dedicated key namespace.
+type guardrailVerdictCache struct{ rdb *redis.Client }
+
+func (c guardrailVerdictCache) Get(ctx context.Context, key string) ([]guardrails.Finding, bool) {
+	val, err := c.rdb.Get(ctx, "guardrail:verdict:"+key).Bytes()
+	if err != nil {
+		return nil, false
+	}
+	var f []guardrails.Finding
+	if json.Unmarshal(val, &f) != nil {
+		return nil, false
+	}
+	return f, true
+}
+
+func (c guardrailVerdictCache) Set(ctx context.Context, key string, findings []guardrails.Finding, ttl time.Duration) {
+	data, err := json.Marshal(findings)
+	if err != nil {
+		return
+	}
+	c.rdb.Set(ctx, "guardrail:verdict:"+key, data, ttl)
+}
+
 func main() {
 	// JSON structured logger — compatible with log aggregators (Loki, Datadog, …).
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 	slog.SetDefault(logger)
+
+	// Route model-detector telemetry to the metrics package (keeps guardrails a leaf).
+	guardrails.SetObserver(guardrailMetricsObserver{})
 
 	// ── Config ────────────────────────────────────────────────────────────────
 	cfgPath := "config.yaml"
@@ -262,6 +320,9 @@ func main() {
 	defer redisClient.Close()
 	redisClient.SetExpiredMarkerTTL(cfg.Jobs.ExpiredMarkerTTLDuration())
 
+	// Verdict cache for model-backed guardrails (reuses the Redis client).
+	guardrails.SetVerdictCache(guardrailVerdictCache{rdb: redisClient.Client()})
+
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
 	modelLimits := buildModelLimits(cfg.Services)
@@ -276,6 +337,7 @@ func main() {
 	manager := consumer.NewManager(redisClient)
 
 	relayCompleteHandler := handler.NewRelayCompleteHandler(redisClient, s3Client, cfg.Lifecycle.PersistsResult, cfg.Webhooks)
+	relayCompleteHandler.WithRegistry(initialRegistry) // result-stage (async) guardrails
 	if limiter != nil {
 		relayCompleteHandler.WithProcessingTimeLimiter(limiter)
 		relayCompleteHandler.WithTokenLimiter(limiter)
@@ -304,6 +366,16 @@ func main() {
 		slog.Info("usage tracking enabled", "retention", cfg.Usage.Retention)
 	}
 
+	// Circuit breaker for LLM backends — created once so its per-backend state
+	// (open/closed) survives config hot-reloads.
+	var breaker *llmproxy.CircuitBreaker
+	if cfg.CircuitBreaker.Enabled {
+		cooldown, _ := time.ParseDuration(cfg.CircuitBreaker.Cooldown)
+		breaker = llmproxy.NewCircuitBreaker(cfg.CircuitBreaker.FailureThreshold, cooldown)
+		slog.Info("llm backend circuit breaker enabled",
+			"failure_threshold", cfg.CircuitBreaker.FailureThreshold, "cooldown", cfg.CircuitBreaker.Cooldown)
+	}
+
 	var llmHandler *llmproxy.Handler
 	llmHandler = llmproxy.New(responseCache, providerRegistry, llmHTTPClient,
 		cfg.Server.UserTypeHeader, consumerTracker,
@@ -313,6 +385,7 @@ func main() {
 		llmHandler.WithUsageTracker(usageTracker)
 	}
 	llmHandler.WithLangfuse(cfg.Otel.Enabled && cfg.Otel.Traces.Enabled && cfg.Otel.Traces.Langfuse.Enabled)
+	llmHandler.WithCircuitBreaker(breaker)
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -365,6 +438,7 @@ func main() {
 		// Update infrastructure state that survives across reloads.
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
 		relayCompleteHandler.UpdatePersistsResult(newCfg.Lifecycle.PersistsResult)
+		relayCompleteHandler.UpdateRegistry(newReg)
 		manager.Reconcile(newReg)
 		healthChecker.UpdateRegistry(newReg)
 		relayQueueDepth.UpdateRegistry(newReg)
@@ -403,6 +477,7 @@ func main() {
 			llmHandler.WithUsageTracker(usageTracker)
 		}
 		llmHandler.WithLangfuse(newCfg.Otel.Enabled && newCfg.Otel.Traces.Enabled && newCfg.Otel.Traces.Langfuse.Enabled)
+		llmHandler.WithCircuitBreaker(breaker) // reuse the same breaker (state persists across reloads)
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine
@@ -441,9 +516,34 @@ func main() {
 		gmetrics.StartUsageTopNRefresh(ctx, redisClient.Raw(), cfg.Metrics.TopConsumers, 60*time.Second, initialRegistry.Types())
 	}
 
+	// Drive the once-per-job completion work (webhook, result scan, debits) from
+	// the reliable pub/sub broadcast; the relay's /complete HTTP call remains a
+	// redundant fast-path onto the same Redis claim.
+	manager.WithCompletionProcessor(relayCompleteHandler)
 	manager.Start(ctx, initialRegistry)
 	go healthChecker.Start(ctx)
 	relayCompleteHandler.StartRetryLoop(ctx)
+
+	// Active circuit-breaker probing (opt-in) — per replica, so each replica's
+	// breaker view stays current for idle/dead/recovered backends.
+	if breaker != nil {
+		if pi, _ := time.ParseDuration(cfg.CircuitBreaker.ProbeInterval); pi > 0 {
+			probeClient := &http.Client{Timeout: 5 * time.Second}
+			llmproxy.StartProber(ctx, breaker, probeClient, pi, func() []llmproxy.ProbeTarget {
+				var targets []llmproxy.ProbeTarget
+				for _, d := range gcRegistry.Load().Models() {
+					if d.HealthCheck.Disabled {
+						continue
+					}
+					for _, b := range d.Backends {
+						targets = append(targets, llmproxy.ProbeTarget{Model: d.Model, URL: b.URL, HealthPath: d.HealthCheck.Path})
+					}
+				}
+				return targets
+			})
+			slog.Info("llm backend active health probing enabled", "interval", cfg.CircuitBreaker.ProbeInterval)
+		}
+	}
 
 	// ── Unified GC ────────────────────────────────────────────────────────────
 	// All atomics are read on each tick so hot-reload takes effect without restart.

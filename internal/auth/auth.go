@@ -28,6 +28,8 @@ import (
 
 	"github.com/MicahParks/keyfunc/v3"
 	"github.com/golang-jwt/jwt/v5"
+
+	"gatewai/gateway/internal/metrics"
 )
 
 // Principal is the resolved identity for a request.
@@ -263,22 +265,57 @@ func (a *OAuth2Authenticator) Authenticate(r *http.Request) (*Principal, error) 
 
 	switch a.strategy {
 	case "jwt":
-		return a.authenticateJWT(raw)
+		return a.timedAuthenticateJWT(r.Context(), raw)
 	case "introspection":
 		if a.introspector == nil {
 			return nil, fmt.Errorf("auth: introspection strategy configured but no introspector available")
 		}
-		return a.introspector.introspect(r.Context(), raw)
+		return a.timedIntrospect(r.Context(), raw)
 	default: // "auto"
 		if looksLikeJWT(raw) {
-			return a.authenticateJWT(raw)
+			return a.timedAuthenticateJWT(r.Context(), raw)
 		}
 		if a.introspector != nil {
-			return a.introspector.introspect(r.Context(), raw)
+			return a.timedIntrospect(r.Context(), raw)
 		}
 		// auto with no introspector → treat as JWT.
-		return a.authenticateJWT(raw)
+		return a.timedAuthenticateJWT(r.Context(), raw)
 	}
+}
+
+// timedAuthenticateJWT wraps authenticateJWT with the OAuth2 verification
+// latency/error metrics.
+func (a *OAuth2Authenticator) timedAuthenticateJWT(ctx context.Context, raw string) (*Principal, error) {
+	start := time.Now()
+	p, err := a.authenticateJWT(raw)
+	metrics.ObserveWithExemplar(ctx, metrics.AuthOAuth2Duration.WithLabelValues("jwt"), time.Since(start).Seconds())
+	if err != nil {
+		metrics.AuthOAuth2ErrorsTotal.WithLabelValues("jwt", "invalid_token").Inc()
+	}
+	return p, err
+}
+
+// timedIntrospect wraps tokenIntrospector.introspect with the OAuth2
+// verification latency/error metrics.
+func (a *OAuth2Authenticator) timedIntrospect(ctx context.Context, raw string) (*Principal, error) {
+	start := time.Now()
+	p, err := a.introspector.introspect(ctx, raw)
+	metrics.ObserveWithExemplar(ctx, metrics.AuthOAuth2Duration.WithLabelValues("introspection"), time.Since(start).Seconds())
+	if err != nil {
+		metrics.AuthOAuth2ErrorsTotal.WithLabelValues("introspection", classifyIntrospectErr(err)).Inc()
+	}
+	return p, err
+}
+
+// classifyIntrospectErr maps an introspect failure to a metric reason:
+// "invalid_token" when the endpoint reported the token inactive/rejected,
+// "unreachable" for a network, status, or decode failure talking to the
+// introspection endpoint.
+func classifyIntrospectErr(err error) string {
+	if errors.Is(err, ErrInvalidToken) {
+		return "invalid_token"
+	}
+	return "unreachable"
 }
 
 // authenticateJWT validates raw as a signed JWT against the configured JWKS.

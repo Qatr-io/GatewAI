@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/service"
 )
 
@@ -562,5 +563,86 @@ func TestDef_BackendModelNames(t *testing.T) {
 	def3 := service.NewRegistry([]config.ServiceConfig{baseServiceConfig()}).Models()[0]
 	if got := def3.BackendModelNames(); got != nil {
 		t.Errorf("expected nil backend models when no rewrite, got %v", got)
+	}
+}
+
+// ── Model-backed guardrail resolution ──────────────────────────────────────────
+
+func TestResolveGuardrailModels(t *testing.T) {
+	cfg := config.ServiceConfig{
+		Type:         "llm",
+		Model:        "chat",
+		Provider:     "passthrough",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: "http://backend",
+		Guardrails: config.GuardrailsConfig{
+			Models: []config.GuardrailModelConfig{
+				{Name: "pg", Endpoint: "http://pg", Mode: "sync", Action: "block", Timeout: "80ms"},
+				{Name: "shadow", Endpoint: "http://s"},                                     // defaults: async/flag
+				{Name: "red", Endpoint: "http://r", Mode: "sync", Action: "redact"},        // redact → flag (classifier)
+				{Name: "asyncblock", Endpoint: "http://a", Mode: "async", Action: "block"}, // async → flag
+				{Name: "noendpoint"}, // skipped
+			},
+		},
+	}
+	def := service.NewRegistry([]config.ServiceConfig{cfg}).Models()[0]
+	stage := def.Guardrails.Input
+
+	if !stage.Enabled {
+		t.Error("input stage should be enabled when only models are configured")
+	}
+	models := stage.Models
+	if len(models) != 4 {
+		t.Fatalf("expected 4 resolved models (noendpoint skipped), got %d", len(models))
+	}
+	byName := map[string]struct{ mode, action string }{}
+	for _, m := range models {
+		byName[m.Detector.Name()] = struct{ mode, action string }{m.Mode, m.Action}
+	}
+	cases := map[string]struct{ mode, action string }{
+		"pg":         {guardrails.ModeSync, guardrails.ActionBlock},
+		"shadow":     {guardrails.ModeAsync, guardrails.ActionFlag}, // safe defaults
+		"red":        {guardrails.ModeSync, guardrails.ActionFlag},  // redact coerced
+		"asyncblock": {guardrails.ModeAsync, guardrails.ActionFlag}, // async coerced
+	}
+	for name, want := range cases {
+		got, ok := byName[name]
+		if !ok {
+			t.Errorf("model %q missing from resolved set", name)
+			continue
+		}
+		if got.mode != want.mode || got.action != want.action {
+			t.Errorf("model %q: got mode=%s action=%s, want mode=%s action=%s", name, got.mode, got.action, want.mode, want.action)
+		}
+	}
+}
+
+func TestResolveGuardrailModels_NER(t *testing.T) {
+	cfg := config.ServiceConfig{
+		Type: "llm", Model: "chat", Provider: "passthrough",
+		Operations:   map[string][]string{"chat": {"/v1/chat/completions"}},
+		InferenceURL: "http://backend",
+		Guardrails: config.GuardrailsConfig{
+			Models: []config.GuardrailModelConfig{
+				{Name: "pii", Endpoint: "http://pii", Kind: "ner", Mode: "sync"},                               // default action → redact
+				{Name: "pii-async", Endpoint: "http://p2", Kind: "ner", Mode: "async"},                         // async → flag
+				{Name: "clf-redact", Endpoint: "http://c", Kind: "classifier", Mode: "sync", Action: "redact"}, // no spans → flag
+			},
+		},
+	}
+	def := service.NewRegistry([]config.ServiceConfig{cfg}).Models()[0]
+	byName := map[string]string{}
+	for _, m := range def.Guardrails.Input.Models {
+		byName[m.Detector.Name()] = m.Action
+	}
+	want := map[string]string{
+		"pii":        guardrails.ActionRedact, // NER + sync default = redact
+		"pii-async":  guardrails.ActionFlag,   // async can't act
+		"clf-redact": guardrails.ActionFlag,   // classifier can't redact
+	}
+	for name, action := range want {
+		if byName[name] != action {
+			t.Errorf("model %q: got action %q, want %q", name, byName[name], action)
+		}
 	}
 }

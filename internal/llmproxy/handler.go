@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
@@ -54,7 +55,21 @@ type Handler struct {
 	guard           *guardrails.Checker    // output DLP scanner
 	usageTracker    usage.UsageTracker     // nil = calendar usage reporting disabled
 	langfuseEnabled bool                   // attach langfuse.observation.* span attrs; requires OTel traces enabled
+	breaker         *CircuitBreaker        // nil = circuit breaking disabled
 }
+
+// WithCircuitBreaker attaches a per-backend circuit breaker so dead backends are
+// skipped after repeated failures. The breaker is shared (state persists across
+// config reloads); pass the same instance when rebuilding the handler. nil
+// disables circuit breaking.
+func (h *Handler) WithCircuitBreaker(cb *CircuitBreaker) *Handler {
+	h.breaker = cb
+	return h
+}
+
+// Breaker returns the attached circuit breaker (nil when disabled), so callers
+// such as GET /v1/models can surface degraded backends.
+func (h *Handler) Breaker() *CircuitBreaker { return h.breaker }
 
 // WithLangfuse enables attaching Langfuse observability attributes
 // (prompt/completion content, gen_ai.usage.*) to the request span.
@@ -185,8 +200,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			metrics.CacheHitsTotal.WithLabelValues(def.Type, def.Model).Inc()
 			// Tokens are counted on every delivery (including cache hits) for billing purposes.
 			usage := emitTokenMetrics(ctx, def, "", userType, entry.Body)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "cache", userType, "200").Inc()
-			metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType), time.Since(start).Seconds())
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", "cache", userType, "200", "false").Inc()
+			metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, "", "cache", userType, "false"), time.Since(start).Seconds())
 			if consumer != "" && usage != nil {
 				tCtx := context.WithoutCancel(r.Context())
 				h.tracker.Track(tCtx, consumer, userType, "prompt", usage.PromptTokens)
@@ -223,7 +238,13 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	var respBody []byte
 	var lastBackendErr string
 	var winningBackendModel, winningBackendURL string
+	tried := 0
 	for i, backend := range backends {
+		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
+			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
+			continue
+		}
+		tried++
 		effectiveModel := backend.Model
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
@@ -251,7 +272,10 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		if doErr != nil {
 			slog.WarnContext(r.Context(), "llm backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502", "false").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastBackendErr = doErr.Error()
 			resp = nil
 			continue
@@ -260,21 +284,34 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 			slog.WarnContext(r.Context(), "llm backend returned 5xx, trying next",
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
-				strconv.Itoa(resp.StatusCode)).Inc()
+				strconv.Itoa(resp.StatusCode), "false").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastBackendErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		if h.breaker != nil {
+			h.breaker.RecordSuccess(def.Model, backend.URL)
+		}
 		winningBackendModel = effectiveModel
 		winningBackendURL = backend.URL
 		break // success or 4xx — do not retry
 	}
 	if resp == nil {
+		if tried == 0 {
+			// Every backend's circuit was open → fast-fail instead of a slow 502.
+			span.SetStatus(codes.Error, "all backends circuit-open")
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "false").Inc()
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			return
+		}
 		span.RecordError(fmt.Errorf("all backends failed: %s", lastBackendErr))
 		span.SetStatus(codes.Error, "all backends failed")
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502", "false").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastBackendErr)
 		return
 	}
@@ -283,7 +320,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	var readErr error
 	respBody, readErr = io.ReadAll(resp.Body)
 	if readErr != nil {
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "502").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "502", "false").Inc()
 		writeError(w, http.StatusBadGateway, "failed to read upstream response")
 		return
 	}
@@ -292,7 +329,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	finalStatus, finalBody, usage, err := prov.TranslateResponse(r.Context(), resp.StatusCode, resp.Header, respBody)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "llm response translation failed", "provider", def.Provider, "error", err)
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "500").Inc()
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "500", "false").Inc()
 		writeError(w, http.StatusInternalServerError, "failed to translate provider response")
 		return
 	}
@@ -305,8 +342,8 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	if finalStatus >= 500 {
 		span.SetStatus(codes.Error, "backend error")
 	}
-	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
+	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr, "false").Inc()
+	metrics.ObserveWithExemplar(ctx, metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "false"), time.Since(start).Seconds())
 
 	if usage != nil {
 		total := usage.PromptTokens + usage.CompletionTokens
@@ -329,6 +366,7 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	// Applied after response translation; only on successful (2xx) responses.
 	outputBlocked := false
 	if def.Guardrails.Output.Enabled && h.guard != nil && finalStatus < 300 {
+		metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "output").Inc()
 		switch def.Guardrails.Output.Action {
 		case "redact":
 			redacted, found := h.guard.RedactResponse(finalBody, def.Guardrails.Output.Checks)
@@ -423,7 +461,13 @@ func truncateForSpan(body []byte) string {
 	if len(body) <= maxSpanAttrBytes {
 		return string(body)
 	}
-	return string(body[:maxSpanAttrBytes]) + "...[truncated]"
+	// Snap the cut back to a rune boundary so the truncated span attribute stays
+	// valid UTF-8 (a byte cut mid-rune would leave a trailing U+FFFD).
+	end := maxSpanAttrBytes
+	for end > 0 && !utf8.RuneStart(body[end]) {
+		end--
+	}
+	return string(body[:end]) + "...[truncated]"
 }
 
 func emitTokenMetrics(ctx context.Context, def *service.Def, backendModel, userType string, body []byte) *provider.Usage {
@@ -519,7 +563,13 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	var resp *http.Response
 	var lastErr string
 	var winningBackendModel, winningBackendURL string
+	tried := 0
 	for i, backend := range backends {
+		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
+			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
+			continue
+		}
+		tried++
 		effectiveModel := backend.Model
 		if effectiveModel == "" {
 			effectiveModel = def.BackendModel
@@ -547,7 +597,10 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if doErr != nil {
 			slog.WarnContext(r.Context(), "llm stream backend error, trying next",
 				"backend_index", i, "url", backend.URL, "error", doErr)
-			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502").Inc()
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType, "502", "true").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastErr = doErr.Error()
 			resp = nil
 			continue
@@ -556,19 +609,30 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 			slog.WarnContext(r.Context(), "llm stream backend returned 5xx, trying next",
 				"backend_index", i, "url", backend.URL, "status", resp.StatusCode)
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, effectiveModel, def.Provider, userType,
-				strconv.Itoa(resp.StatusCode)).Inc()
+				strconv.Itoa(resp.StatusCode), "true").Inc()
+			if h.breaker != nil {
+				h.breaker.RecordFailure(def.Model, backend.URL)
+			}
 			lastErr = fmt.Sprintf("backend returned %d", resp.StatusCode)
 			_, _ = io.Copy(io.Discard, resp.Body)
 			resp.Body.Close()
 			resp = nil
 			continue
 		}
+		if h.breaker != nil {
+			h.breaker.RecordSuccess(def.Model, backend.URL)
+		}
 		winningBackendModel = effectiveModel
 		winningBackendURL = backend.URL
 		break
 	}
 	if resp == nil {
-		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502").Inc()
+		if tried == 0 {
+			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "true").Inc()
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			return
+		}
+		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502", "true").Inc()
 		writeError(w, http.StatusBadGateway, "all backends failed: "+lastErr)
 		return
 	}
@@ -587,8 +651,22 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	w.WriteHeader(resp.StatusCode)
 
 	statusStr := strconv.Itoa(resp.StatusCode)
-	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr).Inc()
-	metrics.ObserveWithExemplar(r.Context(), metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType), time.Since(start).Seconds())
+	metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, statusStr, "true").Inc()
+	metrics.ObserveWithExemplar(r.Context(), metrics.LLMRequestDuration.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType, "true"), time.Since(start).Seconds())
+
+	// chunkStart anchors time-to-first-token: the delay between the gateway
+	// forwarding SSE headers and the first chunk of the backend's stream body.
+	chunkStart := time.Now()
+	firstChunkSeen := false
+	recordFirstChunk := func() {
+		if firstChunkSeen {
+			return
+		}
+		firstChunkSeen = true
+		metrics.ObserveWithExemplar(r.Context(),
+			metrics.LLMTimeToFirstToken.WithLabelValues(def.Type, def.Model, winningBackendModel, def.Provider, userType),
+			time.Since(chunkStart).Seconds())
+	}
 
 	// Pipe SSE lines to the client, flushing after each line.
 	// We track the last non-[DONE] data payload to extract usage counts once
@@ -598,30 +676,85 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 64*1024), 1*1024*1024)
 	var lastDataPayload string
-	var deltaTexts []string
-	for scanner.Scan() {
-		line := scanner.Text()
-		if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
-			return // client disconnected
-		}
+
+	out := def.Guardrails.Output
+	// Buffered enforcement (block/buffer) holds content in a window before
+	// releasing it, so violations can be blocked or redacted mid-stream. The
+	// default ("flag") streams unbuffered and only observes.
+	enforceStream := out.Enabled && h.guard != nil && len(out.Checks) > 0 &&
+		(out.Streaming == "block" || out.Streaming == "buffer")
+	if out.Enabled && h.guard != nil && len(out.Checks) > 0 {
+		metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "output").Inc()
+	}
+
+	if enforceStream {
+		var fl http.Flusher
 		if canFlush {
-			flusher.Flush()
+			fl = flusher
 		}
-		if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
-			lastDataPayload = after
-			// Accumulate delta.content for output DLP scanning.
-			if def.Guardrails.Output.Enabled {
-				var chunk struct {
-					Choices []struct {
-						Delta struct {
-							Content string `json:"content"`
-						} `json:"delta"`
-					} `json:"choices"`
+		guard := newStreamGuard(w, fl, h.guard, out.Checks, out.Streaming == "buffer", out.StreamWindowTokens)
+		for scanner.Scan() {
+			recordFirstChunk()
+			line := scanner.Text()
+			if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
+				lastDataPayload = after
+			}
+			if !guard.line(line) {
+				break
+			}
+		}
+		guard.finish()
+		if guard.violated {
+			result, action := "flagged", "flag"
+			switch {
+			case guard.aborted:
+				result, action = "blocked", "block"
+			case guard.redact:
+				result, action = "redacted", "redact"
+			}
+			slog.WarnContext(r.Context(), "llm stream response acted on by output guardrails",
+				"service_type", def.Type, "model", def.Model, "consumer", consumer, "action", action, "result", result)
+			metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", action, result).Inc()
+		}
+	} else {
+		var deltaTexts []string
+		for scanner.Scan() {
+			recordFirstChunk()
+			line := scanner.Text()
+			if _, writeErr := fmt.Fprintf(w, "%s\n", line); writeErr != nil {
+				return // client disconnected
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+			if after, ok := strings.CutPrefix(line, "data: "); ok && after != "[DONE]" {
+				lastDataPayload = after
+				// Accumulate delta.content for output DLP scanning.
+				if out.Enabled {
+					var chunk struct {
+						Choices []struct {
+							Delta struct {
+								Content string `json:"content"`
+							} `json:"delta"`
+						} `json:"choices"`
+					}
+					if jsonErr := json.Unmarshal([]byte(after), &chunk); jsonErr == nil &&
+						len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
+						deltaTexts = append(deltaTexts, chunk.Choices[0].Delta.Content)
+					}
 				}
-				if jsonErr := json.Unmarshal([]byte(after), &chunk); jsonErr == nil &&
-					len(chunk.Choices) > 0 && chunk.Choices[0].Delta.Content != "" {
-					deltaTexts = append(deltaTexts, chunk.Choices[0].Delta.Content)
-				}
+			}
+		}
+		// ── Output DLP guardrails (streaming: flag) ───────────────────────────────
+		// Unbuffered streams cannot block/redact mid-flight; the flag mode joins the
+		// per-token deltas (a single delta rarely holds a full match, e.g. an email
+		// streams as "bob","@","example",".","com") and emits a metric + log.
+		if out.Enabled && h.guard != nil && len(deltaTexts) > 0 {
+			full := strings.Join(deltaTexts, "")
+			if found := h.guard.ScanStrings([]string{full}, out.Checks); len(found) > 0 {
+				slog.WarnContext(r.Context(), "llm stream response flagged by output guardrails (streaming: flag)",
+					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "flag", "flagged").Inc()
 			}
 		}
 	}
@@ -638,21 +771,6 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 					_ = h.tokenLimiter.AddModelTokens(tCtx, r, def.Model, total)
 				}
 			}
-		}
-	}
-
-	// ── Output DLP guardrails (streaming) ─────────────────────────────────────
-	// Block and redact are not feasible on already-flushed SSE streams; we always
-	// degrade to flag-only to at least emit a metric and log entry.
-	if def.Guardrails.Output.Enabled && h.guard != nil && len(deltaTexts) > 0 {
-		// Join the per-token deltas before scanning: a single delta rarely holds a
-		// full match (e.g. an email streams as "bob","@","example",".","com"), so
-		// scanning fragments individually would miss PII split across chunks.
-		full := strings.Join(deltaTexts, "")
-		if found := h.guard.ScanStrings([]string{full}, def.Guardrails.Output.Checks); len(found) > 0 {
-			slog.WarnContext(r.Context(), "llm stream response flagged by output guardrails (block/redact degrade to flag for streams)",
-				"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
-			metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "flag", "flagged").Inc()
 		}
 	}
 

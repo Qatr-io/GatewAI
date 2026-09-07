@@ -150,14 +150,50 @@ var (
 
 	LLMRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_llm_requests_total",
-		Help: "Total LLM requests by provider, user_type, and HTTP status.",
-	}, []string{"service_type", "model", "backend_model", "provider", "user_type", "status"})
+		Help: "Total LLM requests by provider, user_type, stream, and HTTP status.",
+	}, []string{"service_type", "model", "backend_model", "provider", "user_type", "status", "stream"})
 
 	LLMRequestDuration = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "gatewai_llm_request_duration_seconds",
 		Help:    "End-to-end LLM request latency.",
 		Buckets: []float64{.05, .1, .25, .5, 1, 2, 5, 10, 30, 60, 120},
+	}, []string{"service_type", "model", "backend_model", "provider", "user_type", "stream"})
+
+	// LLMTimeToFirstToken measures the delay between the gateway writing SSE
+	// response headers to the client and the first chunk of the backend's
+	// stream being received, for streaming LLM requests only.
+	LLMTimeToFirstToken = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gatewai_llm_time_to_first_token_seconds",
+		Help:    "Time from SSE stream start to the first chunk received from the backend, for streaming LLM requests.",
+		Buckets: []float64{.01, .025, .05, .1, .25, .5, 1, 2, 5, 10, 30},
 	}, []string{"service_type", "model", "backend_model", "provider", "user_type"})
+
+	// BackendCircuitOpen is 1 while a backend's circuit is open (being skipped),
+	// 0 when closed. Per model+backend.
+	BackendCircuitOpen = promauto.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "gatewai_backend_circuit_open",
+		Help: "1 when an LLM backend's circuit is open (skipped), 0 when closed.",
+	}, []string{"model", "backend"})
+
+	// BackendCircuitOpensTotal counts how many times a backend's circuit opened.
+	BackendCircuitOpensTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_backend_circuit_opens_total",
+		Help: "Number of times an LLM backend's circuit transitioned to open.",
+	}, []string{"model", "backend"})
+
+	// BackendCircuitSkippedTotal counts requests that skipped a backend because
+	// its circuit was open.
+	BackendCircuitSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_backend_circuit_skipped_total",
+		Help: "Requests that skipped an LLM backend because its circuit was open.",
+	}, []string{"model", "backend"})
+
+	// LLMFallbackTotal counts requests re-routed from a degraded model to its
+	// configured fallback model (all primary backends circuit-open).
+	LLMFallbackTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_llm_fallback_total",
+		Help: "Requests routed to a fallback model because the primary's backends were all circuit-open.",
+	}, []string{"service_type", "model", "fallback"})
 
 	// LLMTokensPerRequest is a histogram of tokens per request, enabling p50/p95/p99
 	// analysis by user_type. Useful to detect large contexts and capacity planning.
@@ -212,6 +248,61 @@ var (
 		Name: "gatewai_guardrails_total",
 		Help: "Total guardrails matches by stage, action and result (blocked|redacted|flagged).",
 	}, []string{"service_type", "model", "stage", "action", "result"})
+
+	// GuardrailsEvaluationsTotal counts every guardrails-enabled evaluation
+	// (input or output stage), regardless of outcome, so GuardrailsTotal can be
+	// read as a hit rate against this denominator.
+	GuardrailsEvaluationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_evaluations_total",
+		Help: "Total guardrails-enabled evaluations by stage, regardless of outcome.",
+	}, []string{"service_type", "model", "stage"})
+
+	// GuardrailsModelLatency observes the latency of a model-backed guardrail
+	// detector call, by detector name. Buckets span the sub-second budget.
+	GuardrailsModelLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gatewai_guardrails_model_latency_seconds",
+		Help:    "Latency of a model-backed guardrail detector call, by detector.",
+		Buckets: []float64{0.01, 0.025, 0.05, 0.1, 0.15, 0.25, 0.5, 1, 2, 5},
+	}, []string{"detector"})
+
+	// GuardrailsModelErrorsTotal counts model-backed guardrail detector failures,
+	// by detector and reason ("timeout"|"unreachable"|"bad_response").
+	GuardrailsModelErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_errors_total",
+		Help: "Model-backed guardrail detector failures, by detector and reason.",
+	}, []string{"detector", "reason"})
+
+	// GuardrailsModelDetectionsTotal counts model-backed guardrail detections that
+	// fired, by detector, mode ("sync"|"async") and result ("blocked"|"flagged").
+	// Kept separate from GuardrailsTotal so the regex metric's labels are unchanged.
+	GuardrailsModelDetectionsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_detections_total",
+		Help: "Model-backed guardrail detections by detector, mode and result (blocked|flagged).",
+	}, []string{"service_type", "model", "stage", "detector", "mode", "result"})
+
+	// GuardrailsAsyncTotal counts result-stage guardrail detections on async job
+	// results, by detector and result ("flagged"|"blocked"|"redacted"|"error").
+	// The async completion path runs once per job, so this is not per-replica
+	// inflated (unlike pub/sub broadcast metrics). In the shadow slice only
+	// "flagged" and "error" are emitted.
+	GuardrailsAsyncTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_async_total",
+		Help: "Result-stage async guardrail detections by detector and result (flagged|blocked|redacted|error).",
+	}, []string{"service_type", "model", "detector", "result"})
+
+	// GuardrailsModelCacheTotal counts verdict-cache lookups by detector and
+	// result ("hit"|"miss").
+	GuardrailsModelCacheTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_cache_total",
+		Help: "Model-backed guardrail verdict-cache lookups by detector and result (hit|miss).",
+	}, []string{"detector", "result"})
+
+	// GuardrailsModelSkippedTotal counts model-detector calls skipped by a guard
+	// (e.g. the input-length gate), by detector and reason.
+	GuardrailsModelSkippedTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_guardrails_model_skipped_total",
+		Help: "Model-backed guardrail calls skipped by a guard, by detector and reason.",
+	}, []string{"detector", "reason"})
 
 	AsyncStaleJobsSweptTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "gatewai_async_stale_jobs_swept_total",
@@ -298,4 +389,22 @@ var (
 		Name: "gatewai_jobs_total",
 		Help: "Total number of async jobs reaching a terminal outcome, by service type, model and status (completed|failed).",
 	}, []string{"service_type", "model", "status"})
+
+	// AuthOAuth2Duration measures OAuth2 token verification latency, by
+	// operation ("jwt" = local JWKS verification, "introspection" = RFC 7662
+	// call to the authorization server).
+	AuthOAuth2Duration = promauto.NewHistogramVec(prometheus.HistogramOpts{
+		Name:    "gatewai_auth_oauth2_duration_seconds",
+		Help:    "OAuth2 token verification latency by operation (jwt|introspection).",
+		Buckets: []float64{.001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2.5},
+	}, []string{"operation"})
+
+	// AuthOAuth2ErrorsTotal counts OAuth2 token verification failures by
+	// operation and reason. reason is "invalid_token" for a rejected/malformed
+	// JWT or an "inactive" introspection result, and "unreachable" for an
+	// infra-level failure talking to the JWKS/introspection endpoint.
+	AuthOAuth2ErrorsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "gatewai_auth_oauth2_errors_total",
+		Help: "OAuth2 token verification failures by operation and reason (invalid_token|unreachable).",
+	}, []string{"operation", "reason"})
 )

@@ -10,19 +10,39 @@ import (
 	"time"
 
 	"gatewai/gateway/internal/config"
+	"gatewai/gateway/internal/guardrails"
 )
 
 // GuardrailsStage is the resolved guardrails configuration for a single pipeline stage.
 type GuardrailsStage struct {
 	Enabled bool
-	Checks  []string // resolved group names to run
-	Action  string   // "block" | "redact" | "flag"
+	Checks  []string                 // resolved regex group names to run
+	Action  string                   // "block" | "redact" | "flag" (regex checks)
+	Models  []guardrails.Enforcement // model-backed detectors for this stage
+	// Streaming (output stage only) controls streaming enforcement:
+	// "flag" (default) | "block" | "buffer". StreamWindowTokens is the buffer
+	// window for block/buffer (0 = default).
+	Streaming          string
+	StreamWindowTokens int
+	// ScanTimeout / OnTimeoutFailClosed (async stage, block/redact only) gate how
+	// long the client-facing result is withheld awaiting the scan, and what to do
+	// if it lapses (fail-open = deliver un-scanned; fail-closed = fail the job).
+	ScanTimeout         time.Duration
+	OnTimeoutFailClosed bool
 }
 
-// GuardrailsSpec holds resolved guardrails for both the input and output stages.
+// Enforcing reports whether this stage's action modifies delivery (block or
+// redact) rather than just observing (flag).
+func (s GuardrailsStage) Enforcing() bool {
+	return s.Action == "block" || s.Action == "redact"
+}
+
+// GuardrailsSpec holds resolved guardrails for the input, output, and async
+// (result) stages.
 type GuardrailsSpec struct {
 	Input  GuardrailsStage
 	Output GuardrailsStage
+	Async  GuardrailsStage // applied to async job results in the completion path
 }
 
 // Def describes a registered inference service type.
@@ -46,6 +66,7 @@ type Def struct {
 	InferenceHeaders map[string]string   // headers injected on every sync-direct proxy request to the backend
 	Provider         string
 	BackendModel     string // real model name sent to backend; empty = use Model (the alias)
+	FallbackModel    string // model to route to when all backends are circuit-open; empty = none
 	ResponseCacheTTL time.Duration
 	Retries          int            // additional full backend-cycle attempts on network error or 5xx (sync-direct only)
 	Guardrails       GuardrailsSpec // resolved guardrails configuration
@@ -227,11 +248,123 @@ func resolveStage(checks []string, action string) GuardrailsStage {
 // maps to the Output stage. Both default to disabled when not configured.
 func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 	input := resolveStage(cfg.Checks, cfg.Action)
+	input.Models = resolveModels(cfg.Models)
+	if len(input.Models) > 0 {
+		input.Enabled = true // a stage with only model detectors is still active
+	}
 	var output GuardrailsStage
 	if cfg.Output != nil {
 		output = resolveStage(cfg.Output.Checks, cfg.Output.Action)
+		output.Streaming = cfg.Output.Streaming
+		if output.Streaming == "" {
+			output.Streaming = "flag" // safe default: observe only, no buffering
+		}
+		output.StreamWindowTokens = cfg.Output.StreamWindowTokens
+		if output.StreamWindowTokens <= 0 {
+			output.StreamWindowTokens = 64
+		}
 	}
-	return GuardrailsSpec{Input: input, Output: output}
+	var async GuardrailsStage
+	if cfg.Async != nil {
+		async = resolveStage(cfg.Async.Checks, cfg.Async.Action)
+		async.Models = resolveModels(cfg.Async.Models)
+		if len(async.Models) > 0 {
+			async.Enabled = true // a stage with only model detectors is still active
+		}
+		// The async result stage is stage-action driven (block|redact|flag applied
+		// to any fired detector). Default to "flag" (shadow) so enabling it never
+		// starts blocking/redacting results by accident — enforcement is opt-in.
+		// (resolveStage defaults an unset action to "block"; async overrides that.)
+		if async.Enabled && cfg.Async.Action == "" {
+			async.Action = "flag"
+		}
+		// DONE-gating knobs (only meaningful when async enforces).
+		async.ScanTimeout = parseDurationOr(cfg.Async.ScanTimeout, 30*time.Second)
+		async.OnTimeoutFailClosed = cfg.Async.OnTimeout == "fail_closed"
+	}
+	return GuardrailsSpec{Input: input, Output: output, Async: async}
+}
+
+// parseDurationOr parses a duration string, falling back to def on empty/invalid.
+func parseDurationOr(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return def
+}
+
+// resolveModels builds runtime model-detector Enforcements from config, applying
+// safe defaults and coercions:
+//   - mode defaults to "async" (shadow) so adding a model never starts blocking
+//     traffic by accident;
+//   - async coerces any action to "flag" (can't act after forwarding);
+//   - "redact" coerces to "flag" for now (classifier detectors have no spans;
+//     NER redaction is a later slice).
+//
+// Entries with an empty endpoint are skipped.
+func resolveModels(cfgs []config.GuardrailModelConfig) []guardrails.Enforcement {
+	if len(cfgs) == 0 {
+		return nil
+	}
+	out := make([]guardrails.Enforcement, 0, len(cfgs))
+	for _, m := range cfgs {
+		if m.Endpoint == "" {
+			continue
+		}
+		timeout := 120 * time.Millisecond
+		if m.Timeout != "" {
+			if d, err := time.ParseDuration(m.Timeout); err == nil {
+				timeout = d
+			}
+		}
+		var cacheTTL time.Duration
+		if m.CacheTTL != "" {
+			if d, err := time.ParseDuration(m.CacheTTL); err == nil {
+				cacheTTL = d
+			}
+		}
+		name := m.Name
+		if name == "" {
+			name = "model"
+		}
+		kind := m.Kind
+		if kind != guardrails.KindNER {
+			kind = guardrails.KindClassifier
+		}
+		det := guardrails.NewModelDetector(guardrails.ModelConfig{
+			Name:           name,
+			Endpoint:       m.Endpoint,
+			Kind:           kind,
+			Categories:     m.Categories,
+			Threshold:      m.Threshold,
+			Timeout:        timeout,
+			OnError:        guardrails.OnError(m.OnError),
+			CacheTTL:       cacheTTL,
+			MaxInputTokens: m.MaxInputTokens,
+		})
+
+		mode := m.Mode
+		if mode != guardrails.ModeSync {
+			mode = guardrails.ModeAsync // safe default
+		}
+		action := m.Action
+		if action == "" {
+			// NER defaults to redact (its purpose); classifiers default to block.
+			if kind == guardrails.KindNER {
+				action = guardrails.ActionRedact
+			} else {
+				action = guardrails.ActionBlock
+			}
+		}
+		// Coercions: async can't act; only NER can redact (classifiers have no spans).
+		if mode == guardrails.ModeAsync {
+			action = guardrails.ActionFlag
+		} else if action == guardrails.ActionRedact && kind != guardrails.KindNER {
+			action = guardrails.ActionFlag
+		}
+		out = append(out, guardrails.Enforcement{Detector: det, Mode: mode, Action: action})
+	}
+	return out
 }
 
 func NewRegistry(cfgs []config.ServiceConfig) *Registry {
@@ -271,6 +404,7 @@ func NewRegistry(cfgs []config.ServiceConfig) *Registry {
 			InferenceHeaders:     cfg.InferenceHeaders,
 			Provider:             cfg.Provider,
 			BackendModel:         cfg.BackendModel,
+			FallbackModel:        cfg.FallbackModel,
 			ResponseCacheTTL:     time.Duration(cfg.ResponseCacheTTL) * time.Second,
 			Retries:              cfg.Retries,
 			Guardrails:           resolveGuardrails(cfg.Guardrails),

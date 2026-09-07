@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -50,6 +51,15 @@ type SyncHandler struct {
 	usageTracker      usage.UsageTracker // nil = no usage tracking
 	maxBodyBytes      int64              // max request body on the JSON path; default 1 MiB
 	priorityHeader    string             // HTTP header that grants access to the reserved sync capacity pool (e.g. "X-Priority")
+	breaker           BackendHealth      // nil = no circuit-breaker-driven fallback
+}
+
+// WithCircuitBreaker attaches backend-health info so a request to a fully
+// circuit-open model can be re-routed to its configured fallback_model. nil
+// disables cross-model fallback.
+func (h *SyncHandler) WithCircuitBreaker(b BackendHealth) *SyncHandler {
+	h.breaker = b
+	return h
 }
 
 // defaultMaxBodyBytes caps the sync JSON request body when max_body_mb is unset.
@@ -302,6 +312,18 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Cross-model fallback: when the primary model's backends are all
+	// circuit-open, route to its configured fallback model instead. Done before
+	// visibility/authz so those are enforced against the model actually served.
+	if def.FallbackModel != "" && backendsDegraded(h.breaker, def.Backends) {
+		if fb, fbErr := h.registry.RouteSync(r.URL.Path, def.FallbackModel); fbErr == nil && fb.IsLLM() {
+			slog.WarnContext(r.Context(), "primary model degraded, routing to fallback",
+				"service_type", def.Type, "model", def.Model, "fallback", fb.Model)
+			metrics.LLMFallbackTotal.WithLabelValues(def.Type, def.Model, fb.Model).Inc()
+			def = fb
+		}
+	}
+
 	if !checkModelVisible(w, r, def, h.userTypeHeader) {
 		return
 	}
@@ -357,35 +379,95 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 
 	// JSON requests: route through LLM proxy if configured, else direct proxy.
 	if h.llm != nil && def.IsLLM() {
-		if def.Guardrails.Input.Enabled && h.piiChecker != nil {
+		if def.Guardrails.Input.Enabled {
+			g := def.Guardrails.Input
+			metrics.GuardrailsEvaluationsTotal.WithLabelValues(def.Type, def.Model, "input").Inc()
 			consumer := ""
 			if h.consumerHeader != "" {
 				consumer = r.Header.Get(h.consumerHeader)
 			}
-			switch def.Guardrails.Input.Action {
-			case "redact":
-				cleaned, found := h.piiChecker.Redact(raw, def.Guardrails.Input.Checks)
-				if len(found) > 0 {
-					raw = cleaned
-					slog.WarnContext(r.Context(), "llm request redacted by guardrails",
-						"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
-					metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "redact", "redacted").Inc()
+
+			// ── Regex checks (deterministic, zero-latency) ────────────────────
+			if len(g.Checks) > 0 && h.piiChecker != nil {
+				switch g.Action {
+				case "redact":
+					cleaned, found := h.piiChecker.Redact(raw, g.Checks)
+					if len(found) > 0 {
+						raw = cleaned
+						slog.WarnContext(r.Context(), "llm request redacted by guardrails",
+							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "redact", "redacted").Inc()
+					}
+				case "flag":
+					if found := h.piiChecker.Scan(raw, g.Checks); len(found) > 0 {
+						slog.WarnContext(r.Context(), "llm request flagged by guardrails",
+							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "flag", "flagged").Inc()
+					}
+				default: // "block"
+					if found := h.piiChecker.Scan(raw, g.Checks); len(found) > 0 {
+						slog.WarnContext(r.Context(), "llm request blocked by guardrails",
+							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
+						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "block", "blocked").Inc()
+						metrics.GuardrailsPiiBlockedTotal.WithLabelValues(def.Type, def.Model).Inc()
+						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: "+strings.Join(found, ", "))
+						return
+					}
 				}
-			case "flag":
-				if found := h.piiChecker.Scan(raw, def.Guardrails.Input.Checks); len(found) > 0 {
-					slog.WarnContext(r.Context(), "llm request flagged by guardrails",
-						"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
-					metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "flag", "flagged").Inc()
+			}
+
+			// ── Model-backed detectors (semantic; sync can block, async shadows) ──
+			//
+			// Classifiers (block/flag) judge the ORIGINAL text; redaction only
+			// mutates what is forwarded. Order matters: classify first (so a
+			// blocked request never forwards), then redact the survivors — and
+			// crucially, classifiers must not see redaction placeholders, which
+			// otherwise inflate scores (e.g. an injection classifier false-firing
+			// on "[REDACTED_EMAIL]").
+			if len(g.Models) > 0 {
+				texts := guardrails.MessageTexts(raw) // original, pre-redaction
+
+				// async shadow: observe only, detached from the request lifetime.
+				guardrails.FireAsync(context.WithoutCancel(r.Context()), g.Models, texts, func(name string, cats []string) {
+					slog.WarnContext(r.Context(), "llm request flagged by async guardrail model (shadow)",
+						"service_type", def.Type, "model", def.Model, "detector", name, "consumer", consumer, "violations", cats)
+					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", name, "async", "flagged").Inc()
+				})
+
+				// sync block/flag classifiers (on the original text).
+				for _, res := range guardrails.EvaluateSync(r.Context(), g.Models, texts) {
+					if res.Err != nil || res.Action == guardrails.ActionBlock {
+						reason := res.Categories
+						if res.Err != nil {
+							reason = []string{"detector unavailable"}
+						}
+						slog.WarnContext(r.Context(), "llm request blocked by guardrail model",
+							"service_type", def.Type, "model", def.Model, "detector", res.Name, "consumer", consumer, "violations", reason, "error", res.Err)
+						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "blocked").Inc()
+						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: "+strings.Join(reason, ", "))
+						return
+					}
+					slog.WarnContext(r.Context(), "llm request flagged by guardrail model",
+						"service_type", def.Type, "model", def.Model, "detector", res.Name, "consumer", consumer, "violations", res.Categories)
+					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "flagged").Inc()
 				}
-			default: // "block"
-				if found := h.piiChecker.Scan(raw, def.Guardrails.Input.Checks); len(found) > 0 {
-					slog.WarnContext(r.Context(), "llm request blocked by guardrails",
-						"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
-					metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "block", "blocked").Inc()
-					metrics.GuardrailsPiiBlockedTotal.WithLabelValues(def.Type, def.Model).Inc()
-					writeError(w, http.StatusUnprocessableEntity, "guardrails violation: "+strings.Join(found, ", "))
-					return
+
+				// sync NER redaction (mutates the forwarded body) — reached only
+				// when the request was not blocked above.
+				cleaned, redResults := guardrails.EvaluateRedact(r.Context(), g.Models, raw)
+				for _, rr := range redResults {
+					if rr.Err != nil {
+						slog.WarnContext(r.Context(), "llm request blocked by guardrail model (redactor unavailable)",
+							"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "error", rr.Err)
+						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "blocked").Inc()
+						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: redaction unavailable")
+						return
+					}
+					slog.WarnContext(r.Context(), "llm request redacted by guardrail model",
+						"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "violations", rr.Categories)
+					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "redacted").Inc()
 				}
+				raw = cleaned
 			}
 		}
 		start := time.Now()

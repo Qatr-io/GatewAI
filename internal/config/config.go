@@ -33,6 +33,29 @@ type Config struct {
 	Usage    UsageConfig     `yaml:"usage"`
 	Webhooks WebhookConfig   `yaml:"webhooks"`
 	Jobs     JobsConfig      `yaml:"jobs"`
+	// CircuitBreaker guards LLM-proxy backends: after a run of consecutive
+	// failures a backend's circuit opens and it is skipped until a cooldown,
+	// so a dead backend is not hammered on every request. Opt-in (default off).
+	CircuitBreaker CircuitBreakerConfig `yaml:"circuit_breaker"`
+}
+
+// CircuitBreakerConfig tunes the per-backend circuit breaker for the LLM proxy.
+type CircuitBreakerConfig struct {
+	// Enabled activates the breaker. Default false.
+	Enabled bool `yaml:"enabled"`
+	// FailureThreshold is the number of consecutive failures (network error or
+	// 5xx) that opens a backend's circuit. A single success resets the count.
+	// Default 5.
+	FailureThreshold int `yaml:"failure_threshold"`
+	// Cooldown is how long a circuit stays open before a half-open probe is
+	// allowed through. Default "30s".
+	Cooldown string `yaml:"cooldown"`
+	// ProbeInterval, when set (e.g. "10s"), runs an active per-replica health
+	// probe against each LLM backend's health path, feeding the breaker so an
+	// idle/dead backend opens and a recovered one closes without waiting for live
+	// request traffic. Empty/"0s" = passive only (default). Uses each service's
+	// health.path/health.timeout; backends with health.disabled are skipped.
+	ProbeInterval string `yaml:"probe_interval"`
 }
 
 // WebhookConfig tunes durable outbound webhook delivery. Retries are persisted
@@ -469,6 +492,11 @@ type ServiceConfig struct {
 	// expected identifier (e.g. "meta-llama/Meta-Llama-3-8B-Instruct" for vLLM).
 	// Only applied when Provider is set. Empty means the alias is forwarded as-is.
 	BackendModel string `yaml:"backend_model"`
+	// FallbackModel is another model (on the same sync path) to route to when this
+	// model's backends are all circuit-open (requires circuit_breaker.enabled).
+	// Opt-in; empty = no fallback. The caller must also be allowed to use it
+	// (visibility/policies are re-checked against the fallback).
+	FallbackModel string `yaml:"fallback_model"`
 	// Provider selects the LLM backend protocol. When set, JSON requests are routed
 	// through the LLM proxy handler instead of the bare direct proxy.
 	// Valid values: "openai", "anthropic", "ollama", "passthrough". Empty = legacy direct proxy.
@@ -518,6 +546,17 @@ type GuardrailsStageConfig struct {
 	// Checks selects which guardrail groups to run:
 	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
 	Checks []string `yaml:"checks"`
+	// Streaming controls how the output stage acts on STREAMING responses:
+	//   "flag"   (default) — observe only; content streams through unbuffered.
+	//   "block"  — buffer a window, and terminate the stream on a violation.
+	//   "buffer" — buffer a window, redact matches, then release it.
+	// block/buffer trade first-token latency for enforcement — opt-in per service.
+	Streaming string `yaml:"streaming"`
+	// StreamWindowTokens is the buffer size (in ~tokens) held before a window is
+	// scanned and released, for Streaming block/buffer. Larger = better detection
+	// (a match is less likely to straddle a boundary) but higher latency to first
+	// visible token. 0 = default (64).
+	StreamWindowTokens int `yaml:"stream_window_tokens"`
 }
 
 // GuardrailsConfig controls PII/secrets detection for a service's LLM requests.
@@ -529,9 +568,73 @@ type GuardrailsConfig struct {
 	// Checks selects which guardrail groups to run:
 	// pii, pii_fr, pii_us, pii_uk, pii_es, pii_it, secrets.
 	Checks []string `yaml:"checks"`
+	// Models configures model-backed detectors run alongside the regex checks on
+	// the input (request) stage. Empty = regex only.
+	Models []GuardrailModelConfig `yaml:"models"`
 	// Output configures output-stage DLP guardrails (applied to LLM responses).
 	// When nil, output guardrails are disabled.
 	Output *GuardrailsStageConfig `yaml:"output"`
+	// Async configures result-stage guardrails applied to ASYNC job results
+	// (transcripts, OCR text, ...) in the once-per-job completion path. Unlike
+	// the input path (whose async submit carries only an uploaded file), the
+	// scannable content of an async job is its result text, so this stage runs
+	// against the job's result object after completion. Like the input stage it
+	// supports both regex checks and model-backed detectors. When nil, async
+	// result guardrails are disabled.
+	Async *GuardrailsAsyncConfig `yaml:"async"`
+}
+
+// GuardrailsAsyncConfig controls result-stage detection for async job results.
+// Detectors run out-of-band in the gateway's once-per-job completion handler;
+// in this slice they run in shadow (observe-only, emitting metrics) regardless
+// of Action, and enforcement (block/redact) is a later slice.
+type GuardrailsAsyncConfig struct {
+	// Action applied when a check matches: "block", "redact", or "flag"
+	// (default flag/shadow — observe only).
+	Action string `yaml:"action"`
+	// Checks selects which regex guardrail groups to run on the result text.
+	Checks []string `yaml:"checks"`
+	// Models configures model-backed detectors run on the result text.
+	Models []GuardrailModelConfig `yaml:"models"`
+	// ScanTimeout (block/redact only) bounds how long the client-facing result is
+	// withheld awaiting the scan. If the scan hasn't completed by then, OnTimeout
+	// decides. Duration string; supports ${VAR:-default}. Default "30s".
+	ScanTimeout string `yaml:"scan_timeout"`
+	// OnTimeout (block/redact only): "fail_open" (default — deliver the un-scanned
+	// result once ScanTimeout lapses) or "fail_closed" (mark the job failed).
+	OnTimeout string `yaml:"on_timeout"`
+}
+
+// GuardrailModelConfig configures one model-backed guardrail detector (a
+// self-hosted classifier/NER endpoint). It augments the regex checks; it does
+// not replace them.
+type GuardrailModelConfig struct {
+	// Name identifies the detector in metrics/logs.
+	Name string `yaml:"name"`
+	// Endpoint is the guardrail model's HTTP endpoint.
+	Endpoint string `yaml:"endpoint"`
+	// Kind is "classifier" (block/flag) or "ner" (spans → redact). Default classifier.
+	Kind string `yaml:"kind"`
+	// Categories filters which findings to act on; empty = all returned.
+	Categories []string `yaml:"categories"`
+	// Mode is "async" (shadow: observe only, default) or "sync" (inline: can act).
+	Mode string `yaml:"mode"`
+	// Action on a finding: "block", "redact", or "flag". async coerces to flag.
+	Action string `yaml:"action"`
+	// Threshold is the minimum score to act on a finding.
+	Threshold float64 `yaml:"threshold"`
+	// Timeout bounds a sync detector call (duration string, e.g. "120ms").
+	// Supports ${VAR:-default} expansion. Default 120ms.
+	Timeout string `yaml:"timeout"`
+	// OnError is "fail_open" (default: forward on failure) or "fail_closed".
+	OnError string `yaml:"on_error"`
+	// MaxInputTokens skips the model call (allow) when the estimated input token
+	// count exceeds this, protecting the latency budget. 0 = no gate.
+	MaxInputTokens int `yaml:"max_input_tokens"`
+	// CacheTTL enables verdict caching for this detector when set (duration
+	// string, e.g. "5m"; supports ${VAR:-default}). Identical inputs reuse the
+	// cached findings instead of calling the model. Empty/0 = no caching.
+	CacheTTL string `yaml:"cache_ttl"`
 }
 
 // LoadFromBytes parses a YAML config from an in-memory byte slice.
@@ -606,6 +709,14 @@ func (c *Config) applyDefaults() {
 	for i := range c.Services {
 		if c.Services[i].MaxFileSizeMB == 0 {
 			c.Services[i].MaxFileSizeMB = 100
+		}
+	}
+	if c.CircuitBreaker.Enabled {
+		if c.CircuitBreaker.FailureThreshold <= 0 {
+			c.CircuitBreaker.FailureThreshold = 5
+		}
+		if c.CircuitBreaker.Cooldown == "" {
+			c.CircuitBreaker.Cooldown = "30s"
 		}
 	}
 }
@@ -700,6 +811,13 @@ func (c *Config) validate() error {
 		}
 		if svc.ResponseCacheTTL < 0 {
 			return fmt.Errorf("service %q: response_cache_ttl must be >= 0", svc.Type)
+		}
+		if svc.Guardrails.Output != nil {
+			switch svc.Guardrails.Output.Streaming {
+			case "", "flag", "block", "buffer":
+			default:
+				return fmt.Errorf("service %q: guardrails.output.streaming %q is invalid (valid: flag, block, buffer)", svc.Type, svc.Guardrails.Output.Streaming)
+			}
 		}
 		for i, b := range svc.Backends {
 			if b.URL == "" {

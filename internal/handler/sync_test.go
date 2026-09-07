@@ -1496,3 +1496,89 @@ func TestSyncHandler_Authz_DenyMetricIncremented(t *testing.T) {
 		t.Errorf("expected deny counter to increment by 1, got delta %.0f", after-before)
 	}
 }
+
+// TestSyncHandler_CrossModelFallback_WhenPrimaryDegraded verifies that a request
+// to a model whose backends are all circuit-open is routed to its fallback_model.
+func TestSyncHandler_CrossModelFallback_WhenPrimaryDegraded(t *testing.T) {
+	fbBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"hi"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer fbBackend.Close()
+
+	primaryURL := "http://primary.invalid"
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type: "llm", Model: "chat", Provider: "passthrough",
+			Operations:    map[string][]string{"chat": {"/v1/chat/completions"}},
+			Backends:      []config.BackendConfig{{URL: primaryURL, Weight: 100}},
+			FallbackModel: "chat-fb",
+		},
+		{
+			Type: "llm", Model: "chat-fb", Provider: "passthrough",
+			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Backends:   []config.BackendConfig{{URL: fbBackend.URL, Weight: 100}},
+		},
+	})
+
+	llm := llmproxy.New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, llmproxy.AuditConfig{}, nil)
+	health := fakeHealth{open: map[string]bool{primaryURL: true}} // primary all-open → degraded
+	h := handler.NewSyncHandler(reg, "", nil, llm).WithCircuitBreaker(health)
+
+	before := testutil.ToFloat64(metrics.LLMFallbackTotal.WithLabelValues("llm", "chat", "chat-fb"))
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"chat","messages":[{"role":"user","content":"hey"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 from fallback backend, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := testutil.ToFloat64(metrics.LLMFallbackTotal.WithLabelValues("llm", "chat", "chat-fb")); got != before+1 {
+		t.Errorf("fallback metric: got %v, want %v", got, before+1)
+	}
+}
+
+// TestSyncHandler_NoFallback_WhenPrimaryHealthy verifies no fallback when the
+// primary is not degraded.
+func TestSyncHandler_NoFallback_WhenPrimaryHealthy(t *testing.T) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"x","object":"chat.completion","choices":[{"message":{"role":"assistant","content":"primary"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`)
+	}))
+	defer primary.Close()
+
+	reg := service.NewRegistry([]config.ServiceConfig{
+		{
+			Type: "llm", Model: "chat", Provider: "passthrough",
+			Operations:    map[string][]string{"chat": {"/v1/chat/completions"}},
+			Backends:      []config.BackendConfig{{URL: primary.URL, Weight: 100}},
+			FallbackModel: "chat-fb",
+		},
+		{
+			Type: "llm", Model: "chat-fb", Provider: "passthrough",
+			Operations: map[string][]string{"chat": {"/v1/chat/completions"}},
+			Backends:   []config.BackendConfig{{URL: "http://fb.invalid", Weight: 100}},
+		},
+	})
+
+	llm := llmproxy.New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, llmproxy.AuditConfig{}, nil)
+	health := fakeHealth{open: map[string]bool{}} // nothing open → healthy
+	h := handler.NewSyncHandler(reg, "", nil, llm).WithCircuitBreaker(health)
+
+	before := testutil.ToFloat64(metrics.LLMFallbackTotal.WithLabelValues("llm", "chat", "chat-fb"))
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions",
+		strings.NewReader(`{"model":"chat","messages":[{"role":"user","content":"hey"}]}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "primary") {
+		t.Fatalf("expected primary to serve, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := testutil.ToFloat64(metrics.LLMFallbackTotal.WithLabelValues("llm", "chat", "chat-fb")); got != before {
+		t.Errorf("fallback must not fire for a healthy primary: %v → %v", before, got)
+	}
+}

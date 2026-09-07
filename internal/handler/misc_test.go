@@ -354,7 +354,7 @@ func TestReload_Failure_BodyContainsError(t *testing.T) {
 
 func TestListModels_EmptyRegistry(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{})
-	h := handler.ListModels(reg, "")
+	h := handler.ListModels(reg, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -390,7 +390,7 @@ func TestListModels_ReturnsAllModels(t *testing.T) {
 			InferenceURL: "http://svc2",
 		},
 	})
-	h := handler.ListModels(reg, "")
+	h := handler.ListModels(reg, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -426,7 +426,7 @@ func TestListModels_SortedAlphabetically(t *testing.T) {
 		{Type: "t", Model: "aaa-model", Operations: map[string][]string{"op": {"/v1/p"}}, InferenceURL: "http://svc"},
 		{Type: "t", Model: "mmm-model", Operations: map[string][]string{"op": {"/v1/p"}}, InferenceURL: "http://svc"},
 	})
-	h := handler.ListModels(reg, "")
+	h := handler.ListModels(reg, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
@@ -450,7 +450,7 @@ func TestListModels_SortedAlphabetically(t *testing.T) {
 
 func TestListModels_ContentType(t *testing.T) {
 	reg := service.NewRegistry([]config.ServiceConfig{})
-	h := handler.ListModels(reg, "")
+	h := handler.ListModels(reg, "", nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/models", nil)
 	w := httptest.NewRecorder()
