@@ -22,6 +22,31 @@ Versioning: each component is versioned independently — see tag conventions be
 
 - **Backend pools (`backend_pools`)**: a named, load-balancer-style group of member backends that several `services[]` entries can share via `backend_pool: <name>`, instead of each declaring its own `backends:`/`inference_url:`. Centralizes auth headers (precedence: service `inference_headers` → pool `headers` → member `headers`) and lets every service routed to the same pool share one rate-limit and concurrency budget — configurable at both pool level (`rate_limit`, `max_concurrent`, `priority_reserved_concurrent`) and member level (`rate_limit`, `max_concurrent`). `backend_pool` is mutually exclusive with `backends:`/`inference_url:` on the same service, validated at config load. Concurrency is acquired once per logical client request (shared with per-model semaphores' architecture, but a distinct Redis key namespace); rate limits are checked per backend attempt inside the existing retry loop, so a pool-rate-limited member is skipped in favor of the next one before falling back to an error. New metrics `gatewai_backend_pool_rate_limited_total{pool,member}`, `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}`.
 
+### [v0.22.0] — 2026-09-07
+
+#### Added
+
+- **Model-backed guardrail detectors** alongside the regex checks: a pluggable `Detector` interface with a regex adapter and a `ModelDetector` that calls a self-hosted classifier/NER endpoint (`services[].guardrails.models[]`). Detectors run in parallel with per-detector metrics, per-mode behaviour (`async`/shadow = observe-only, `sync`/inline = can act), a configurable `threshold`, `timeout`, `on_error` (fail-open/closed), a `max_input_tokens` gate to protect the latency budget, and an optional verdict `cache_ttl`. Wired into the input LLM path (sync + async). Enables a prompt-injection classifier as a guardrail.
+- **NER redaction detector** (input stage): model-returned spans are redacted after classification runs on the original text (avoids placeholder false-positives).
+- **Output-stage guardrails**: an optional `services[].guardrails.output` block scans/redacts the model response (`choices[*].message.content`). **Streaming enforcement** (`output.streaming`): `flag` (observe), `block` (buffer a window, terminate on a violation), or `buffer` (buffer a window, redact matches, release), with a configurable `stream_window_tokens`.
+- **Tool-call argument scanning**: both input and output stages scan/redact `tool_calls[*].function.arguments`, not just message content.
+- **Async result-stage guardrails** (`services[].guardrails.async`): scans an async job's *result* (transcript, OCR text, …) in the once-per-job completion handler — `flag` (shadow), `block` (fail the job, suppress its result), or `redact` (redacted sibling object + repoint). For block/redact the client-facing result is gated on the scan (poll/webhook withheld until it finishes), bounded by `scan_timeout` with an `on_timeout` policy (`fail_open`/`fail_closed`). The input stage additionally scans async-submit text params (e.g. a `prompt`) before enqueue.
+- **`/v1/completions` guardrails**: the input stage now scans completion prompts, not only chat messages.
+- **Per-backend circuit breaker** for the LLM proxy (`circuit_breaker`, opt-in): consecutive failures open a backend's circuit and it is skipped for a cooldown, with a half-open probe; when all of a model's backends are open the request fast-fails `503` instead of a slow `502`. Optional **active health probing** (`circuit_breaker.probe_interval`) opens/closes circuits without waiting for live traffic. A model with all backends open is marked `capabilities.degraded: true` in `GET /v1/models`. Metrics `gatewai_backend_circuit_open{model,backend}`, `_opens_total`, `_skipped_total`.
+- **Cross-model fallback** (`services[].fallback_model`, opt-in): a sync request to a model whose backends are all circuit-open is transparently re-routed to a named fallback model (visibility/policies re-checked). Metric `gatewai_llm_fallback_total`.
+- **Observability**: new guardrails hit-rate, OAuth2, and streaming-LLM metrics, plus Grafana dashboard panels visualizing them.
+
+#### Changed
+
+- Async job completion work (webhook delivery, rate/token debit, usage tracking, result-stage scan) is now driven by the reliable Redis pub/sub broadcast and deduped by an exactly-once claim, so a lost best-effort completion callback no longer drops a webhook. The relay HTTP callback remains a redundant fast-path onto the same claim.
+
+#### Fixed
+
+- **Streaming redaction**: content-less control chunks (role/usage and the `reasoning_content` deltas some backends interleave between every content token) no longer flush the buffered window, so a match split across content deltas is reassembled and redacted instead of leaking. The incremental release cut also snaps to UTF-8 rune boundaries so multi-byte characters are never split.
+- **Async result gate** durability: the scan-timeout deadline is derived from the completion time, gate-arming is fatal for enforcing jobs, and a `fail_closed` timeout durably fails the job.
+- Rune-safe truncation of OpenTelemetry span-attribute bodies and generated OpenAPI summaries (no split multi-byte characters).
+- Completion `WaitGroup` is guarded against a concurrent add at shutdown now that completion work is driven from two triggers.
+
 ### [v0.21.0] — 2026-08-27
 
 #### Added
@@ -1016,10 +1041,17 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ## Helm chart (gatewai-gateway)
 
-### [0.22.0] — 2026-09-07
+### [0.23.0] — 2026-09-07
 
 #### Added
 - `backendPools` — named groups of member backends referenced from `services[].backendPool` instead of `inferenceURL`/`backends`, sharing a rate limit and/or concurrency budget (and default auth headers) across multiple service/model aliases pointed at the same physical backend. See `values.yaml` and the README's "Backend pools" section for the full schema.
+
+---
+
+### [0.22.0] — 2026-09-07
+
+#### Changed
+- `version` → `0.22.0`, `appVersion` / `image.tag` → `v0.22.0`
 
 ---
 
