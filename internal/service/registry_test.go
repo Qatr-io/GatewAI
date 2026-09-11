@@ -617,3 +617,111 @@ func TestResolveGuardrailModels_NER(t *testing.T) {
 		}
 	}
 }
+
+// ── backend_pools ─────────────────────────────────────────────────────────────
+
+func poolServiceConfig(model, poolName string) config.ServiceConfig {
+	return config.ServiceConfig{
+		Type:        "llm",
+		Model:       model,
+		Provider:    "openai",
+		BackendPool: poolName,
+		Operations:  map[string][]string{"chat": {"/v1/chat/completions"}},
+	}
+}
+
+func TestRegistry_BackendPool_ResolvesFlattenedBackends(t *testing.T) {
+	pools := map[string]config.BackendPoolConfig{
+		"vllm-llama3": {
+			Members: []config.BackendPoolMember{
+				{BackendConfig: config.BackendConfig{URL: "http://vllm-1:8000", Weight: 3}},
+				{BackendConfig: config.BackendConfig{URL: "http://vllm-2:8000", Weight: 1}},
+			},
+		},
+	}
+	reg := service.NewRegistry([]config.ServiceConfig{poolServiceConfig("gpt-4o", "vllm-llama3")}, service.WithBackendPools(pools))
+
+	def := reg.Models()[0]
+	if def.PoolName != "vllm-llama3" {
+		t.Errorf("expected PoolName vllm-llama3, got %q", def.PoolName)
+	}
+	if len(def.Backends) != 2 {
+		t.Fatalf("expected 2 flattened backends, got %d", len(def.Backends))
+	}
+	urls := map[string]int{}
+	for _, b := range def.Backends {
+		urls[b.URL] = b.Weight
+	}
+	if urls["http://vllm-1:8000"] != 3 || urls["http://vllm-2:8000"] != 1 {
+		t.Errorf("unexpected backend weights: %+v", urls)
+	}
+}
+
+func TestRegistry_BackendPool_IndexedForSyncRouting(t *testing.T) {
+	pools := map[string]config.BackendPoolConfig{
+		"pool-a": {Members: []config.BackendPoolMember{{BackendConfig: config.BackendConfig{URL: "http://a:8000", Weight: 1}}}},
+	}
+	reg := service.NewRegistry([]config.ServiceConfig{poolServiceConfig("gpt-4o", "pool-a")}, service.WithBackendPools(pools))
+
+	if !reg.HasSyncServices() {
+		t.Fatal("pool-based service should be indexed for sync routing (regression guard for the hasBackend fix)")
+	}
+	def, err := reg.RouteSync("/v1/chat/completions", "gpt-4o")
+	if err != nil {
+		t.Fatalf("unexpected routing error: %v", err)
+	}
+	if def.Model != "gpt-4o" {
+		t.Errorf("routed to wrong def: %+v", def)
+	}
+}
+
+func TestRegistry_BackendPool_HeaderPrecedence(t *testing.T) {
+	pools := map[string]config.BackendPoolConfig{
+		"pool-a": {
+			Headers: map[string]string{"X-Pool": "pool-value", "X-Shared": "from-pool"},
+			Members: []config.BackendPoolMember{
+				{BackendConfig: config.BackendConfig{
+					URL:     "http://a:8000",
+					Weight:  1,
+					Headers: map[string]string{"X-Shared": "from-member", "X-Member": "member-value"},
+				}},
+			},
+		},
+	}
+	reg := service.NewRegistry([]config.ServiceConfig{poolServiceConfig("gpt-4o", "pool-a")}, service.WithBackendPools(pools))
+	def := reg.Models()[0]
+	if len(def.Backends) != 1 {
+		t.Fatalf("expected 1 backend, got %d", len(def.Backends))
+	}
+	h := def.Backends[0].Headers
+	if h["X-Pool"] != "pool-value" {
+		t.Errorf("expected pool-only header to survive, got %q", h["X-Pool"])
+	}
+	if h["X-Member"] != "member-value" {
+		t.Errorf("expected member-only header to survive, got %q", h["X-Member"])
+	}
+	if h["X-Shared"] != "from-member" {
+		t.Errorf("expected member header to win on collision, got %q", h["X-Shared"])
+	}
+}
+
+func TestRegistry_BackendPool_UnknownPool_NoBackendsNoPanic(t *testing.T) {
+	// Config validation normally rejects an unknown backend_pool reference before
+	// the registry is ever built; this guards the registry itself against a nil
+	// or incomplete pools map (e.g. a test that omits WithBackendPools) — it must
+	// not panic, even though the resulting Def has no usable backends.
+	reg := service.NewRegistry([]config.ServiceConfig{poolServiceConfig("gpt-4o", "does-not-exist")})
+	def := reg.Models()[0]
+	if len(def.Backends) != 0 {
+		t.Errorf("expected no backends for unresolvable pool reference, got %+v", def.Backends)
+	}
+}
+
+func TestRegistry_InlineBackends_PoolNameEmpty(t *testing.T) {
+	cfg := baseServiceConfig()
+	reg := service.NewRegistry([]config.ServiceConfig{cfg})
+	def := reg.Models()[0]
+	if def.PoolName != "" {
+		t.Errorf("expected empty PoolName for inline-backends config, got %q", def.PoolName)
+	}
+}

@@ -58,6 +58,11 @@ type BackendHealth interface {
 // backendsDegraded reports whether every backend of a model has an open circuit
 // (so requests would fast-fail). False when there is no health source or the
 // model has no backends.
+//
+// Deliberately circuit-breaker-only: backend_pools rate-limit/concurrency
+// exhaustion is transient backpressure (the pool recovers on its own as the
+// window rolls over or in-flight requests complete), not a degraded backend,
+// so it is not reflected here.
 func backendsDegraded(health BackendHealth, backends []service.Backend) bool {
 	if health == nil || len(backends) == 0 {
 		return false

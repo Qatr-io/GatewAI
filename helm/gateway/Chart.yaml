@@ -2,7 +2,7 @@ apiVersion: v2
 name: gatewai-gateway
 description: API gateway for GatewAI inference jobs
 type: application
-version: 0.22.0
+version: 0.23.0
 appVersion: "v0.22.0"
 
 dependencies:

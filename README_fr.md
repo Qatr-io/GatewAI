@@ -21,6 +21,7 @@ API Gateway pour les services d'inférence KServe sur Kubernetes — file async 
 - Proxy LLM — OpenAI / Anthropic / Ollama / passthrough (vLLM), traduction de provider
 - Cache des réponses (Redis, clé SHA-256, header `X-Cache`)
 - Routage multi-backend — blue/green, canary, fallback avec sélection pondérée
+- Pools de backends — partager l'auth, le rate limit et le budget de concurrence d'un même backend physique entre plusieurs alias service/modèle
 - Rate limiting par consommateur — fenêtre fixe, par type de service et type d'utilisateur, limites de requêtes et de tokens
 - Guardrails PII + secrets — blocage / redaction / signalement des requêtes LLM contenant des données personnelles (email, téléphone, IBAN, carte bancaire, SIREN/SIRET, NIR…) ou des secrets (clés AWS, JWT, tokens GitHub) ; DLP optionnel sur les réponses du modèle
 - Authentification OAuth2 — validation côté gateway des access tokens (JWT via JWKS + opaques via introspection RFC 7662), fail-closed

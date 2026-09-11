@@ -152,6 +152,44 @@ operations:
 
 **`visibility`** (`services[].visibility`): gates a model to an audience — `user_types` (matched against `server.user_type_header`) and/or `groups` (from the authed `Principal`). A restricted model is fail-closed: filtered out of `GET /v1/models` and returns `404` on `/v1/*`, `/jobs/{service_type}`, and `GET /v1/models?model=` for callers outside its audience (indistinguishable from non-existent; anonymous callers see only public models). Enforced in `handler.checkModelVisible` on all three paths and as a list filter in `ListModels`. Enables beta-testing a model through the same API. Composes with `policies` (both must pass). Metric `gatewai_model_hidden_total{service_type, model}`. Registry helpers: `Def.IsRestricted()`, `Def.VisibleTo(userType, groups)`, `Def.BackendModelNames()`.
 
+**`backend_pools`** (top-level config block): a named, load-balancer-style group of member backends, referenced from `services[]` by name via `backend_pool: <name>` — instead of every service declaring its own `backends:`/`inference_url:`. Lets several service/model aliases share one physical backend's config, rate limit, and concurrency budget.
+
+```yaml
+backend_pools:
+  vllm-llama3:
+    members:
+      - url: http://vllm-1:8000
+        weight: 3
+        headers: { Authorization: "Bearer ${KEY1}" }
+        rate_limit: { rate: 20, period: 1s }   # optional per-member cap
+        max_concurrent: 10                      # optional per-member cap
+      - url: http://vllm-2:8000
+        weight: 1
+    headers: { X-Pool-Auth: "${SHARED_KEY}" }   # pool-level default headers (lowest precedence)
+    rate_limit: { rate: 50, period: 1s }        # pool-wide shared budget across all members
+    max_concurrent: 30                          # pool-wide shared concurrency budget
+    priority_reserved_concurrent: 5             # mirrors services[].priority_reserved_sync
+
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: vllm-llama3     # mutually exclusive with backends:/inference_url:
+    provider: openai
+  - type: llm
+    model: llama3-chat
+    backend_pool: vllm-llama3     # same pool, different alias — shares its budget
+    provider: openai
+```
+
+- **Mutually exclusive** with `backends:`/`inference_url:` on the same service — set exactly one, checked at config validation. `backend_pool` must reference an existing `backend_pools` key.
+- **Header precedence** (lowest → highest): service-level `InferenceHeaders` → `pool.headers` → `member.headers`, merged once at registry-resolution time into the same per-backend `Headers` map inline backends already produce.
+- **Concurrency** is acquired once per logical client request (mirrors the existing per-model semaphore — one request = one in-flight unit of pool capacity, regardless of internal retries), via a dedicated `gateway:semaphore:pool:` Redis key namespace distinct from per-model semaphores.
+- **Rate limiting** is checked per backend attempt inside the retry loop (mirrors the circuit breaker's `Allow()` check): pool-wide and per-member budgets are both enforced (AND), and a rejected member is skipped in favor of the next one before falling back to a 502/503.
+- **Enforcement is split by request path** to avoid double-acquiring one pool slot per request: `internal/llmproxy/handler.go` owns it for LLM-delegated requests (`provider` set, i.e. `Def.IsLLM()`); `internal/handler/sync.go`'s `proxyToInference` owns it for direct-proxy requests (multipart, and JSON services with no `provider`). These two paths are mutually exclusive per request.
+- **Circuit breaker needs no pool-awareness** — it's already keyed purely by backend URL, so services sharing a pool already share breaker health state.
+- Pool rate-limit/concurrency exhaustion is deliberately **not** reflected in `GET /v1/models`' `capabilities.degraded` — it's transient backpressure (recovers on its own), not a degraded backend; that stays circuit-breaker-only.
+- Metrics: `gatewai_backend_pool_rate_limited_total{pool,member}` (`member` empty for a pool-wide rejection), `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}` (Redis errors, fail-open).
+
 ### Dynamic OpenAPI spec
 
 `handler.GenerateSpec(registry, version)` builds the full OpenAPI 3.0.3 spec at startup from the live registry. No static file — the spec always reflects the current config. Served at:

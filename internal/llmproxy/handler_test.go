@@ -9,13 +9,18 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unicode/utf8"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/redis/go-redis/v9"
 
 	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/concurrency"
+	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
 	"gatewai/gateway/internal/ratelimit"
@@ -1252,5 +1257,240 @@ func TestTruncateForSpan_RuneBoundary(t *testing.T) {
 	}
 	if !strings.HasSuffix(out, "...[truncated]") {
 		t.Errorf("expected truncation marker, got tail %q", out[len(out)-16:])
+	}
+}
+
+// ── backend_pools wiring (Phase 5) ──────────────────────────────────────────
+
+// stubPoolChecker is a test double for ratelimit.PoolChecker: memberURLs in
+// deny are rejected, everything else is allowed. calls records every checked
+// member URL, in order, for assertions.
+type stubPoolChecker struct {
+	mu    sync.Mutex
+	deny  map[string]bool
+	calls []string
+}
+
+func (s *stubPoolChecker) CheckBackendPool(_ context.Context, _, memberURL string) (ratelimit.CheckResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.calls = append(s.calls, memberURL)
+	if s.deny[memberURL] {
+		return ratelimit.CheckResult{Allowed: false}, nil
+	}
+	return ratelimit.CheckResult{Allowed: true}, nil
+}
+
+// poolDef returns a Def with PoolName set, backed by the given backend URLs.
+func poolDef(poolName string, urls ...string) *service.Def {
+	backends := make([]service.Backend, len(urls))
+	for i, u := range urls {
+		backends[i] = service.Backend{URL: u, Weight: 1}
+	}
+	return &service.Def{
+		Type:     "llm",
+		Model:    "my-alias",
+		Provider: "passthrough",
+		PoolName: poolName,
+		Backends: backends,
+	}
+}
+
+// newPoolSemaphoreForTest builds a real *concurrency.ModelSemaphore against an
+// in-process miniredis instance — the field is a concrete type, not an
+// interface, so a stub cannot substitute for it.
+func newPoolSemaphoreForTest(t *testing.T, poolName string, maxConcurrent, priorityReserved int) *concurrency.ModelSemaphore {
+	t.Helper()
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sem := concurrency.NewPoolSemaphore(map[string]config.BackendPoolConfig{
+		poolName: {MaxConcurrent: maxConcurrent, PriorityReservedConcurrent: priorityReserved},
+	}, rdb)
+	if sem == nil {
+		t.Fatal("expected non-nil pool semaphore")
+	}
+	return sem
+}
+
+func TestServeJSON_PoolSemaphore_Saturated_Returns503_NoBackendCall(t *testing.T) {
+	var calls int32
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	sem := newPoolSemaphoreForTest(t, "vllm-llama3", 1, 0)
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolSemaphore(sem)
+	def := poolDef("vllm-llama3", backend.URL)
+
+	// Occupy the pool's single concurrency slot directly.
+	ok, _ := sem.TryAcquire("vllm-llama3", false)
+	if !ok {
+		t.Fatal("expected to occupy the pool's only slot")
+	}
+
+	before := testutil.ToFloat64(metrics.BackendPoolConcurrencyRejectedTotal.WithLabelValues("vllm-llama3"))
+	rr := doServeJSON(h, def, chatBody)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 (pool saturated)", rr.Code)
+	}
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("expected no HTTP call to reach the backend, got %d", got)
+	}
+	if got := testutil.ToFloat64(metrics.BackendPoolConcurrencyRejectedTotal.WithLabelValues("vllm-llama3")) - before; got != 1 {
+		t.Errorf("expected concurrency-rejected metric +1, got +%v", got)
+	}
+}
+
+func TestServeJSON_PoolSemaphore_ReleasedAfterSuccessAndFailure(t *testing.T) {
+	status := int32(http.StatusOK)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if atomic.LoadInt32(&status) != http.StatusOK {
+			w.WriteHeader(int(atomic.LoadInt32(&status)))
+			return
+		}
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	sem := newPoolSemaphoreForTest(t, "vllm-llama3", 1, 0)
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolSemaphore(sem)
+	def := poolDef("vllm-llama3", backend.URL)
+
+	// A successful request must release the slot so a subsequent request can acquire it.
+	if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusOK {
+		t.Fatalf("first request: got %d, want 200", rr.Code)
+	}
+	if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusOK {
+		t.Fatalf("second request after release: got %d, want 200", rr.Code)
+	}
+
+	// A failed backend request must also release the slot.
+	atomic.StoreInt32(&status, http.StatusInternalServerError)
+	if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusBadGateway {
+		t.Fatalf("failing request: got %d, want 502", rr.Code)
+	}
+	atomic.StoreInt32(&status, http.StatusOK)
+	if rr := doServeJSON(h, def, chatBody); rr.Code != http.StatusOK {
+		t.Fatalf("request after failure release: got %d, want 200", rr.Code)
+	}
+}
+
+func TestServeJSON_PoolRateLimit_SkipsMemberThenSucceedsOnNext(t *testing.T) {
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("rate-limited member A must not receive a request")
+	}))
+	defer backendA.Close()
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backendB.Close()
+
+	pc := &stubPoolChecker{deny: map[string]bool{backendA.URL: true}}
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolLimiter(pc)
+	def := poolDef("vllm-llama3", backendA.URL, backendB.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (should succeed via member B)", rr.Code)
+	}
+}
+
+func TestServeJSON_PoolRateLimit_AllMembersRejected_Returns503(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("no backend should be called when all members are pool-rate-limited")
+	}))
+	defer backend.Close()
+
+	pc := &stubPoolChecker{deny: map[string]bool{backend.URL: true}}
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolLimiter(pc)
+	def := poolDef("vllm-llama3", backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 (all members rate limited)", rr.Code)
+	}
+}
+
+// TestServeJSON_NonPoolService_PoolLimiterAndSemaphoreSet_NoBehaviorChange is a
+// regression guard: a service with no backend_pool (PoolName == "") must be
+// completely unaffected even when pool checkers are wired up globally.
+func TestServeJSON_NonPoolService_PoolLimiterAndSemaphoreSet_NoBehaviorChange(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, fakeResponse)
+	}))
+	defer backend.Close()
+
+	// Semaphore/limiter configured for an unrelated pool name; def.PoolName is empty.
+	sem := newPoolSemaphoreForTest(t, "some-other-pool", 1, 0)
+	ok, _ := sem.TryAcquire("some-other-pool", false) // saturate it, to prove it's never consulted
+	if !ok {
+		t.Fatal("setup: expected to saturate the unrelated pool")
+	}
+	pc := &stubPoolChecker{deny: map[string]bool{backend.URL: true}} // would reject every member if consulted
+
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolSemaphore(sem).WithPoolLimiter(pc)
+	def := llmDef("passthrough", "", 0)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSON(h, def, chatBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (non-pool service must ignore pool checkers entirely)", rr.Code)
+	}
+}
+
+func TestServeStream_PoolSemaphore_Saturated_Returns503(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("saturated pool must not reach the backend")
+	}))
+	defer backend.Close()
+
+	sem := newPoolSemaphoreForTest(t, "vllm-llama3", 1, 0)
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolSemaphore(sem)
+	def := poolDef("vllm-llama3", backend.URL)
+
+	ok, _ := sem.TryAcquire("vllm-llama3", false)
+	if !ok {
+		t.Fatal("expected to occupy the pool's only slot")
+	}
+
+	rr := doServeJSON(h, def, streamBody)
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503 (pool saturated)", rr.Code)
+	}
+}
+
+func TestServeStream_PoolRateLimit_SkipsMemberThenSucceedsOnNext(t *testing.T) {
+	sseChunks := "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\ndata: [DONE]\n\n"
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Fatal("rate-limited member A must not receive a request")
+	}))
+	defer backendA.Close()
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseChunks)
+	}))
+	defer backendB.Close()
+
+	pc := &stubPoolChecker{deny: map[string]bool{backendA.URL: true}}
+	h := New(cache.NewNoop(), provider.NewRegistry(), &http.Client{Timeout: 5 * time.Second}, "", metrics.NoopTracker{}, AuditConfig{}, nil)
+	h.WithPoolLimiter(pc)
+	def := poolDef("vllm-llama3", backendA.URL, backendB.URL)
+
+	rr := doServeJSON(h, def, streamBody)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("got %d, want 200 (should succeed via member B)", rr.Code)
 	}
 }

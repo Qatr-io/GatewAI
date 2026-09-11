@@ -129,3 +129,89 @@ func TestModelSemaphore_ZeroDiffKeyName_NoReservation(t *testing.T) {
 		}
 	}
 }
+
+func TestNewPoolSemaphore_NoLimitsConfigured_ReturnsNil(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	sem := concurrency.NewPoolSemaphore(map[string]config.BackendPoolConfig{
+		"vllm-llama3": {MaxConcurrent: 0},
+	}, rdb)
+	if sem != nil {
+		t.Fatal("expected nil semaphore when no pool configures max_concurrent")
+	}
+
+	sem = concurrency.NewPoolSemaphore(nil, rdb)
+	if sem != nil {
+		t.Fatal("expected nil semaphore for empty pools map")
+	}
+}
+
+func TestNewPoolSemaphore_BuildsLimitsCorrectly(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	sem := concurrency.NewPoolSemaphore(map[string]config.BackendPoolConfig{
+		"vllm-llama3": {MaxConcurrent: 3, PriorityReservedConcurrent: 1}, // shared = 2, reserved = 1
+	}, rdb)
+	if sem == nil {
+		t.Fatal("expected non-nil semaphore")
+	}
+
+	ok1, r1 := sem.TryAcquire("vllm-llama3", false)
+	ok2, r2 := sem.TryAcquire("vllm-llama3", false)
+	if !ok1 || r1 || !ok2 || r2 {
+		t.Fatalf("expected 2 non-priority requests to fill the shared pool, got (%v,%v) (%v,%v)", ok1, r1, ok2, r2)
+	}
+	if ok, _ := sem.TryAcquire("vllm-llama3", false); ok {
+		t.Fatal("expected shared pool to be exhausted")
+	}
+	okP, reservedP := sem.TryAcquire("vllm-llama3", true)
+	if !okP || !reservedP {
+		t.Fatalf("expected priority request to acquire the reserved pool, got ok=%v usedReserved=%v", okP, reservedP)
+	}
+}
+
+func TestNewPoolSemaphore_NamespaceDistinctFromModelSemaphore(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+
+	// A pool and a model share the exact same name — their Redis keys must never collide.
+	const sharedName = "gpt-oss-120b"
+
+	poolSem := concurrency.NewPoolSemaphore(map[string]config.BackendPoolConfig{
+		sharedName: {MaxConcurrent: 1},
+	}, rdb)
+	if poolSem == nil {
+		t.Fatal("expected non-nil pool semaphore")
+	}
+
+	reg := service.NewRegistry([]config.ServiceConfig{{
+		Type:              "llm",
+		Model:             sharedName,
+		MaxConcurrentSync: 1,
+	}})
+	modelSem := concurrency.NewModelSemaphore(reg, rdb)
+	if modelSem == nil {
+		t.Fatal("expected non-nil model semaphore")
+	}
+
+	// Exhaust the pool's slot.
+	okPool, _ := poolSem.TryAcquire(sharedName, false)
+	if !okPool {
+		t.Fatal("expected pool semaphore to acquire its slot")
+	}
+
+	// The model semaphore, keyed by the same name, must be unaffected.
+	okModel, _ := modelSem.TryAcquire(sharedName, false)
+	if !okModel {
+		t.Fatal("expected model semaphore to acquire independently of the pool semaphore's identically-named slot")
+	}
+
+	if !mr.Exists("gateway:semaphore:pool:" + sharedName) {
+		t.Fatal("expected pool semaphore to use the gateway:semaphore:pool: namespace")
+	}
+	if !mr.Exists("gateway:semaphore:sync:" + sharedName) {
+		t.Fatal("expected model semaphore to keep using the gateway:semaphore:sync: namespace")
+	}
+}

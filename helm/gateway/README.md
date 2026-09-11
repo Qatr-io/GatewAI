@@ -145,6 +145,7 @@ services:
 | `operations` | Map of `operationName → [url-paths]`. All paths are indexed for sync routing. The first path of the selected operation is forwarded in async InputEvents. |
 | `inferenceURL` | Base URL of the Knative InferenceService predictor (cluster-local). The original request path is appended at runtime. Single-backend legacy — use `backends` for multi-backend. |
 | `backends` | List of backends with weighted routing. Takes precedence over `inferenceURL`. See below. |
+| `backendPool` | Name of a `backendPools[]` entry to route through instead of `inferenceURL`/`backends` — mutually exclusive with both. See below. |
 | `acceptedExts` | Allowed file extensions (e.g. `[".mp3", ".wav"]`). Empty or absent = all extensions accepted. |
 | `maxFileSizeMB` | Maximum upload size in MB. `0` or absent = 100 MB default. |
 | `inferenceHeaders` | HTTP headers injected on every request to the backend (sync-direct and LLM proxy). Values support `${VAR}` env expansion. |
@@ -190,6 +191,57 @@ services:
 ```
 
 Don't forget to inject the token env vars via `extraEnvVars`.
+
+#### Backend pools (`backendPools`)
+
+A named, load-balancer-style group of member backends, referenced from `services[]` by name via `backendPool: <name>` — instead of every service declaring its own `backends`/`inferenceURL`. Lets several service/model aliases (e.g. two `type: llm` entries with different `model` values) share one physical backend's auth headers, rate limit, and concurrency budget.
+
+| Field | Description |
+|---|---|
+| `members[]` | List of pool members (required, ≥1). Each has `url`, `weight`, optional `model`/`headers` — same semantics as `backends[]` above. |
+| `members[].rateLimit` | Optional per-member `rate`/`period` cap, checked on every backend attempt. |
+| `members[].maxConcurrent` | Optional per-member concurrency cap. |
+| `headers` | Pool-level default headers, merged under `members[].headers`. Lowest precedence of the three header sources (below). |
+| `rateLimit` | Pool-wide `rate`/`period` budget shared across all members and all services referencing this pool. |
+| `maxConcurrent` | Pool-wide concurrency budget shared across all members and all services referencing this pool. Acquired once per client request. |
+| `priorityReservedConcurrent` | Slots of `maxConcurrent` reserved for requests carrying `server.priorityHeader` — mirrors `services[].priorityReservedSync`. |
+
+**Mutually exclusive** with `backends`/`inferenceURL` on the referencing service. **Header precedence** (lowest → highest): service `inferenceHeaders` → `backendPools[].headers` → `backendPools[].members[].headers`.
+
+**Example — two aliases sharing one vLLM instance's rate limit and concurrency budget:**
+
+```yaml
+backendPools:
+  vllm-llama3:
+    members:
+      - url: "http://vllm-1.default.svc.cluster.local:8000"
+        weight: 3
+        headers:
+          Authorization: "Bearer ${VLLM_TOKEN}"
+      - url: "http://vllm-2.default.svc.cluster.local:8000"
+        weight: 1
+    rateLimit:
+      rate: 50
+      period: "1s"
+    maxConcurrent: 30
+    priorityReservedConcurrent: 5
+
+services:
+  - type: llm
+    model: "gpt-4o"
+    provider: openai
+    backendPool: vllm-llama3
+    operations:
+      chat:
+        - "/v1/chat/completions"
+  - type: llm
+    model: "llama3-chat"
+    provider: openai
+    backendPool: vllm-llama3   # same pool, different alias — shares its budget
+    operations:
+      chat:
+        - "/v1/chat/completions"
+```
 
 ### Lifecycle and job retention
 

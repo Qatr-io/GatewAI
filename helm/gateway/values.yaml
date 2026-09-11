@@ -111,6 +111,34 @@ policies: {}
 #       period: "1m"
 rateLimits: {}
 
+# ── Backend pools ─────────────────────────────────────────────────────────────
+# Named groups of member backends, shared across multiple services[] via
+# `backendPool: <name>` instead of each service declaring its own `backends`/
+# `inferenceURL`. Adds a rate limit and/or concurrency budget shared by every
+# service routed to the pool — on top of (not instead of) each member's own
+# weight/headers, which work exactly like inline backends[] entries.
+#
+# Mutually exclusive with `backends`/`inferenceURL` on the referencing service.
+# Header precedence (lowest → highest): service inferenceHeaders → pool.headers
+# → member.headers.
+#
+# Example:
+# backendPools:
+#   vllm-llama3:
+#     members:
+#       - url: "http://vllm-1:8000"
+#         weight: 3
+#         headers: { Authorization: "Bearer ${KEY1}" }
+#         rateLimit: { rate: 20, period: "1s" }   # optional per-member cap
+#         maxConcurrent: 10                        # optional per-member cap
+#       - url: "http://vllm-2:8000"
+#         weight: 1
+#     headers: { X-Pool-Auth: "${SHARED_KEY}" }    # pool-level default headers (lowest precedence)
+#     rateLimit: { rate: 50, period: "1s" }        # pool-wide shared budget across all members
+#     maxConcurrent: 30                            # pool-wide shared concurrency budget
+#     priorityReservedConcurrent: 5                # mirrors services[].priorityReservedSync
+backendPools: {}
+
 # ── Configuration ────────────────────────────────────────────────────────────
 config:
   # Option B : référencer une ConfigMap existante contenant config.yaml.
@@ -160,6 +188,8 @@ encryption:
 #                  le premier est utilisé comme InferenceURL en mode async.
 #   inferenceURL — URL de base du relay Knative ; le chemin de la requête
 #                  d'origine y est appendé automatiquement
+#   backendPool  — référence un backendPools[] par nom, à la place de
+#                  inferenceURL/backends. Voir l'exemple commenté plus bas.
 #
 # Champs async (Redis queue) :
 #   acceptedExts / maxFileSizeMB
@@ -292,6 +322,27 @@ services:
   #   visibility:                       # omettre ce bloc = modèle public
   #     userTypes: ["beta"]             # seuls les appelants X-User-Type: beta le voient
   #     groups: ["ai-team"]             # OU les membres du groupe ai-team
+
+  # ── Backend pool partagé : plusieurs alias, un seul budget ───────────────
+  # backendPool référence un backendPools[] défini plus haut — remplace
+  # inferenceURL/backends. Mutuellement exclusif avec ces deux champs.
+  # Les deux services ci-dessous partagent le même rate limit et le même
+  # budget de concurrence (voir l'exemple backendPools plus haut).
+  #
+  # - type: llm
+  #   model: "gpt-4o"
+  #   backendPool: vllm-llama3
+  #   provider: openai
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  # - type: llm
+  #   model: "llama3-chat"
+  #   backendPool: vllm-llama3   # même pool, alias différent — partage le budget
+  #   provider: openai
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
 
   # Exemple de service sync-direct uniquement (sans Kafka).
   # Les requêtes POST /v1/* sont proxifiées directement vers inferenceURL.
