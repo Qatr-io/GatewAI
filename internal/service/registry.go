@@ -76,25 +76,6 @@ type Def struct {
 	Visibility       config.VisibilityConfig // audience gate; empty = public
 }
 
-// BackendModelNames returns the distinct real model names this alias forwards to,
-// in backend order. Uses per-backend model overrides when set, else the
-// service-level backend_model. Empty when the alias is forwarded to the backend
-// unchanged (no rewrite configured).
-func (d *Def) BackendModelNames() []string {
-	seen := map[string]bool{}
-	var out []string
-	for _, b := range d.Backends {
-		if b.Model != "" && !seen[b.Model] {
-			seen[b.Model] = true
-			out = append(out, b.Model)
-		}
-	}
-	if len(out) == 0 && d.BackendModel != "" {
-		out = []string{d.BackendModel}
-	}
-	return out
-}
-
 // IsRestricted reports whether the model is gated to a specific audience.
 func (d *Def) IsRestricted() bool {
 	return len(d.Visibility.UserTypes) > 0 || len(d.Visibility.Groups) > 0

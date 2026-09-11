@@ -92,14 +92,13 @@ type modelCapabilities struct {
 // modelObject mirrors the OpenAI model object returned by GET /v1/models,
 // extended with GatewAI-specific capability metadata.
 type modelObject struct {
-	ID            string            `json:"id"`
-	Object        string            `json:"object"`
-	OwnedBy       string            `json:"owned_by"`
-	ServiceType   string            `json:"service_type"`
-	Provider      string            `json:"provider,omitempty"`
-	BackendModel  string            `json:"backend_model,omitempty"`  // real model this alias forwards to (primary)
-	BackendModels []string          `json:"backend_models,omitempty"` // set only when backends serve distinct models (canary)
-	Capabilities  modelCapabilities `json:"capabilities"`
+	ID           string            `json:"id"`
+	Object       string            `json:"object"`
+	OwnedBy      string            `json:"owned_by"`
+	ServiceType  string            `json:"service_type"`
+	Provider     string            `json:"provider,omitempty"`
+	BackendModel string            `json:"backend_model,omitempty"` // real model this alias forwards to
+	Capabilities modelCapabilities `json:"capabilities"`
 }
 
 type modelsListResponse struct {
@@ -125,7 +124,6 @@ func ListModels(registry *service.Registry, userTypeHeader string, health Backen
 			if !d.VisibleTo(userType, groups) {
 				continue // model gated to another audience — hide it entirely
 			}
-			bm := d.BackendModelNames()
 			mo := modelObject{
 				ID:          d.Model,
 				Object:      "model",
@@ -143,11 +141,8 @@ func ListModels(registry *service.Registry, userTypeHeader string, health Backen
 					Degraded:          backendsDegraded(health, d.Backends),
 				},
 			}
-			if len(bm) > 0 {
-				mo.BackendModel = bm[0]
-				if len(bm) > 1 {
-					mo.BackendModels = bm
-				}
+			if d.BackendModel != "" {
+				mo.BackendModel = d.BackendModel
 			}
 			data = append(data, mo)
 		}

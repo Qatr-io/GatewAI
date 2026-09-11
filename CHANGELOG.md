@@ -22,6 +22,10 @@ Versioning: each component is versioned independently — see tag conventions be
 
 - **Backend pools (`backend_pools`)**: a named, load-balancer-style group of member backends that several `services[]` entries can share via `backend_pool: <name>`, instead of each declaring its own `backends:`/`inference_url:`. Centralizes auth headers (precedence: service `inference_headers` → pool `headers` → member `headers`) and lets every service routed to the same pool share one rate-limit and concurrency budget — configurable at both pool level (`rate_limit`, `max_concurrent`, `priority_reserved_concurrent`) and member level (`rate_limit`, `max_concurrent`). `backend_pool` is mutually exclusive with `backends:`/`inference_url:` on the same service, validated at config load. Concurrency is acquired once per logical client request (shared with per-model semaphores' architecture, but a distinct Redis key namespace); rate limits are checked per backend attempt inside the existing retry loop, so a pool-rate-limited member is skipped in favor of the next one before falling back to an error. New metrics `gatewai_backend_pool_rate_limited_total{pool,member}`, `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}`.
 
+#### Changed
+
+- **`GET /v1/models`'s `backend_model` now sources only the service-level `backend_model`**: a per-backend `backends[].model` override (canary/mixed-fleet) is no longer surfaced in the models listing — it still rewrites the outgoing request per backend, but is not exposed as `backend_model`. The `backend_models[]` array (introduced alongside `backend_model` in `v0.21.0`) is removed accordingly.
+
 ### [v0.22.0] — 2026-09-07
 
 #### Added
