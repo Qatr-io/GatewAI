@@ -892,3 +892,121 @@ func TestResetQuota_DoesNotAffectOtherConsumersOrServiceTypes(t *testing.T) {
 		t.Fatal("other consumer's audio key should be untouched")
 	}
 }
+
+// ── CheckBackendPool ─────────────────────────────────────────────────────────
+
+func TestCheckBackendPool_NoLimitsConfigured_Allowed(t *testing.T) {
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	res, err := l.CheckBackendPool(context.Background(), "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected allowed when no pool limits configured")
+	}
+}
+
+func TestCheckBackendPool_PoolOnlyLimit_Enforced(t *testing.T) {
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	l.SetPoolLimits(
+		map[string]config.RateLimitConfig{"pool-a": {Rate: 2, Period: "1m"}},
+		nil,
+	)
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		res, err := l.CheckBackendPool(ctx, "pool-a", "http://a:8000")
+		if err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+		if !res.Allowed {
+			t.Fatalf("iteration %d: expected allowed within pool budget", i)
+		}
+	}
+	res, err := l.CheckBackendPool(ctx, "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected pool-wide budget to reject the 3rd attempt")
+	}
+	// A different member URL shares the same exhausted pool-wide budget.
+	res, err = l.CheckBackendPool(ctx, "pool-a", "http://b:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected pool-wide budget to reject regardless of member")
+	}
+}
+
+func TestCheckBackendPool_MemberOnlyLimit_Enforced(t *testing.T) {
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	l.SetPoolLimits(
+		nil,
+		map[string]map[string]config.RateLimitConfig{
+			"pool-a": {"http://a:8000": {Rate: 1, Period: "1m"}},
+		},
+	)
+	ctx := context.Background()
+	res, err := l.CheckBackendPool(ctx, "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected first attempt allowed")
+	}
+	res, err = l.CheckBackendPool(ctx, "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected member budget to reject the 2nd attempt")
+	}
+	// A sibling member with no configured limit of its own is unaffected.
+	res, err = l.CheckBackendPool(ctx, "pool-a", "http://b:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected sibling member without its own limit to be allowed")
+	}
+}
+
+func TestCheckBackendPool_PoolAndMemberBothConfigured_EitherCanReject(t *testing.T) {
+	l, _ := newLimiter(t, nil, "X-Consumer", "X-User-Type")
+	l.SetPoolLimits(
+		map[string]config.RateLimitConfig{"pool-a": {Rate: 100, Period: "1m"}},
+		map[string]map[string]config.RateLimitConfig{
+			"pool-a": {"http://a:8000": {Rate: 1, Period: "1m"}},
+		},
+	)
+	ctx := context.Background()
+	if res, err := l.CheckBackendPool(ctx, "pool-a", "http://a:8000"); err != nil || !res.Allowed {
+		t.Fatalf("expected first attempt allowed, got %+v err=%v", res, err)
+	}
+	// Pool budget has plenty of room, but the tighter member budget rejects.
+	res, err := l.CheckBackendPool(ctx, "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Allowed {
+		t.Fatal("expected the tighter member budget to reject even though pool budget has room")
+	}
+}
+
+func TestCheckBackendPool_RedisError_FailsOpen(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { _ = rdb.Close() })
+	l := ratelimit.New(rdb, nil, nil, "X-Consumer", "X-User-Type")
+	l.SetPoolLimits(map[string]config.RateLimitConfig{"pool-a": {Rate: 1, Period: "1m"}}, nil)
+
+	mr.Close() // force Redis errors
+	res, err := l.CheckBackendPool(context.Background(), "pool-a", "http://a:8000")
+	if err != nil {
+		t.Fatalf("expected fail-open (no error), got %v", err)
+	}
+	if !res.Allowed {
+		t.Fatal("expected fail-open to allow the request when Redis is unreachable")
+	}
+}

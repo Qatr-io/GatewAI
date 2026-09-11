@@ -7,6 +7,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"gatewai/gateway/internal/config"
 	"gatewai/gateway/internal/service"
 )
 
@@ -62,8 +63,13 @@ return val
 // carrying server.priority_header (see PriorityReservedSync).
 type ModelSemaphore struct {
 	rdb      *redis.Client
-	limits   map[string]int // model → shared pool max
-	reserved map[string]int // model → reserved pool max (priority only); absent/0 = no reservation
+	limits   map[string]int // key (model or pool name) → shared pool max
+	reserved map[string]int // key → reserved pool max (priority only); absent/0 = no reservation
+	// keyPrefix namespaces the Redis keys. Empty (default) reproduces today's
+	// exact "gateway:semaphore:sync:{model}" format byte-for-byte — no
+	// key-migration risk on deploy. NewPoolSemaphore sets "pool:" so a pool
+	// name colliding with a model name can never cross-contaminate.
+	keyPrefix string
 }
 
 // NewModelSemaphore builds a ModelSemaphore from the registry.
@@ -89,6 +95,33 @@ func NewModelSemaphore(reg *service.Registry, rdb *redis.Client) *ModelSemaphore
 	return &ModelSemaphore{rdb: rdb, limits: limits, reserved: reserved}
 }
 
+// NewPoolSemaphore builds a ModelSemaphore keyed by backend_pools name instead
+// of model, tracking each pool's max_concurrent / priority_reserved_concurrent.
+// Uses a distinct Redis key namespace ("gateway:semaphore:pool:") from
+// NewModelSemaphore so a pool name colliding with a model name never
+// cross-contaminates the two budgets. Returns nil when no pool configures a
+// concurrency limit.
+func NewPoolSemaphore(pools map[string]config.BackendPoolConfig, rdb *redis.Client) *ModelSemaphore {
+	limits := make(map[string]int)
+	reserved := make(map[string]int)
+	for name, pool := range pools {
+		if pool.MaxConcurrent > 0 {
+			r := pool.PriorityReservedConcurrent
+			if r < 0 || r > pool.MaxConcurrent {
+				r = 0
+			}
+			limits[name] = pool.MaxConcurrent - r
+			if r > 0 {
+				reserved[name] = r
+			}
+		}
+	}
+	if len(limits) == 0 {
+		return nil
+	}
+	return &ModelSemaphore{rdb: rdb, limits: limits, reserved: reserved, keyPrefix: "pool"}
+}
+
 // TryAcquire attempts to acquire a sync slot for the given model. isPriority
 // requests are tried against the reserved pool first (when one is configured),
 // then fall back to the shared pool like any other request.
@@ -108,7 +141,7 @@ func (s *ModelSemaphore) TryAcquire(model string, isPriority bool) (ok bool, use
 		priorityArg = 1
 	}
 	res, err := acquireScript.Run(context.Background(), s.rdb,
-		[]string{reservedKeyFor(model), sharedKeyFor(model)},
+		[]string{s.reservedKeyFor(model), s.sharedKeyFor(model)},
 		reservedMax, max, ttlSecs, priorityArg,
 	).Int64Slice()
 	if err != nil {
@@ -124,12 +157,26 @@ func (s *ModelSemaphore) Release(model string, usedReserved bool) {
 	if _, tracked := s.limits[model]; !tracked {
 		return
 	}
-	key := sharedKeyFor(model)
+	key := s.sharedKeyFor(model)
 	if usedReserved {
-		key = reservedKeyFor(model)
+		key = s.reservedKeyFor(model)
 	}
 	_ = releaseScript.Run(context.Background(), s.rdb, []string{key}).Err()
 }
 
-func sharedKeyFor(model string) string   { return "gateway:semaphore:sync:" + model }
-func reservedKeyFor(model string) string { return "gateway:semaphore:sync:" + model + ":priority" }
+// namespace returns the key segment identifying which semaphore family a key
+// belongs to: "sync" (default, models) or "pool" (NewPoolSemaphore).
+func (s *ModelSemaphore) namespace() string {
+	if s.keyPrefix == "" {
+		return "sync"
+	}
+	return s.keyPrefix
+}
+
+func (s *ModelSemaphore) sharedKeyFor(key string) string {
+	return "gateway:semaphore:" + s.namespace() + ":" + key
+}
+
+func (s *ModelSemaphore) reservedKeyFor(key string) string {
+	return "gateway:semaphore:" + s.namespace() + ":" + key + ":priority"
+}

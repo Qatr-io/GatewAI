@@ -65,6 +65,69 @@ func tokenChecker(l *ratelimit.Limiter) ratelimit.TokenChecker {
 	return l
 }
 
+// poolChecker returns l as a ratelimit.PoolChecker, or a true nil interface
+// when l is nil (see tokenChecker for why a typed-nil check doesn't suffice).
+func poolChecker(l *ratelimit.Limiter) ratelimit.PoolChecker {
+	if l == nil {
+		return nil
+	}
+	return l
+}
+
+// buildPoolLimits derives a pool name → pool-wide RateLimitConfig map from
+// backend_pools. Only pools with Rate > 0 contribute an entry.
+func buildPoolLimits(pools map[string]config.BackendPoolConfig) map[string]config.RateLimitConfig {
+	m := make(map[string]config.RateLimitConfig)
+	for name, pool := range pools {
+		if pool.RateLimit.Rate > 0 {
+			m[name] = pool.RateLimit
+		}
+	}
+	return m
+}
+
+// buildPoolMemberLimits derives a pool name → member URL → RateLimitConfig
+// map from backend_pools. Only members with Rate > 0 contribute an entry.
+func buildPoolMemberLimits(pools map[string]config.BackendPoolConfig) map[string]map[string]config.RateLimitConfig {
+	m := make(map[string]map[string]config.RateLimitConfig)
+	for name, pool := range pools {
+		for _, member := range pool.Members {
+			if member.RateLimit.Rate > 0 {
+				if m[name] == nil {
+					m[name] = make(map[string]config.RateLimitConfig)
+				}
+				m[name][member.URL] = member.RateLimit
+			}
+		}
+	}
+	return m
+}
+
+// dedupeProbeTargets flattens the backends of all sync-enabled services into
+// a set of active-probe targets, de-duplicated by (URL, HealthPath) — the
+// pair that actually determines probe behavior. Without this, backend_pools
+// sharing a URL across multiple service aliases would be probed once per
+// alias instead of once per physical backend.
+func dedupeProbeTargets(defs []*service.Def) []llmproxy.ProbeTarget {
+	type key struct{ url, healthPath string }
+	seen := make(map[key]bool)
+	var targets []llmproxy.ProbeTarget
+	for _, d := range defs {
+		if d.HealthCheck.Disabled {
+			continue
+		}
+		for _, b := range d.Backends {
+			k := key{b.URL, d.HealthCheck.Path}
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			targets = append(targets, llmproxy.ProbeTarget{Model: d.Model, URL: b.URL, HealthPath: d.HealthCheck.Path})
+		}
+	}
+	return targets
+}
+
 // routerHolder is an atomically-swappable http.Handler.
 // The outer http.Server always points to this wrapper; hot reload replaces the inner router.
 type routerHolder struct {
@@ -183,6 +246,8 @@ func buildRouter(
 		}
 		sh := handler.NewSyncHandler(reg, cfg.Server.ConsumerHeader, rl, llmHandler).
 			WithSemaphore(concurrency.NewModelSemaphore(reg, redisClient.Raw())).
+			WithPoolSemaphore(concurrency.NewPoolSemaphore(cfg.BackendPools, redisClient.Raw())).
+			WithPoolLimiter(poolChecker(limiter)).
 			WithPriorityHeader(cfg.Server.PriorityHeader).
 			WithMaxBodyMB(cfg.Server.MaxBodyMB).
 			WithCircuitBreaker(modelHealth)
@@ -301,7 +366,7 @@ func main() {
 	}()
 
 	// ── Service registry ──────────────────────────────────────────────────────
-	initialRegistry := service.NewRegistry(cfg.Services)
+	initialRegistry := service.NewRegistry(cfg.Services, service.WithBackendPools(cfg.BackendPools))
 	slog.Info("service registry initialised", "types", initialRegistry.Types())
 
 	// ── Dependencies ──────────────────────────────────────────────────────────
@@ -326,10 +391,13 @@ func main() {
 	var rl ratelimit.Checker
 	var limiter *ratelimit.Limiter
 	modelLimits := buildModelLimits(cfg.Services)
+	poolLimits := buildPoolLimits(cfg.BackendPools)
+	poolMemberLimits := buildPoolMemberLimits(cfg.BackendPools)
 	// The limiter is also needed when policies carry per-group limits, since those
 	// are enforced through the same limiter (via request-context policy limits).
-	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 || cfg.Policies != nil {
+	if len(cfg.RateLimits) > 0 || len(modelLimits) > 0 || cfg.Policies != nil || len(poolLimits) > 0 || len(poolMemberLimits) > 0 {
 		limiter = ratelimit.New(redisClient.Client(), cfg.RateLimits, modelLimits, cfg.Server.ConsumerHeader, cfg.Server.UserTypeHeader)
+		limiter.SetPoolLimits(poolLimits, poolMemberLimits)
 		rl = limiter
 		slog.Info("rate limiting enabled", "services", len(cfg.RateLimits), "model_limits", len(modelLimits), "policies", cfg.Policies != nil)
 	}
@@ -386,6 +454,9 @@ func main() {
 	}
 	llmHandler.WithLangfuse(cfg.Otel.Enabled && cfg.Otel.Traces.Enabled && cfg.Otel.Traces.Langfuse.Enabled)
 	llmHandler.WithCircuitBreaker(breaker)
+	llmHandler.WithPoolSemaphore(concurrency.NewPoolSemaphore(cfg.BackendPools, redisClient.Raw())).
+		WithPoolLimiter(poolChecker(limiter)).
+		WithPriorityHeader(cfg.Server.PriorityHeader)
 
 	// ── Authenticator ────────────────────────────────────────────────────────
 	// Build once; reused across reloads. The JWKS refresh goroutine is started
@@ -433,7 +504,7 @@ func main() {
 		if err != nil {
 			return err
 		}
-		newReg := service.NewRegistry(newCfg.Services)
+		newReg := service.NewRegistry(newCfg.Services, service.WithBackendPools(newCfg.BackendPools))
 
 		// Update infrastructure state that survives across reloads.
 		redisClient.UpdateLifecycle(newCfg.Lifecycle)
@@ -455,8 +526,11 @@ func main() {
 
 		// Rebuild stateless config-driven objects.
 		newModelLimits := buildModelLimits(newCfg.Services)
-		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 || newCfg.Policies != nil {
+		newPoolLimits := buildPoolLimits(newCfg.BackendPools)
+		newPoolMemberLimits := buildPoolMemberLimits(newCfg.BackendPools)
+		if len(newCfg.RateLimits) > 0 || len(newModelLimits) > 0 || newCfg.Policies != nil || len(newPoolLimits) > 0 || len(newPoolMemberLimits) > 0 {
 			limiter = ratelimit.New(redisClient.Client(), newCfg.RateLimits, newModelLimits, newCfg.Server.ConsumerHeader, newCfg.Server.UserTypeHeader)
+			limiter.SetPoolLimits(newPoolLimits, newPoolMemberLimits)
 			rl = limiter
 		} else {
 			limiter = nil
@@ -478,6 +552,9 @@ func main() {
 		}
 		llmHandler.WithLangfuse(newCfg.Otel.Enabled && newCfg.Otel.Traces.Enabled && newCfg.Otel.Traces.Langfuse.Enabled)
 		llmHandler.WithCircuitBreaker(breaker) // reuse the same breaker (state persists across reloads)
+		llmHandler.WithPoolSemaphore(concurrency.NewPoolSemaphore(newCfg.BackendPools, redisClient.Raw())).
+			WithPoolLimiter(poolChecker(limiter)).
+			WithPriorityHeader(newCfg.Server.PriorityHeader)
 
 		// Reuse the existing authenticator. Auth config changes require a restart.
 		var newAuthzEngine *authz.Engine
@@ -530,16 +607,7 @@ func main() {
 		if pi, _ := time.ParseDuration(cfg.CircuitBreaker.ProbeInterval); pi > 0 {
 			probeClient := &http.Client{Timeout: 5 * time.Second}
 			llmproxy.StartProber(ctx, breaker, probeClient, pi, func() []llmproxy.ProbeTarget {
-				var targets []llmproxy.ProbeTarget
-				for _, d := range gcRegistry.Load().Models() {
-					if d.HealthCheck.Disabled {
-						continue
-					}
-					for _, b := range d.Backends {
-						targets = append(targets, llmproxy.ProbeTarget{Model: d.Model, URL: b.URL, HealthPath: d.HealthCheck.Path})
-					}
-				}
-				return targets
+				return dedupeProbeTargets(gcRegistry.Load().Models())
 			})
 			slog.Info("llm backend active health probing enabled", "interval", cfg.CircuitBreaker.ProbeInterval)
 		}

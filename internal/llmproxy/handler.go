@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"gatewai/gateway/internal/cache"
+	"gatewai/gateway/internal/concurrency"
 	"gatewai/gateway/internal/guardrails"
 	"gatewai/gateway/internal/llmproxy/provider"
 	"gatewai/gateway/internal/metrics"
@@ -51,11 +52,34 @@ type Handler struct {
 	userTypeHeader  string // HTTP header carrying consumer type (e.g. "X-User-Type")
 	tracker         metrics.ConsumerTracker
 	audit           AuditConfig
-	tokenLimiter    ratelimit.TokenChecker // nil = token rate limiting disabled
-	guard           *guardrails.Checker    // output DLP scanner
-	usageTracker    usage.UsageTracker     // nil = calendar usage reporting disabled
-	langfuseEnabled bool                   // attach langfuse.observation.* span attrs; requires OTel traces enabled
-	breaker         *CircuitBreaker        // nil = circuit breaking disabled
+	tokenLimiter    ratelimit.TokenChecker      // nil = token rate limiting disabled
+	guard           *guardrails.Checker         // output DLP scanner
+	usageTracker    usage.UsageTracker          // nil = calendar usage reporting disabled
+	langfuseEnabled bool                        // attach langfuse.observation.* span attrs; requires OTel traces enabled
+	breaker         *CircuitBreaker             // nil = circuit breaking disabled
+	poolLimiter     ratelimit.PoolChecker       // nil = backend_pools rate limiting disabled
+	poolSemaphore   *concurrency.ModelSemaphore // nil = backend_pools concurrency limiting disabled
+	priorityHeader  string                      // HTTP header that grants access to a pool's reserved concurrency slice
+}
+
+// WithPoolLimiter attaches the backend_pools rate limiter. nil disables it.
+func (h *Handler) WithPoolLimiter(pl ratelimit.PoolChecker) *Handler {
+	h.poolLimiter = pl
+	return h
+}
+
+// WithPoolSemaphore attaches the backend_pools concurrency limiter. nil disables it.
+func (h *Handler) WithPoolSemaphore(s *concurrency.ModelSemaphore) *Handler {
+	h.poolSemaphore = s
+	return h
+}
+
+// WithPriorityHeader sets the HTTP header that, when present and non-empty,
+// grants a request access to a backend pool's reserved concurrency slice
+// (mirrors server.priority_header used by the sync per-model semaphore).
+func (h *Handler) WithPriorityHeader(header string) *Handler {
+	h.priorityHeader = header
+	return h
 }
 
 // WithCircuitBreaker attaches a per-backend circuit breaker so dead backends are
@@ -229,6 +253,20 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		metrics.CacheMissesTotal.WithLabelValues(def.Type, def.Model).Inc()
 	}
 
+	// ── Pool concurrency ──────────────────────────────────────────────────────
+	// Acquired once per logical request (like the sync per-model semaphore),
+	// before backend selection — a cache hit above never reaches here.
+	if def.PoolName != "" && h.poolSemaphore != nil {
+		isPriority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
+		acquired, usedReserved := h.poolSemaphore.TryAcquire(def.PoolName, isPriority)
+		if !acquired {
+			metrics.BackendPoolConcurrencyRejectedTotal.WithLabelValues(def.PoolName).Inc()
+			writeError(w, http.StatusServiceUnavailable, "backend pool too busy, retry later")
+			return
+		}
+		defer h.poolSemaphore.Release(def.PoolName, usedReserved)
+	}
+
 	// ── Forward to provider (with backend retry) ─────────────────────────────
 	// Model rewrite happens per-backend: backend.Model overrides def.BackendModel.
 	// Cache key is derived from the alias (def.Model) above, before any rewrite,
@@ -243,6 +281,15 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
 			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
 			continue
+		}
+		if def.PoolName != "" && h.poolLimiter != nil {
+			res, err := h.poolLimiter.CheckBackendPool(r.Context(), def.PoolName, backend.URL)
+			if err != nil {
+				slog.WarnContext(r.Context(), "backend pool rate limit check error", "pool", def.PoolName, "error", err)
+			}
+			if !res.Allowed {
+				continue
+			}
 		}
 		tried++
 		effectiveModel := backend.Model
@@ -303,10 +350,10 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 	}
 	if resp == nil {
 		if tried == 0 {
-			// Every backend's circuit was open → fast-fail instead of a slow 502.
-			span.SetStatus(codes.Error, "all backends circuit-open")
+			// Every backend was skipped: circuit open or backend_pools rate limited → fast-fail instead of a slow 502.
+			span.SetStatus(codes.Error, "all backends circuit-open or rate limited")
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "false").Inc()
-			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open or rate limited)")
 			return
 		}
 		span.RecordError(fmt.Errorf("all backends failed: %s", lastBackendErr))
@@ -559,6 +606,19 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		forwardBody = injectStreamUsage(body)
 	}
 
+	// ── Pool concurrency ──────────────────────────────────────────────────────
+	// Acquired once per logical request, before backend selection.
+	if def.PoolName != "" && h.poolSemaphore != nil {
+		isPriority := h.priorityHeader != "" && r.Header.Get(h.priorityHeader) != ""
+		acquired, usedReserved := h.poolSemaphore.TryAcquire(def.PoolName, isPriority)
+		if !acquired {
+			metrics.BackendPoolConcurrencyRejectedTotal.WithLabelValues(def.PoolName).Inc()
+			writeError(w, http.StatusServiceUnavailable, "backend pool too busy, retry later")
+			return
+		}
+		defer h.poolSemaphore.Release(def.PoolName, usedReserved)
+	}
+
 	backends := service.OrderedBackends(def.Backends)
 	var resp *http.Response
 	var lastErr string
@@ -568,6 +628,15 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		if h.breaker != nil && !h.breaker.Allow(backend.URL) {
 			metrics.BackendCircuitSkippedTotal.WithLabelValues(def.Model, backend.URL).Inc()
 			continue
+		}
+		if def.PoolName != "" && h.poolLimiter != nil {
+			res, err := h.poolLimiter.CheckBackendPool(r.Context(), def.PoolName, backend.URL)
+			if err != nil {
+				slog.WarnContext(r.Context(), "backend pool rate limit check error", "pool", def.PoolName, "error", err)
+			}
+			if !res.Allowed {
+				continue
+			}
 		}
 		tried++
 		effectiveModel := backend.Model
@@ -629,7 +698,7 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	if resp == nil {
 		if tried == 0 {
 			metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "503", "true").Inc()
-			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open)")
+			writeError(w, http.StatusServiceUnavailable, "all backends for model are unavailable (circuit open or rate limited)")
 			return
 		}
 		metrics.LLMRequestsTotal.WithLabelValues(def.Type, def.Model, "", def.Provider, userType, "502", "true").Inc()
