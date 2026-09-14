@@ -20,6 +20,8 @@ Versioning: each component is versioned independently — see tag conventions be
 
 #### Added
 
+- **Guardrail trace tagging**: sync/inline guardrail actions (input regex, sync model detectors, output stage) now tag the request trace span with `guardrail.flagged=true` + `guardrail.stage`/`guardrail.action`/`guardrail.detectors`, so flagged traces can be filtered in Tempo/Langfuse next to the prompt. No-op when tracing is off; the async (shadow) detector is not yet covered (its span has ended by then).
+
 - **Backend pools (`backend_pools`)**: a named, load-balancer-style group of member backends that several `services[]` entries can share via `backend_pool: <name>`, instead of each declaring its own `backends:`/`inference_url:`. Centralizes auth headers (precedence: service `inference_headers` → pool `headers` → member `headers`) and lets every service routed to the same pool share one rate-limit and concurrency budget — configurable at both pool level (`rate_limit`, `max_concurrent`, `priority_reserved_concurrent`) and member level (`rate_limit`, `max_concurrent`). `backend_pool` is mutually exclusive with `backends:`/`inference_url:` on the same service, validated at config load. Concurrency is acquired once per logical client request (shared with per-model semaphores' architecture, but a distinct Redis key namespace); rate limits are checked per backend attempt inside the existing retry loop, so a pool-rate-limited member is skipped in favor of the next one before falling back to an error. New metrics `gatewai_backend_pool_rate_limited_total{pool,member}`, `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}`.
 
 #### Changed
