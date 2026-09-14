@@ -450,10 +450,19 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 				texts := guardrails.MessageTexts(raw) // original, pre-redaction
 
 				// async shadow: observe only, detached from the request lifetime.
-				guardrails.FireAsync(context.WithoutCancel(r.Context()), g.Models, texts, func(name string, cats []string) {
+				asyncCtx := context.WithoutCancel(r.Context())
+				guardrails.FireAsync(asyncCtx, g.Models, texts, func(name string, cats []string, score float64) {
 					slog.WarnContext(r.Context(), "llm request flagged by async guardrail model (shadow)",
 						"service_type", def.Type, "model", def.Model, "detector", name, "consumer", consumer, "violations", cats)
 					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", name, "async", "flagged").Inc()
+					// Correlated, PII-redacted record so the shadow flag can be reviewed
+					// (the request span has already ended, so span tagging can't reach it).
+					if def.Guardrails.Sample.Enabled {
+						guardrails.EmitFlaggedSample(asyncCtx, guardrails.FlaggedSample{
+							Stage: "input", Detector: name, Categories: cats, Score: score,
+							ServiceType: def.Type, Model: def.Model, Consumer: consumer,
+						}, texts, def.Guardrails.Sample.RedactGroups)
+					}
 				})
 
 				// sync block/flag classifiers (on the original text).
