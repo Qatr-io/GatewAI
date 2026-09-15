@@ -416,12 +416,14 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 						slog.WarnContext(r.Context(), "llm request redacted by guardrails",
 							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "redact", "redacted").Inc()
+						guardrails.MarkSpanFlagged(r.Context(), "input", "redact", found)
 					}
 				case "flag":
 					if found := h.piiChecker.Scan(raw, g.Checks); len(found) > 0 {
 						slog.WarnContext(r.Context(), "llm request flagged by guardrails",
 							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "flag", "flagged").Inc()
+						guardrails.MarkSpanFlagged(r.Context(), "input", "flag", found)
 					}
 				default: // "block"
 					if found := h.piiChecker.Scan(raw, g.Checks); len(found) > 0 {
@@ -429,6 +431,7 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 							"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 						metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "input", "block", "blocked").Inc()
 						metrics.GuardrailsPiiBlockedTotal.WithLabelValues(def.Type, def.Model).Inc()
+						guardrails.MarkSpanFlagged(r.Context(), "input", "block", found)
 						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: "+strings.Join(found, ", "))
 						return
 					}
@@ -463,12 +466,14 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 						slog.WarnContext(r.Context(), "llm request blocked by guardrail model",
 							"service_type", def.Type, "model", def.Model, "detector", res.Name, "consumer", consumer, "violations", reason, "error", res.Err)
 						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "blocked").Inc()
+						guardrails.MarkSpanFlagged(r.Context(), "input", "block", []string{res.Name})
 						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: "+strings.Join(reason, ", "))
 						return
 					}
 					slog.WarnContext(r.Context(), "llm request flagged by guardrail model",
 						"service_type", def.Type, "model", def.Model, "detector", res.Name, "consumer", consumer, "violations", res.Categories)
 					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "flagged").Inc()
+					guardrails.MarkSpanFlagged(r.Context(), "input", "flag", []string{res.Name})
 				}
 
 				// sync NER redaction (mutates the forwarded body) — reached only
@@ -479,12 +484,14 @@ func (h *SyncHandler) handleJSON(w http.ResponseWriter, r *http.Request) {
 						slog.WarnContext(r.Context(), "llm request blocked by guardrail model (redactor unavailable)",
 							"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "error", rr.Err)
 						metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "blocked").Inc()
+						guardrails.MarkSpanFlagged(r.Context(), "input", "block", []string{rr.Name})
 						writeError(w, http.StatusUnprocessableEntity, "guardrails violation: redaction unavailable")
 						return
 					}
 					slog.WarnContext(r.Context(), "llm request redacted by guardrail model",
 						"service_type", def.Type, "model", def.Model, "detector", rr.Name, "consumer", consumer, "violations", rr.Categories)
 					metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", rr.Name, "sync", "redacted").Inc()
+					guardrails.MarkSpanFlagged(r.Context(), "input", "redact", []string{rr.Name})
 				}
 				raw = cleaned
 			}

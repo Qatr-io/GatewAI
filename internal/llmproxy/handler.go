@@ -422,18 +422,21 @@ func (h *Handler) ServeJSON(w http.ResponseWriter, r *http.Request, def *service
 				slog.WarnContext(r.Context(), "llm response redacted by output guardrails",
 					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "redact", "redacted").Inc()
+				guardrails.MarkSpanFlagged(r.Context(), "output", "redact", found)
 			}
 		case "flag":
 			if found := h.guard.ScanResponse(finalBody, def.Guardrails.Output.Checks); len(found) > 0 {
 				slog.WarnContext(r.Context(), "llm response flagged by output guardrails",
 					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "flag", "flagged").Inc()
+				guardrails.MarkSpanFlagged(r.Context(), "output", "flag", found)
 			}
 		default: // "block"
 			if found := h.guard.ScanResponse(finalBody, def.Guardrails.Output.Checks); len(found) > 0 {
 				slog.WarnContext(r.Context(), "llm response blocked by output guardrails",
 					"service_type", def.Type, "model", def.Model, "consumer", consumer, "violations", found)
 				metrics.GuardrailsTotal.WithLabelValues(def.Type, def.Model, "output", "block", "blocked").Inc()
+				guardrails.MarkSpanFlagged(r.Context(), "output", "block", found)
 				finalStatus = http.StatusUnprocessableEntity
 				finalBody = []byte(`{"error":"response blocked by guardrails"}`)
 				outputBlocked = true

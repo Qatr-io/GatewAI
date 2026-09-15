@@ -242,6 +242,8 @@ rate_limits:
 
 Numeric national-ID patterns (NIR, SIREN/SIRET, SSN, DNI) have higher false-positive rates — enable the relevant country group per service after assessing payloads. Prometheus counters: `gatewai_guardrails_total{service_type, model, stage, action, result}` (`stage` = `input`|`output`) and the legacy `gatewai_guardrails_pii_blocked_total{service_type, model}`.
 
+**Trace tagging**: when a *sync/inline* guardrail acts (input regex or a sync model detector; output stage) the request span is tagged `guardrail.flagged=true` plus `guardrail.stage`/`guardrail.action`/`guardrail.detectors` (`guardrails.MarkSpanFlagged`), so flagged traces are filterable in Tempo/Langfuse alongside the prompt already on the span. No-op when tracing is disabled. The **async** (shadow) model detector runs after the request span ends, so it is *not* covered here — a correlated flagged-sample record for it is a follow-up.
+
 ### Authentication
 
 `internal/auth/`: optional gateway-side authentication. **Absent `auth` block ⇒ no gateway auth** — identity is trusted from upstream headers (the default when an upstream reverse proxy handles auth). One mode per deployment via `auth.mode`:
