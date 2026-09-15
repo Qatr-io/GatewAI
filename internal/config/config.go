@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -30,9 +31,14 @@ type Config struct {
 	Auth       AuthConfig                            `yaml:"auth"`
 	// Policies configures identity-based access control. Nil means no enforcement.
 	Policies *PoliciesConfig `yaml:"policies"`
-	Usage    UsageConfig     `yaml:"usage"`
-	Webhooks WebhookConfig   `yaml:"webhooks"`
-	Jobs     JobsConfig      `yaml:"jobs"`
+	// BackendPools defines named, reusable groups of inference backends, keyed
+	// by pool name. Referenced from services[].backend_pool. Lets several
+	// services (e.g. different model aliases) share one physical backend's
+	// rate limit / concurrency budget instead of duplicating it per service.
+	BackendPools map[string]BackendPoolConfig `yaml:"backend_pools"`
+	Usage        UsageConfig                  `yaml:"usage"`
+	Webhooks     WebhookConfig                `yaml:"webhooks"`
+	Jobs         JobsConfig                   `yaml:"jobs"`
 	// CircuitBreaker guards LLM-proxy backends: after a run of consecutive
 	// failures a backend's circuit opens and it is skipped until a cooldown,
 	// so a dead backend is not hammered on every request. Opt-in (default off).
@@ -434,6 +440,43 @@ type BackendConfig struct {
 	Model   string            `yaml:"model"`   // real model name sent to this backend; overrides service-level backend_model
 }
 
+// BackendPoolMember is one backend within a named pool, with optional
+// per-member rate limit / concurrency caps layered on top of the pool-wide
+// budget (both must pass).
+type BackendPoolMember struct {
+	BackendConfig `yaml:",inline"`
+	// RateLimit caps this member's own request rate. Only Rate+Period are
+	// meaningful at this scope; other RateLimitConfig fields are rejected by
+	// validation. 0/absent = no member-level cap (pool-wide cap still applies).
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	// MaxConcurrent caps simultaneous in-flight requests to this member.
+	// 0 = no member-level cap (pool-wide cap still applies).
+	MaxConcurrent int `yaml:"max_concurrent"`
+}
+
+// BackendPoolConfig is a named, reusable group of inference backends,
+// referenced by services[].backend_pool. Members share the pool's headers
+// (lowest precedence, overridden by member headers) and, optionally, a
+// pool-wide rate limit / concurrency budget on top of any per-member caps.
+type BackendPoolConfig struct {
+	Members []BackendPoolMember `yaml:"members"`
+	// Headers are default headers applied to every member; overridden by a
+	// member's own headers with the same name, and by service-level
+	// inference_headers on the sync-direct path.
+	Headers map[string]string `yaml:"headers"`
+	// RateLimit caps the combined request rate across all members of the
+	// pool. Only Rate+Period are meaningful at this scope. 0/absent = no
+	// pool-wide cap.
+	RateLimit RateLimitConfig `yaml:"rate_limit"`
+	// MaxConcurrent caps the combined in-flight requests across all members
+	// of the pool. 0 = no pool-wide cap.
+	MaxConcurrent int `yaml:"max_concurrent"`
+	// PriorityReservedConcurrent reserves this many of MaxConcurrent's slots
+	// exclusively for requests carrying server.priority_header, mirroring
+	// services[].priority_reserved_sync. 0 (default) = no reservation.
+	PriorityReservedConcurrent int `yaml:"priority_reserved_concurrent"`
+}
+
 // ServiceConfig declares a single inference service type.
 // New services are added here (config.yaml) — no Go code required.
 type ServiceConfig struct {
@@ -455,9 +498,13 @@ type ServiceConfig struct {
 	// precedence over inference_url and enables blue/green, canary, and fallback routing.
 	// weight > 0 = eligible for primary selection (weighted random).
 	// weight = 0 = fallback-only (tried only if all weight>0 backends fail).
-	Backends      []BackendConfig `yaml:"backends"`
-	AcceptedExts  []string        `yaml:"accepted_exts"`
-	MaxFileSizeMB int64           `yaml:"max_file_size_mb"`
+	Backends []BackendConfig `yaml:"backends"`
+	// BackendPool references a named pool from the top-level backend_pools
+	// block instead of declaring backends inline. Mutually exclusive with
+	// both backends and inference_url.
+	BackendPool   string   `yaml:"backend_pool"`
+	AcceptedExts  []string `yaml:"accepted_exts"`
+	MaxFileSizeMB int64    `yaml:"max_file_size_mb"`
 	// MaxConcurrentSync limits the number of simultaneous sync proxy calls for this model.
 	// 0 (default) means no limit. When exceeded, the handler returns 503.
 	MaxConcurrentSync int `yaml:"max_concurrent_sync"`
@@ -804,6 +851,45 @@ func (c *Config) validate() error {
 			}
 		}
 	}
+	poolNames := make([]string, 0, len(c.BackendPools))
+	for name := range c.BackendPools {
+		poolNames = append(poolNames, name)
+	}
+	sort.Strings(poolNames)
+	for _, name := range poolNames {
+		pool := c.BackendPools[name]
+		if len(pool.Members) == 0 {
+			return fmt.Errorf("backend_pools[%s]: at least one member is required", name)
+		}
+		seenURLs := make(map[string]bool, len(pool.Members))
+		for i, m := range pool.Members {
+			if m.URL == "" {
+				return fmt.Errorf("backend_pools[%s].members[%d].url must not be empty", name, i)
+			}
+			if seenURLs[m.URL] {
+				return fmt.Errorf("backend_pools[%s].members[%d]: duplicate url %q", name, i, m.URL)
+			}
+			seenURLs[m.URL] = true
+			if m.Weight < 0 {
+				return fmt.Errorf("backend_pools[%s].members[%d].weight must be >= 0", name, i)
+			}
+			if m.MaxConcurrent < 0 {
+				return fmt.Errorf("backend_pools[%s].members[%d].max_concurrent must be >= 0", name, i)
+			}
+			if err := validatePoolRateLimit(m.RateLimit); err != nil {
+				return fmt.Errorf("backend_pools[%s].members[%d].rate_limit: %w", name, i, err)
+			}
+		}
+		if pool.MaxConcurrent < 0 {
+			return fmt.Errorf("backend_pools[%s].max_concurrent must be >= 0", name)
+		}
+		if pool.PriorityReservedConcurrent < 0 {
+			return fmt.Errorf("backend_pools[%s].priority_reserved_concurrent must be >= 0", name)
+		}
+		if err := validatePoolRateLimit(pool.RateLimit); err != nil {
+			return fmt.Errorf("backend_pools[%s].rate_limit: %w", name, err)
+		}
+	}
 	validProviders := map[string]bool{"openai": true, "anthropic": true, "ollama": true, "passthrough": true}
 	for _, svc := range c.Services {
 		if svc.Provider != "" && !validProviders[svc.Provider] {
@@ -825,6 +911,17 @@ func (c *Config) validate() error {
 			}
 			if b.Weight < 0 {
 				return fmt.Errorf("service %q: backends[%d].weight must be >= 0", svc.Type, i)
+			}
+		}
+		if svc.BackendPool != "" {
+			if len(svc.Backends) > 0 {
+				return fmt.Errorf("service %q: backend_pool is mutually exclusive with backends", svc.Type)
+			}
+			if svc.InferenceURL != "" {
+				return fmt.Errorf("service %q: backend_pool is mutually exclusive with inference_url", svc.Type)
+			}
+			if _, ok := c.BackendPools[svc.BackendPool]; !ok {
+				return fmt.Errorf("service %q: backend_pool %q is not defined in backend_pools", svc.Type, svc.BackendPool)
 			}
 		}
 		for userType, limit := range svc.TokenLimits {
@@ -855,6 +952,27 @@ func (c *Config) validate() error {
 				}
 			}
 		}
+	}
+	return nil
+}
+
+// validatePoolRateLimit checks a RateLimitConfig used at backend_pools scope
+// (pool or member level), where only Rate+Period are supported — token,
+// processing-time, and max_concurrent semantics belong to other config
+// fields (token_limits, and the pool/member max_concurrent field) and would
+// be misleading if silently ignored here.
+func validatePoolRateLimit(rl RateLimitConfig) error {
+	if rl.Rate > 0 && rl.Period == "" {
+		return fmt.Errorf("rate requires period")
+	}
+	if rl.TokenRate != 0 || rl.TokenPeriod != "" {
+		return fmt.Errorf("token_rate/token_period are not supported here (use the service's token_limits instead)")
+	}
+	if rl.MaxConcurrent != 0 {
+		return fmt.Errorf("max_concurrent is not supported on rate_limit (use the pool/member max_concurrent field instead)")
+	}
+	if rl.ProcessingTime != 0 || rl.ProcessingPeriod != "" {
+		return fmt.Errorf("processing_time/processing_period are not supported here")
 	}
 	return nil
 }

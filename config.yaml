@@ -235,6 +235,33 @@ metrics:
   consumer_labels: false
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Backend pools (optional)
+# A named, load-balancer-style group of member backends that several services[]
+# entries can share via `backend_pool: <name>` instead of each declaring its own
+# `backends:`/`inference_url:`. Useful when the same physical backend serves more
+# than one model alias — the pool centralizes auth headers and shares one
+# rate-limit / concurrency budget across every service routed to it.
+# `backend_pool` is mutually exclusive with `backends:`/`inference_url:` on the
+# same service.
+# ─────────────────────────────────────────────────────────────────────────────
+# backend_pools:
+#   vllm-llama3:
+#     members:
+#       - url: "http://vllm-1.default.svc.cluster.local:8000"
+#         weight: 3
+#         headers:
+#           Authorization: "Bearer ${VLLM_1_TOKEN}"
+#         rate_limit: { rate: 20, period: 1s }   # optional per-member cap
+#         max_concurrent: 10                      # optional per-member cap
+#       - url: "http://vllm-2.default.svc.cluster.local:8000"
+#         weight: 1
+#     headers:                                    # pool-level default headers (lowest precedence)
+#       X-Pool-Auth: "${VLLM_SHARED_KEY}"
+#     rate_limit: { rate: 50, period: 1s }        # pool-wide shared budget across all members
+#     max_concurrent: 30                          # pool-wide shared concurrency budget
+#     priority_reserved_concurrent: 5             # mirrors services[].priority_reserved_sync
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Service registry
 # To add a new inference service: append a block below. No code change needed.
 #
@@ -243,6 +270,7 @@ metrics:
 #   operations:    map of operation name → list of URL paths
 #                  all paths are indexed for sync routing; the first is used for async
 #   inference_url: base URL of the backend — original request path is appended at runtime
+#   backend_pool:  name of a backend_pools entry to share instead of inference_url/backends
 #
 # Async mode (Redis queue):
 #   accepted_exts / max_file_size_mb
@@ -429,6 +457,26 @@ services:
   #         Authorization: "Bearer ${CANARY_API_KEY}"
   #     - url: "http://vllm-fallback.default.svc.cluster.local:8000"
   #       weight: 0    # only used if both stable and canary return 5xx
+  #
+  # ── Shared backend pool : two model aliases, one budget ────────────────────
+  # Both services below route to the same backend_pools entry (see "Backend
+  # pools" above), so they share its rate limit and concurrency budget instead
+  # of each getting their own.
+  #
+  # - type: llm
+  #   model: "gpt-4o"
+  #   backend_pool: vllm-llama3
+  #   provider: openai
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
+  # - type: llm
+  #   model: "llama3-chat"
+  #   backend_pool: vllm-llama3
+  #   provider: openai
+  #   operations:
+  #     chat:
+  #       - "/v1/chat/completions"
   #
   # ── Model aliasing + visibility : beta-testing through the same API ───────────
   # backend_model rewrites the model name before forwarding, so clients keep using

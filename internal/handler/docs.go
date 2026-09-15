@@ -935,12 +935,7 @@ func specComponents() map[string]any {
 					"backend_model": map[string]any{
 						"type":        "string",
 						"example":     "meta-llama/Meta-Llama-3-8B-Instruct",
-						"description": "Real model this alias forwards to. Present only when the service rewrites the model name (`backend_model` or a per-backend `model`); omitted when the alias is passed through unchanged.",
-					},
-					"backend_models": map[string]any{
-						"type":        "array",
-						"items":       map[string]any{"type": "string"},
-						"description": "Set only when backends behind this alias serve distinct real models (canary/mixed fleet). The first entry is the primary, matching `backend_model`.",
+						"description": "Real model this alias forwards to. Present only when the service's `backend_model` is configured; omitted when the alias is passed through unchanged.",
 					},
 					"capabilities": map[string]any{"$ref": "#/components/schemas/ModelCapabilities"},
 				},

@@ -123,7 +123,7 @@ Configured via `services[].operations`, `services[].model`, `services[].inferenc
 
 **LLM proxy** (`internal/llmproxy/`): when `provider` is set on a service, the gateway translates and proxies LLM requests instead of passing them through raw. Providers: `openai`, `anthropic` (full OpenAI ↔ Anthropic Messages API translation), `ollama`, `passthrough` (vLLM and OpenAI-compatible backends).
 
-- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM). The real backend model is surfaced to clients in `GET /v1/models` as `backend_model` (and `backend_models[]` when backends serve distinct models) — default-on, no config.
+- **Model aliases**: `backend_model` rewrites the `model` field before forwarding (e.g. `"gpt-4o"` → `"meta-llama/Meta-Llama-3-8B-Instruct"` for vLLM). The real backend model is surfaced to clients in `GET /v1/models` as `backend_model` — sourced only from the service-level `backend_model`, never from a per-backend `backends[].model` override (that field still rewrites the outgoing request per backend; it's just not reflected in the models listing) — default-on, no config.
 - **Response cache**: Redis exact-match cache keyed on SHA-256 of request body, configurable TTL via `response_cache_ttl`; `stream=true` and `Cache-Control: no-cache` bypass cache; `X-Cache: HIT/MISS` on every response
 - **Wildcard routing**: paths ending with `/*` (e.g. `/v1/*`) register as chi wildcard routes — proxies all sub-paths without enumerating them
 - **Circuit breaker** (`internal/llmproxy/breaker.go`, opt-in `circuit_breaker.enabled`): per-backend health for the LLM proxy. After `failure_threshold` consecutive failures (network error or 5xx) a backend's circuit opens and requests skip it for `cooldown`; then one half-open probe is allowed (success closes, failure re-opens). When **all** of a model's backends are open the request **fast-fails `503`** instead of a slow `502`, and a dead backend stops being hammered every request (the gemma "listed-but-dead" symptom). State is in-memory per replica; the breaker instance persists across config hot-reloads. Metrics: `gatewai_backend_circuit_open{model,backend}` (gauge), `gatewai_backend_circuit_opens_total`, `gatewai_backend_circuit_skipped_total`. A model whose backends are **all** circuit-open is marked `capabilities.degraded: true` in `GET /v1/models` (via the `handler.BackendHealth` interface the breaker satisfies). **Active probing** (`circuit_breaker.probe_interval`, opt-in): a per-replica loop (`internal/llmproxy/prober.go`) health-checks each backend and feeds the breaker, so idle/dead backends open and recovered ones close without waiting for live traffic. **Cross-model fallback** (`services[].fallback_model`, opt-in): a sync `/v1/*` request to a model whose backends are all circuit-open is transparently re-routed to the named fallback model on the same path (visibility/policies re-checked against it); metric `gatewai_llm_fallback_total{service_type, model, fallback}`.
@@ -151,6 +151,44 @@ operations:
 **Multiple models per type**: multiple service entries may share the same `type` with different `model` values. The gateway routes by `model` field in the request.
 
 **`visibility`** (`services[].visibility`): gates a model to an audience — `user_types` (matched against `server.user_type_header`) and/or `groups` (from the authed `Principal`). A restricted model is fail-closed: filtered out of `GET /v1/models` and returns `404` on `/v1/*`, `/jobs/{service_type}`, and `GET /v1/models?model=` for callers outside its audience (indistinguishable from non-existent; anonymous callers see only public models). Enforced in `handler.checkModelVisible` on all three paths and as a list filter in `ListModels`. Enables beta-testing a model through the same API. Composes with `policies` (both must pass). Metric `gatewai_model_hidden_total{service_type, model}`. Registry helpers: `Def.IsRestricted()`, `Def.VisibleTo(userType, groups)`, `Def.BackendModelNames()`.
+
+**`backend_pools`** (top-level config block): a named, load-balancer-style group of member backends, referenced from `services[]` by name via `backend_pool: <name>` — instead of every service declaring its own `backends:`/`inference_url:`. Lets several service/model aliases share one physical backend's config, rate limit, and concurrency budget.
+
+```yaml
+backend_pools:
+  vllm-llama3:
+    members:
+      - url: http://vllm-1:8000
+        weight: 3
+        headers: { Authorization: "Bearer ${KEY1}" }
+        rate_limit: { rate: 20, period: 1s }   # optional per-member cap
+        max_concurrent: 10                      # optional per-member cap
+      - url: http://vllm-2:8000
+        weight: 1
+    headers: { X-Pool-Auth: "${SHARED_KEY}" }   # pool-level default headers (lowest precedence)
+    rate_limit: { rate: 50, period: 1s }        # pool-wide shared budget across all members
+    max_concurrent: 30                          # pool-wide shared concurrency budget
+    priority_reserved_concurrent: 5             # mirrors services[].priority_reserved_sync
+
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: vllm-llama3     # mutually exclusive with backends:/inference_url:
+    provider: openai
+  - type: llm
+    model: llama3-chat
+    backend_pool: vllm-llama3     # same pool, different alias — shares its budget
+    provider: openai
+```
+
+- **Mutually exclusive** with `backends:`/`inference_url:` on the same service — set exactly one, checked at config validation. `backend_pool` must reference an existing `backend_pools` key.
+- **Header precedence** (lowest → highest): service-level `InferenceHeaders` → `pool.headers` → `member.headers`, merged once at registry-resolution time into the same per-backend `Headers` map inline backends already produce.
+- **Concurrency** is acquired once per logical client request (mirrors the existing per-model semaphore — one request = one in-flight unit of pool capacity, regardless of internal retries), via a dedicated `gateway:semaphore:pool:` Redis key namespace distinct from per-model semaphores.
+- **Rate limiting** is checked per backend attempt inside the retry loop (mirrors the circuit breaker's `Allow()` check): pool-wide and per-member budgets are both enforced (AND), and a rejected member is skipped in favor of the next one before falling back to a 502/503.
+- **Enforcement is split by request path** to avoid double-acquiring one pool slot per request: `internal/llmproxy/handler.go` owns it for LLM-delegated requests (`provider` set, i.e. `Def.IsLLM()`); `internal/handler/sync.go`'s `proxyToInference` owns it for direct-proxy requests (multipart, and JSON services with no `provider`). These two paths are mutually exclusive per request.
+- **Circuit breaker needs no pool-awareness** — it's already keyed purely by backend URL, so services sharing a pool already share breaker health state.
+- Pool rate-limit/concurrency exhaustion is deliberately **not** reflected in `GET /v1/models`' `capabilities.degraded` — it's transient backpressure (recovers on its own), not a degraded backend; that stays circuit-breaker-only.
+- Metrics: `gatewai_backend_pool_rate_limited_total{pool,member}` (`member` empty for a pool-wide rejection), `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}` (Redis errors, fail-open).
 
 ### Dynamic OpenAPI spec
 

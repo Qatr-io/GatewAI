@@ -23,14 +23,13 @@ func callListModelsWithModel(t *testing.T, reg *service.Registry, modelName stri
 type modelsResponse struct {
 	Object string `json:"object"`
 	Data   []struct {
-		ID            string   `json:"id"`
-		Object        string   `json:"object"`
-		OwnedBy       string   `json:"owned_by"`
-		ServiceType   string   `json:"service_type"`
-		Provider      string   `json:"provider,omitempty"`
-		BackendModel  string   `json:"backend_model,omitempty"`
-		BackendModels []string `json:"backend_models,omitempty"`
-		Capabilities  struct {
+		ID           string `json:"id"`
+		Object       string `json:"object"`
+		OwnedBy      string `json:"owned_by"`
+		ServiceType  string `json:"service_type"`
+		Provider     string `json:"provider,omitempty"`
+		BackendModel string `json:"backend_model,omitempty"`
+		Capabilities struct {
 			SupportsAsync     bool     `json:"supports_async"`
 			SupportsSync      bool     `json:"supports_sync"`
 			SupportsStreaming bool     `json:"supports_streaming"`
@@ -329,12 +328,11 @@ func TestListModels_BackendModel_ServiceLevel(t *testing.T) {
 	if m.BackendModel != "meta-llama/Meta-Llama-3-8B-Instruct" {
 		t.Errorf("expected backend_model exposed, got %q", m.BackendModel)
 	}
-	if len(m.BackendModels) != 0 {
-		t.Errorf("expected no backend_models for single backend model, got %v", m.BackendModels)
-	}
 }
 
-func TestListModels_BackendModel_DistinctPerBackend(t *testing.T) {
+func TestListModels_BackendModel_IgnoresPerBackendOverride(t *testing.T) {
+	// Per-backend `model` overrides still rewrite the outgoing request (llmproxy),
+	// but /v1/models only ever surfaces the service-level backend_model.
 	reg := service.NewRegistry([]config.ServiceConfig{{
 		Type:       "llm",
 		Model:      "chat",
@@ -348,11 +346,8 @@ func TestListModels_BackendModel_DistinctPerBackend(t *testing.T) {
 
 	resp := callListModels(t, reg)
 	m := resp.Data[0]
-	if m.BackendModel != "llama-3-8b" {
-		t.Errorf("expected primary backend_model='llama-3-8b', got %q", m.BackendModel)
-	}
-	if len(m.BackendModels) != 2 || m.BackendModels[0] != "llama-3-8b" || m.BackendModels[1] != "llama-3-70b" {
-		t.Errorf("expected both backend models listed, got %v", m.BackendModels)
+	if m.BackendModel != "" {
+		t.Errorf("expected no backend_model when only per-backend overrides are set, got %q", m.BackendModel)
 	}
 }
 

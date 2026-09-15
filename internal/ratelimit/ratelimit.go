@@ -106,6 +106,14 @@ type ProcessingTimeChecker interface {
 	AddProcessingTime(ctx context.Context, consumer, userType, serviceType string, seconds float64) error
 }
 
+// PoolChecker is the interface for backend_pools rate limiting implemented by Limiter.
+type PoolChecker interface {
+	// CheckBackendPool enforces the shared rate budget for one backend_pools
+	// entry: both the pool-wide budget and the named member's own budget (each
+	// optional) must pass. Fail-open on Redis errors.
+	CheckBackendPool(ctx context.Context, poolName, memberURL string) (CheckResult, error)
+}
+
 // TokenChecker is the interface for token-budget rate limiting implemented by Limiter.
 type TokenChecker interface {
 	// CheckTokens returns whether the caller still has token budget. Fail-open on Redis errors.
@@ -129,6 +137,11 @@ type Limiter struct {
 	modelLimits    map[string]map[string]config.RateLimitConfig
 	consumerHeader string
 	userTypeHeader string
+	// poolLimits maps pool name → pool-wide RateLimitConfig; poolMemberLimits
+	// maps pool name → member URL → RateLimitConfig. Both set via SetPoolLimits
+	// (post-construction, mirroring main.go's other With*-style wiring).
+	poolLimits       map[string]config.RateLimitConfig
+	poolMemberLimits map[string]map[string]config.RateLimitConfig
 }
 
 // tokenCheckScript reads the current window token count.
@@ -371,6 +384,80 @@ func (l *Limiter) Check(ctx context.Context, r *http.Request, serviceType string
 	}
 
 	return svcResult, nil
+}
+
+// checkFixedWindow runs the shared INCR+EXPIRE fixed-window script against an
+// arbitrary Redis key. Rate=0 is the sentinel for "no limit" (allowed without
+// touching Redis) — same semantics as Check's service-level branch, factored
+// out here so pool/member checks (and any future scope) reuse one
+// well-tested code path instead of re-implementing the window logic.
+func (l *Limiter) checkFixedWindow(ctx context.Context, key string, cfg config.RateLimitConfig) (CheckResult, error) {
+	if cfg.Rate == 0 {
+		return CheckResult{Allowed: true}, nil
+	}
+	period, err := time.ParseDuration(cfg.Period)
+	if err != nil {
+		return CheckResult{}, fmt.Errorf("invalid rate_limit period %q: %w", cfg.Period, err)
+	}
+	windowSec := int64(math.Ceil(period.Seconds()))
+
+	vals, err := script.Run(ctx, l.rdb, []string{key}, cfg.Rate, windowSec).Int64Slice()
+	if err != nil {
+		return CheckResult{}, err
+	}
+	count := vals[0]
+	ttlSecs := vals[1]
+	if ttlSecs < 0 {
+		ttlSecs = windowSec
+	}
+	remaining := int(int64(cfg.Rate) - count)
+	if remaining < 0 {
+		remaining = 0
+	}
+	return CheckResult{
+		Allowed:    count <= int64(cfg.Rate),
+		Limit:      cfg.Rate,
+		Remaining:  remaining,
+		ResetAfter: time.Duration(ttlSecs) * time.Second,
+	}, nil
+}
+
+// SetPoolLimits wires backend_pools rate limits into the Limiter. Call once
+// after New (cmd/gateway/main.go, resolved from config.Config.BackendPools).
+// A Limiter never given pool limits never touches poolrl: keys.
+func (l *Limiter) SetPoolLimits(poolLimits map[string]config.RateLimitConfig, memberLimits map[string]map[string]config.RateLimitConfig) {
+	l.poolLimits = poolLimits
+	l.poolMemberLimits = memberLimits
+}
+
+// CheckBackendPool enforces the shared rate budget for one backend_pools
+// entry: the pool-wide budget (if configured) is checked first, then the
+// named member's own budget (if configured) — both must pass, so whichever
+// is exhausted first determines the rejection. Fail-open on Redis errors.
+func (l *Limiter) CheckBackendPool(ctx context.Context, poolName, memberURL string) (CheckResult, error) {
+	if poolCfg, ok := l.poolLimits[poolName]; ok && poolCfg.Rate > 0 {
+		res, err := l.checkFixedWindow(ctx, fmt.Sprintf("poolrl:%s", poolName), poolCfg)
+		if err != nil {
+			metrics.BackendPoolRateLimitErrorsTotal.WithLabelValues(poolName).Inc()
+			return CheckResult{Allowed: true}, nil
+		}
+		if !res.Allowed {
+			metrics.BackendPoolRateLimitedTotal.WithLabelValues(poolName, "").Inc()
+			return res, nil
+		}
+	}
+	if memberCfg, ok := l.poolMemberLimits[poolName][memberURL]; ok && memberCfg.Rate > 0 {
+		res, err := l.checkFixedWindow(ctx, fmt.Sprintf("poolrl:%s:%s", poolName, memberURL), memberCfg)
+		if err != nil {
+			metrics.BackendPoolRateLimitErrorsTotal.WithLabelValues(poolName).Inc()
+			return CheckResult{Allowed: true}, nil
+		}
+		if !res.Allowed {
+			metrics.BackendPoolRateLimitedTotal.WithLabelValues(poolName, memberURL).Inc()
+		}
+		return res, nil
+	}
+	return CheckResult{Allowed: true}, nil
 }
 
 // CheckTokens returns whether the caller still has token budget in the current

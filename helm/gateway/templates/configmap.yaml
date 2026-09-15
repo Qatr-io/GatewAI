@@ -198,6 +198,56 @@ data:
         enabled: {{ .Values.opentelemetry.logs.enabled | default false }}
     {{- end }}
 
+    {{- if .Values.backendPools }}
+    backend_pools:
+      {{- range $poolName, $pool := .Values.backendPools }}
+      {{ $poolName }}:
+        members:
+          {{- range $pool.members }}
+          - url:    {{ .url | quote }}
+            weight: {{ .weight }}
+            {{- if .model }}
+            model:  {{ .model | quote }}
+            {{- end }}
+            {{- if .headers }}
+            headers:
+              {{- range $k, $v := .headers }}
+              {{ $k }}: {{ $v | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .rateLimit }}
+            rate_limit:
+              {{- if .rateLimit.rate }}
+              rate:   {{ .rateLimit.rate | int64 }}
+              period: {{ .rateLimit.period | quote }}
+              {{- end }}
+            {{- end }}
+            {{- if .maxConcurrent }}
+            max_concurrent: {{ .maxConcurrent | int64 }}
+            {{- end }}
+          {{- end }}
+        {{- if $pool.headers }}
+        headers:
+          {{- range $k, $v := $pool.headers }}
+          {{ $k }}: {{ $v | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if $pool.rateLimit }}
+        rate_limit:
+          {{- if $pool.rateLimit.rate }}
+          rate:   {{ $pool.rateLimit.rate | int64 }}
+          period: {{ $pool.rateLimit.period | quote }}
+          {{- end }}
+        {{- end }}
+        {{- if $pool.maxConcurrent }}
+        max_concurrent: {{ $pool.maxConcurrent | int64 }}
+        {{- end }}
+        {{- if $pool.priorityReservedConcurrent }}
+        priority_reserved_concurrent: {{ $pool.priorityReservedConcurrent | int64 }}
+        {{- end }}
+      {{- end }}
+    {{- end }}
+
     services:
     {{- range .Values.services }}
       - type:              {{ .type }}
@@ -234,6 +284,9 @@ data:
               {{- end }}
             {{- end }}
           {{- end }}
+        {{- end }}
+        {{- if .backendPool }}
+        backend_pool:      {{ .backendPool | quote }}
         {{- end }}
         {{- if .provider }}
         provider:          {{ .provider | quote }}

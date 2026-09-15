@@ -158,15 +158,7 @@ The real backend model is **surfaced to clients** in `GET /v1/models` as a `back
 }
 ```
 
-`backend_model` is omitted when the alias is forwarded unchanged (no rewrite configured). When the backends behind one alias serve **distinct** real models (e.g. a canary with a different model version, or a per-backend `model` override), the field lists the primary and an additional `backend_models` array holds every distinct backend model:
-
-```json
-{
-  "id": "chat",
-  "backend_model": "llama-3-8b",
-  "backend_models": ["llama-3-8b", "llama-3-70b"]
-}
-```
+`backend_model` is omitted when the alias is forwarded unchanged (no rewrite configured). It only ever reflects the **service-level** `backend_model` — a per-backend `backends[].model` override (e.g. for a canary rollout) still rewrites the outgoing request per backend, but is not surfaced in `GET /v1/models`.
 
 See [LLM proxy](llm-proxy.md) for full documentation.
 

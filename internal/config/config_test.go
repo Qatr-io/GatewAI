@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -1295,5 +1296,291 @@ usage:
 	}
 	if cfg.Usage.RetentionDuration() != 720*time.Hour {
 		t.Errorf("got duration %v, want 720h", cfg.Usage.RetentionDuration())
+	}
+}
+
+// ── backend_pools ─────────────────────────────────────────────────────────────
+
+func TestLoad_BackendPools_OK(t *testing.T) {
+	raw := `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+backend_pools:
+  vllm-llama3:
+    members:
+      - url: http://vllm-1:8000
+        weight: 3
+      - url: http://vllm-2:8000
+        weight: 1
+    headers:
+      X-Pool-Auth: shared-key
+    rate_limit: { rate: 50, period: 1s }
+    max_concurrent: 30
+    priority_reserved_concurrent: 5
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: vllm-llama3
+`
+	cfg, err := config.LoadFromBytes([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pool, ok := cfg.BackendPools["vllm-llama3"]
+	if !ok {
+		t.Fatal("expected backend_pools[vllm-llama3] to be present")
+	}
+	if len(pool.Members) != 2 {
+		t.Fatalf("expected 2 members, got %d", len(pool.Members))
+	}
+	if pool.Members[0].URL != "http://vllm-1:8000" || pool.Members[0].Weight != 3 {
+		t.Errorf("unexpected member[0]: %+v", pool.Members[0])
+	}
+	if pool.MaxConcurrent != 30 || pool.PriorityReservedConcurrent != 5 {
+		t.Errorf("unexpected pool concurrency fields: %+v", pool)
+	}
+	if cfg.Services[0].BackendPool != "vllm-llama3" {
+		t.Errorf("expected service.BackendPool = vllm-llama3, got %q", cfg.Services[0].BackendPool)
+	}
+}
+
+func TestLoad_BackendPools_SharedByMultipleServices(t *testing.T) {
+	raw := `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+backend_pools:
+  shared:
+    members:
+      - url: http://backend-1:8000
+services:
+  - type: llm
+    model: alias-a
+    backend_pool: shared
+  - type: llm
+    model: alias-b
+    backend_pool: shared
+`
+	cfg, err := config.LoadFromBytes([]byte(raw))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(cfg.Services) != 2 {
+		t.Fatalf("expected 2 services, got %d", len(cfg.Services))
+	}
+	if cfg.Services[0].BackendPool != "shared" || cfg.Services[1].BackendPool != "shared" {
+		t.Errorf("expected both services to reference the shared pool, got %+v", cfg.Services)
+	}
+}
+
+func TestLoad_BackendPools_NoMembers_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  empty-pool:
+    members: []
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "at least one member") {
+		t.Errorf("expected 'at least one member' error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_EmptyMemberURL_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: ""
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "members[0].url") {
+		t.Errorf("expected members[0].url error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_DuplicateMemberURL_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  dup-pool:
+    members:
+      - url: http://a:8000
+      - url: http://a:8000
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "duplicate url") {
+		t.Errorf("expected duplicate url error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_NegativeMemberWeight_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+        weight: -1
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "weight must be >= 0") {
+		t.Errorf("expected weight error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_NegativeMaxConcurrent_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+    max_concurrent: -1
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "max_concurrent must be >= 0") {
+		t.Errorf("expected max_concurrent error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_NegativePriorityReserved_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+    priority_reserved_concurrent: -1
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "priority_reserved_concurrent must be >= 0") {
+		t.Errorf("expected priority_reserved_concurrent error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_RateWithoutPeriod_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+    rate_limit: { rate: 10 }
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "rate requires period") {
+		t.Errorf("expected rate requires period error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_TokenRateRejected_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+    rate_limit: { token_rate: 100, token_period: 1h }
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "token_rate/token_period are not supported") {
+		t.Errorf("expected token_rate rejection error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_MemberRateLimit_MaxConcurrentRejected_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+        rate_limit: { max_concurrent: 5 }
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "max_concurrent is not supported on rate_limit") {
+		t.Errorf("expected max_concurrent-on-rate_limit rejection error, got %v", err)
+	}
+}
+
+func TestLoad_BackendPools_ProcessingTimeRejected_Error(t *testing.T) {
+	raw := minimalValid + `
+backend_pools:
+  bad-pool:
+    members:
+      - url: http://a:8000
+    rate_limit: { processing_time: 60, processing_period: 1h }
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "processing_time/processing_period are not supported") {
+		t.Errorf("expected processing_time rejection error, got %v", err)
+	}
+}
+
+func TestLoad_Service_BackendPool_And_Backends_MutuallyExclusive_Error(t *testing.T) {
+	raw := `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+backend_pools:
+  pool-a:
+    members:
+      - url: http://a:8000
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: pool-a
+    backends:
+      - url: http://inline:8000
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive with backends") {
+		t.Errorf("expected mutual-exclusivity error, got %v", err)
+	}
+}
+
+func TestLoad_Service_BackendPool_And_InferenceURL_MutuallyExclusive_Error(t *testing.T) {
+	raw := `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+backend_pools:
+  pool-a:
+    members:
+      - url: http://a:8000
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: pool-a
+    inference_url: "http://inline:8000"
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "mutually exclusive with inference_url") {
+		t.Errorf("expected mutual-exclusivity error, got %v", err)
+	}
+}
+
+func TestLoad_Service_BackendPool_UnknownPool_Error(t *testing.T) {
+	raw := `
+s3:
+  endpoint: https://s3.example.com
+  region: us-east-1
+  bucket: my-bucket
+redis:
+  addr: "localhost:6379"
+services:
+  - type: llm
+    model: gpt-4o
+    backend_pool: does-not-exist
+`
+	_, err := config.LoadFromBytes([]byte(raw))
+	if err == nil || !strings.Contains(err.Error(), "is not defined in backend_pools") {
+		t.Errorf("expected unknown-pool error, got %v", err)
 	}
 }
