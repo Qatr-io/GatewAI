@@ -126,12 +126,13 @@ func TestFireAsync_ObservesFiredOnly(t *testing.T) {
 		{Detector: fakeDetector{name: "sync-ignored", findings: []guardrails.Finding{finding("y")}}, Mode: guardrails.ModeSync},
 	}
 	type obs struct {
-		name string
-		cats []string
+		name  string
+		cats  []string
+		score float64
 	}
 	ch := make(chan obs, 4)
-	guardrails.FireAsync(context.Background(), models, []string{"t"}, func(name string, cats []string) {
-		ch <- obs{name, cats}
+	guardrails.FireAsync(context.Background(), models, []string{"t"}, func(name string, cats []string, score float64) {
+		ch <- obs{name, cats, score}
 	})
 
 	// Only "fires" should observe. Collect for a short window.
@@ -142,6 +143,9 @@ loop:
 		select {
 		case o := <-ch:
 			seen[o.name] = true
+			if o.name == "fires" && o.score != 1 {
+				t.Errorf("expected max score 1 for %q, got %v", o.name, o.score)
+			}
 		case <-deadline:
 			break loop
 		}
