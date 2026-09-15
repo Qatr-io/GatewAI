@@ -16,7 +16,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [Unreleased]
+### [v0.23.0] — 2026-09-15
 
 #### Added
 
@@ -1050,10 +1050,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 
 ## Helm chart (gatewai-gateway)
 
-### [0.23.0] — 2026-09-07
+### [0.23.0] — 2026-09-15
 
 #### Added
 - `backendPools` — named groups of member backends referenced from `services[].backendPool` instead of `inferenceURL`/`backends`, sharing a rate limit and/or concurrency budget (and default auth headers) across multiple service/model aliases pointed at the same physical backend. See `values.yaml` and the README's "Backend pools" section for the full schema.
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.23.0`
 
 ---
 
