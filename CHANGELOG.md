@@ -28,6 +28,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 #### Changed
 
+- **Top-consumer usage gauges now carry `user_type`**: `gatewai_usage_tokens_top`, `gatewai_usage_requests_top`, and `gatewai_usage_processing_time_top` gained a `user_type` label, joined from each consumer's last-recorded rate-limit tier for that service type (empty if never recorded), matching what `gatewai_llm_consumer_tokens_top` already exposed for the LLM proxy path — lets top-consumer dashboards break down by tier without a separate join.
 - **`GET /v1/models`'s `backend_model` now sources only the service-level `backend_model`**: a per-backend `backends[].model` override (canary/mixed-fleet) is no longer surfaced in the models listing — it still rewrites the outgoing request per backend, but is not exposed as `backend_model`. The `backend_models[]` array (introduced alongside `backend_model` in `v0.21.0`) is removed accordingly.
 
 ### [v0.22.0] — 2026-09-07

@@ -42,41 +42,98 @@ func refreshUsageTopN(ctx context.Context, client *redis.Client, topN int, servi
 	UsageProcessingTimeTop.Reset()
 
 	for _, svcType := range serviceTypes {
+		tokenResults := make(map[string][]redis.Z, len(tokenTypes))
 		for _, tt := range tokenTypes {
 			key := fmt.Sprintf("usage:consumer:%s:tokens:%s", svcType, tt)
-			results, err := client.ZRevRangeWithScores(ctx, key, 0, int64(topN-1)).Result()
+			results, err := fetchTopN(ctx, client, key, topN)
 			if err != nil {
 				slog.WarnContext(ctx, "usage tracker: top-N refresh failed", "key", key, "error", err)
 				continue
 			}
+			tokenResults[tt] = results
+		}
+
+		requestsResults, err := fetchTopN(ctx, client, fmt.Sprintf("usage:consumer:%s:requests", svcType), topN)
+		if err != nil {
+			slog.WarnContext(ctx, "usage tracker: top-N refresh failed", "svcType", svcType, "metric", "requests", "error", err)
+		}
+		processingResults, err := fetchTopN(ctx, client, fmt.Sprintf("usage:consumer:%s:processing_time", svcType), topN)
+		if err != nil {
+			slog.WarnContext(ctx, "usage tracker: top-N refresh failed", "svcType", svcType, "metric", "processing_time", "error", err)
+		}
+
+		consumers := make(map[string]struct{})
+		for _, results := range tokenResults {
+			collectConsumers(results, consumers)
+		}
+		collectConsumers(requestsResults, consumers)
+		collectConsumers(processingResults, consumers)
+
+		userTypes := fetchUserTypes(ctx, client, svcType, consumers)
+
+		for tt, results := range tokenResults {
 			for _, z := range results {
 				consumer, ok := z.Member.(string)
 				if !ok {
 					continue
 				}
-				UsageTokensTop.WithLabelValues(consumer, svcType, tt).Set(z.Score)
+				UsageTokensTop.WithLabelValues(consumer, svcType, tt, userTypes[consumer]).Set(z.Score)
 			}
 		}
-
-		refreshUsageScalarTopN(ctx, client, topN, svcType, "requests", UsageRequestsTop)
-		refreshUsageScalarTopN(ctx, client, topN, svcType, "processing_time", UsageProcessingTimeTop)
+		setScalarGauge(UsageRequestsTop, requestsResults, svcType, userTypes)
+		setScalarGauge(UsageProcessingTimeTop, processingResults, svcType, userTypes)
 	}
 }
 
-// refreshUsageScalarTopN reads the top-N members of usage:consumer:<svcType>:<metric>
-// and sets them on a {consumer, service_type} GaugeVec.
-func refreshUsageScalarTopN(ctx context.Context, client *redis.Client, topN int, svcType, metric string, gauge *prometheus.GaugeVec) {
-	key := fmt.Sprintf("usage:consumer:%s:%s", svcType, metric)
-	results, err := client.ZRevRangeWithScores(ctx, key, 0, int64(topN-1)).Result()
-	if err != nil {
-		slog.WarnContext(ctx, "usage tracker: top-N refresh failed", "key", key, "error", err)
-		return
+// fetchTopN reads the top-N members (by score) of a Redis sorted set.
+func fetchTopN(ctx context.Context, client *redis.Client, key string, topN int) ([]redis.Z, error) {
+	return client.ZRevRangeWithScores(ctx, key, 0, int64(topN-1)).Result()
+}
+
+// collectConsumers adds every sorted-set member in results to into.
+func collectConsumers(results []redis.Z, into map[string]struct{}) {
+	for _, z := range results {
+		if consumer, ok := z.Member.(string); ok {
+			into[consumer] = struct{}{}
+		}
 	}
+}
+
+// fetchUserTypes joins consumers against usage:consumer:{svcType}:usertype,
+// the rate-limit tier a consumer was last evaluated under for that service
+// (recorded by usage.UsageTracker.TrackUserType). Missing consumers are
+// simply absent from the returned map, so callers see an empty user_type.
+func fetchUserTypes(ctx context.Context, client *redis.Client, svcType string, consumers map[string]struct{}) map[string]string {
+	result := make(map[string]string, len(consumers))
+	if len(consumers) == 0 {
+		return result
+	}
+	list := make([]string, 0, len(consumers))
+	for consumer := range consumers {
+		list = append(list, consumer)
+	}
+	key := "usage:consumer:" + svcType + ":usertype"
+	vals, err := client.HMGet(ctx, key, list...).Result()
+	if err != nil {
+		slog.WarnContext(ctx, "usage tracker: user_type lookup failed", "key", key, "error", err)
+		return result
+	}
+	for i, v := range vals {
+		if s, ok := v.(string); ok && s != "" {
+			result[list[i]] = s
+		}
+	}
+	return result
+}
+
+// setScalarGauge sets a {consumer, service_type, user_type} GaugeVec from a
+// sorted-set top-N result.
+func setScalarGauge(gauge *prometheus.GaugeVec, results []redis.Z, svcType string, userTypes map[string]string) {
 	for _, z := range results {
 		consumer, ok := z.Member.(string)
 		if !ok {
 			continue
 		}
-		gauge.WithLabelValues(consumer, svcType).Set(z.Score)
+		gauge.WithLabelValues(consumer, svcType, userTypes[consumer]).Set(z.Score)
 	}
 }
