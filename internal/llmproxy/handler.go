@@ -602,10 +602,13 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 		return
 	}
 
-	// When token rate limiting is active, inject stream_options.include_usage=true so
-	// the backend includes a usage chunk in the stream (required for accurate counting).
+	// Inject stream_options.include_usage=true so the backend appends a usage chunk
+	// at the end of the stream — required for accurate counting. Needed whenever the
+	// gateway accounts tokens: token rate limiting OR per-consumer usage tracking.
+	// Without it a streamed response carries no usage, so both the token limiter and
+	// the per-consumer usage store would silently see zero.
 	forwardBody := body
-	if h.tokenLimiter != nil {
+	if h.tokenLimiter != nil || h.usageTracker != nil {
 		forwardBody = injectStreamUsage(body)
 	}
 
@@ -834,7 +837,21 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 	var streamUsage *provider.Usage
 	if lastDataPayload != "" {
 		streamUsage = emitTokenMetrics(r.Context(), def, winningBackendModel, userType, []byte(lastDataPayload))
-		if streamUsage != nil && h.tokenLimiter != nil {
+	}
+	if streamUsage != nil {
+		// Record per-consumer token usage, mirroring the non-streaming path. The
+		// usage chunk (from stream_options.include_usage) carries the real counts,
+		// so streamed requests must not be excluded from per-consumer accounting —
+		// otherwise every streaming consumer is silently under-reported.
+		if consumer != "" {
+			tCtx := context.WithoutCancel(r.Context())
+			h.tracker.Track(tCtx, consumer, userType, "prompt", streamUsage.PromptTokens)
+			h.tracker.Track(tCtx, consumer, userType, "completion", streamUsage.CompletionTokens)
+			if h.usageTracker != nil {
+				h.usageTracker.TrackTokens(tCtx, consumer, def.Type, int64(streamUsage.PromptTokens), int64(streamUsage.CompletionTokens))
+			}
+		}
+		if h.tokenLimiter != nil {
 			total := streamUsage.PromptTokens + streamUsage.CompletionTokens
 			if total > 0 {
 				tCtx := context.WithoutCancel(r.Context())
@@ -851,7 +868,8 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request, def *servi
 }
 
 // auditLog emits a structured slog record for the LLM request when audit is enabled.
-// usage may be nil (e.g. for streaming responses where tokens are not parsed).
+// usage may be nil (e.g. a streamed response with no usage chunk, or a backend
+// that omitted usage).
 func (h *Handler) auditLog(ctx context.Context, def *service.Def, consumer, userType, backendURL, backendModel string, status int, durationMs int64, stream bool, reqBody []byte, usage *provider.Usage) {
 	if !h.audit.Enabled {
 		return

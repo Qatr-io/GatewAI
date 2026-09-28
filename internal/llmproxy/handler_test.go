@@ -676,6 +676,65 @@ func TestServeJSON_Streaming_PipedToClient(t *testing.T) {
 	}
 }
 
+// TestServeJSON_Streaming_TracksPerConsumerTokens is the regression guard for the
+// streaming token-accounting bug: a streamed response's usage (from the injected
+// stream_options.include_usage chunk) must reach BOTH per-consumer trackers, just
+// like the non-streaming path — otherwise every streaming consumer is silently
+// under-reported. It also asserts include_usage is injected when a usage tracker
+// is configured (not only when a token limiter is).
+func TestServeJSON_Streaming_TracksPerConsumerTokens(t *testing.T) {
+	// Final chunk carries usage with empty choices, mirroring real OpenAI-compatible
+	// backends when stream_options.include_usage is set.
+	sseChunks := "data: {\"id\":\"1\",\"choices\":[{\"delta\":{\"content\":\"Hi\"}}]}\n\n" +
+		"data: {\"id\":\"1\",\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":5}}\n\n" +
+		"data: [DONE]\n\n"
+	var gotIncludeUsage bool
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqBody, _ := io.ReadAll(r.Body)
+		gotIncludeUsage = strings.Contains(string(reqBody), `"include_usage":true`)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, sseChunks)
+	}))
+	defer backend.Close()
+
+	ut := &testUsageTracker{}
+	ct := &testTracker{}
+	reg := provider.NewRegistry()
+	h := New(cache.NewNoop(), reg, &http.Client{Timeout: 5 * time.Second}, "", ct, AuditConfig{}, nil)
+	h.WithUsageTracker(ut)
+
+	def := llmDef("passthrough", "", 60*time.Second)
+	setBackend(def, backend.URL)
+
+	rr := doServeJSONAs(h, def, streamBody, "carol")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+
+	// include_usage must be injected because a usage tracker is configured.
+	if !gotIncludeUsage {
+		t.Error("expected stream_options.include_usage=true to be injected into the upstream request")
+	}
+
+	// Calendar usage store must record the streamed tokens for the consumer.
+	calls := ut.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("expected 1 TrackTokens call for the streamed request, got %d: %+v", len(calls), calls)
+	}
+	if c := calls[0]; c.consumer != "carol" || c.serviceType != "llm" || c.prompt != 11 || c.completion != 5 {
+		t.Errorf("unexpected TrackTokens call: %+v", c)
+	}
+
+	// Per-consumer metrics tracker must record them too.
+	if got := ct.sum("carol", "prompt"); got != 11 {
+		t.Errorf("expected 11 prompt tokens tracked for carol, got %d", got)
+	}
+	if got := ct.sum("carol", "completion"); got != 5 {
+		t.Errorf("expected 5 completion tokens tracked for carol, got %d", got)
+	}
+}
+
 // TestServeJSON_Streaming_OutputFlag_DetectsSplitPII guards the cross-chunk fix:
 // an email streamed as separate token deltas ("bob","@example",".com") must still
 // be detected by joining the deltas before scanning. Streaming never redacts —
