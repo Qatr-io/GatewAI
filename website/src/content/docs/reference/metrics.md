@@ -66,9 +66,9 @@ All metrics use the `gatewai_` prefix (gateway) or `gatewai_relay_` prefix (rela
 
 | Metric | Type | Labels | Description |
 |--------|------|--------|-------------|
-| `gatewai_usage_tokens_top` | gauge | `consumer`, `service_type`, `token_type` | Token usage for top-N consumers on non-LLM-proxy services (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
-| `gatewai_usage_requests_top` | gauge | `consumer`, `service_type` | Request count for top-N consumers per service type, sync and async alike (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
-| `gatewai_usage_processing_time_top` | gauge | `consumer`, `service_type` | Cumulative processing time (seconds) for top-N consumers per service type (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_usage_tokens_top` | gauge | `consumer`, `service_type`, `token_type`, `user_type` | Token usage for top-N consumers on non-LLM-proxy services (refreshed from Redis every 60s). `user_type` is the consumer's last-known rate-limit tier for that service, empty if never recorded. Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_usage_requests_top` | gauge | `consumer`, `service_type`, `user_type` | Request count for top-N consumers per service type, sync and async alike (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
+| `gatewai_usage_processing_time_top` | gauge | `consumer`, `service_type`, `user_type` | Cumulative processing time (seconds) for top-N consumers per service type (refreshed from Redis every 60s). Requires `metricsConfig.topConsumers > 0` |
 
 ### Response cache
 

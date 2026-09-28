@@ -233,29 +233,34 @@ var (
 	}, []string{"consumer", "user_type", "type"})
 
 	// UsageTokensTop exposes the top-N consumers by token usage for non-LLM-proxy
-	// service types, refreshed periodically from a Redis sorted set. Only
-	// populated when metrics.top_consumers > 0.
+	// service types, refreshed periodically from a Redis sorted set. user_type
+	// is joined from the usage:consumer:{service_type}:usertype hash (the
+	// rate-limit tier the consumer was last evaluated under for that service)
+	// and left empty when no tier has been recorded yet. Only populated when
+	// metrics.top_consumers > 0.
 	UsageTokensTop = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gatewai_usage_tokens_top",
 		Help: "Token usage for top consumers on non-LLM-proxy services (refreshed from Redis sorted set).",
-	}, []string{"consumer", "service_type", "token_type"})
+	}, []string{"consumer", "service_type", "token_type", "user_type"})
 
 	// UsageRequestsTop exposes the top-N consumers by request count per service
 	// type (covers sync and async alike, since usage.UsageTracker.TrackRequest
 	// is called on both paths), refreshed periodically from a Redis sorted set.
-	// Only populated when metrics.top_consumers > 0.
+	// user_type is joined as for UsageTokensTop. Only populated when
+	// metrics.top_consumers > 0.
 	UsageRequestsTop = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gatewai_usage_requests_top",
 		Help: "Request count for top consumers per service type (refreshed from Redis sorted set).",
-	}, []string{"consumer", "service_type"})
+	}, []string{"consumer", "service_type", "user_type"})
 
 	// UsageProcessingTimeTop exposes the top-N consumers by cumulative
 	// processing time (seconds) per service type, refreshed periodically from
-	// a Redis sorted set. Only populated when metrics.top_consumers > 0.
+	// a Redis sorted set. user_type is joined as for UsageTokensTop. Only
+	// populated when metrics.top_consumers > 0.
 	UsageProcessingTimeTop = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "gatewai_usage_processing_time_top",
 		Help: "Cumulative processing time (seconds) for top consumers per service type (refreshed from Redis sorted set).",
-	}, []string{"consumer", "service_type"})
+	}, []string{"consumer", "service_type", "user_type"})
 
 	// GuardrailsPiiBlockedTotal counts requests rejected by the PII guardrail,
 	// before they reach the LLM backend.

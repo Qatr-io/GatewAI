@@ -154,10 +154,11 @@ func EvaluateRedact(ctx context.Context, models []Enforcement, body []byte) ([]b
 }
 
 // FireAsync runs every async-mode enforcement in the background against texts,
-// calling observe(name, categories) for each detector that fires. Errors are
-// swallowed (best-effort shadowing). The context MUST NOT be tied to the request
-// lifetime, since the request returns before these complete.
-func FireAsync(ctx context.Context, models []Enforcement, texts []string, observe func(name string, categories []string)) {
+// calling observe(name, categories, score) for each detector that fires (score is
+// the finding's max confidence). Errors are swallowed (best-effort shadowing). The
+// context MUST NOT be tied to the request lifetime, since the request returns
+// before these complete.
+func FireAsync(ctx context.Context, models []Enforcement, texts []string, observe func(name string, categories []string, score float64)) {
 	if len(texts) == 0 {
 		return
 	}
@@ -171,7 +172,7 @@ func FireAsync(ctx context.Context, models []Enforcement, texts []string, observ
 				return
 			}
 			if cats := Categories(findings); len(cats) > 0 {
-				observe(m.Detector.Name(), cats)
+				observe(m.Detector.Name(), cats, MaxScore(findings))
 			}
 		}(m)
 	}

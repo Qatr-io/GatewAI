@@ -226,10 +226,22 @@ func (h *JobHandler) scanAsyncSubmitInput(r *http.Request, def *service.Def, in 
 		metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", res.Name, "sync", "flagged").Inc()
 	}
 	// Async shadow model detectors — observe only, detached from the request.
-	guardrails.FireAsync(context.WithoutCancel(r.Context()), in.Models, texts, func(name string, cats []string) {
+	consumer := ""
+	if h.consumerHeader != "" {
+		consumer = r.Header.Get(h.consumerHeader)
+	}
+	asyncCtx := context.WithoutCancel(r.Context())
+	guardrails.FireAsync(asyncCtx, in.Models, texts, func(name string, cats []string, score float64) {
 		slog.WarnContext(r.Context(), "async submit flagged by guardrail model (shadow)",
 			"service_type", def.Type, "model", def.Model, "detector", name, "violations", cats)
 		metrics.GuardrailsModelDetectionsTotal.WithLabelValues(def.Type, def.Model, "input", name, "async", "flagged").Inc()
+		// Correlated, PII-redacted record so the shadow flag can be reviewed.
+		if def.Guardrails.Sample.Enabled {
+			guardrails.EmitFlaggedSample(asyncCtx, guardrails.FlaggedSample{
+				Stage: "input", Detector: name, Categories: cats, Score: score,
+				ServiceType: def.Type, Model: def.Model, Consumer: consumer,
+			}, texts, def.Guardrails.Sample.RedactGroups)
+		}
 	})
 	return 0, "", false
 }

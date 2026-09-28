@@ -629,6 +629,24 @@ type GuardrailsConfig struct {
 	// supports both regex checks and model-backed detectors. When nil, async
 	// result guardrails are disabled.
 	Async *GuardrailsAsyncConfig `yaml:"async"`
+	// FlaggedSamples enables emitting a correlated, PII-redacted record when an
+	// ASYNC (shadow) model detector flags, so shadow detections can be reviewed —
+	// not just counted — before flipping the detector to enforce. When nil, no
+	// samples are recorded.
+	FlaggedSamples *FlaggedSamplesConfig `yaml:"flagged_samples"`
+}
+
+// FlaggedSamplesConfig controls the correlated flagged-sample record emitted on an
+// async guardrail flag. The record carries {trace_id, detector, score, model,
+// consumer, redacted_prompt}; the prompt is redacted before it enters the record.
+type FlaggedSamplesConfig struct {
+	// Enabled turns on flagged-sample recording for this service.
+	Enabled bool `yaml:"enabled"`
+	// Redact selects the guardrail groups used to strip PII from the sampled prompt
+	// (same group names as checks: pii, pii_fr, secrets, ...). Empty defaults to
+	// [pii, secrets] — the universal, country-agnostic set. Prefer over-redaction:
+	// this copy is for review, never delivery.
+	Redact []string `yaml:"redact"`
 }
 
 // GuardrailsAsyncConfig controls result-stage detection for async job results.

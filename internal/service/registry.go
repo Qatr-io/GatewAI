@@ -37,12 +37,22 @@ func (s GuardrailsStage) Enforcing() bool {
 	return s.Action == "block" || s.Action == "redact"
 }
 
+// FlaggedSamplePolicy is the resolved config for correlated flagged-sample
+// records emitted on an async (shadow) guardrail flag.
+type FlaggedSamplePolicy struct {
+	Enabled      bool
+	RedactGroups []string // groups used to strip PII from the sampled prompt
+}
+
 // GuardrailsSpec holds resolved guardrails for the input, output, and async
 // (result) stages.
 type GuardrailsSpec struct {
 	Input  GuardrailsStage
 	Output GuardrailsStage
 	Async  GuardrailsStage // applied to async job results in the completion path
+	// Sample governs the correlated, PII-redacted flagged-sample record emitted on
+	// an async (shadow) flag, so shadow detections can be reviewed.
+	Sample FlaggedSamplePolicy
 }
 
 // Def describes a registered inference service type.
@@ -264,7 +274,17 @@ func resolveGuardrails(cfg config.GuardrailsConfig) GuardrailsSpec {
 		async.ScanTimeout = parseDurationOr(cfg.Async.ScanTimeout, 30*time.Second)
 		async.OnTimeoutFailClosed = cfg.Async.OnTimeout == "fail_closed"
 	}
-	return GuardrailsSpec{Input: input, Output: output, Async: async}
+	var sample FlaggedSamplePolicy
+	if cfg.FlaggedSamples != nil && cfg.FlaggedSamples.Enabled {
+		sample.Enabled = true
+		sample.RedactGroups = cfg.FlaggedSamples.Redact
+		if len(sample.RedactGroups) == 0 {
+			// Universal, country-agnostic default; over-redaction is safe for a
+			// review-only copy.
+			sample.RedactGroups = []string{guardrails.CheckPII, guardrails.CheckSecrets}
+		}
+	}
+	return GuardrailsSpec{Input: input, Output: output, Async: async, Sample: sample}
 }
 
 // parseDurationOr parses a duration string, falling back to def on empty/invalid.

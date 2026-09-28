@@ -16,14 +16,23 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [v0.23.0] — 2026-09-15
+### [v0.23.1] — 2026-09-28
+
+#### Fixed
+
+- **Streaming requests are now counted in per-consumer token usage.** Previously a streamed `/v1/*` response recorded the *request* but **zero tokens** for its consumer — `serveStream` fed only the Prometheus counter and the token rate-limiter, never the per-consumer stores (`usage:consumer:{type}:tokens:*` via `usageTracker.TrackTokens`, and the top-consumer metrics via `tracker.Track`). Non-streaming and cache-hit responses were counted, so any consumer that streams (e.g. OpenWebUI chat) was silently under-reported in the usage API and per-user dashboards, while the aggregate `gatewai_llm_tokens_total` metric (which does see streaming) has no consumer label to reconcile against. `serveStream` now records the streamed usage into both per-consumer trackers, mirroring the non-streaming path. Additionally, `stream_options.include_usage=true` is now injected whenever per-consumer usage tracking is enabled (previously only when a token limiter was configured), so the backend emits the usage chunk required to count streamed tokens even on deployments without `token_limits`.
 
 #### Added
+
+- **Guardrail trace tagging**: sync/inline guardrail actions (input regex, sync model detectors, output stage) now tag the request trace span with `guardrail.flagged=true` + `guardrail.stage`/`guardrail.action`/`guardrail.detectors`, so flagged traces can be filtered in Tempo/Langfuse next to the prompt. No-op when tracing is off; the async (shadow) detector is covered by flagged-sample records instead (its span has ended by then).
+
+- **Guardrail flagged-sample records** (`guardrails.flagged_samples`, opt-in per service): when an async (shadow) model detector flags, the gateway emits one correlated, PII-**redacted** record — `{event=guardrail.flagged_sample, trace_id, detector, categories, score, service_type, model, consumer, redacted_prompt}` — so shadow-mode detections (e.g. Prompt Guard 2 injection in `mode: async`) can be *reviewed*, not just counted, before flipping to enforce. Covers both async input sites (`/v1/*` LLM proxy and `POST /jobs` submit text). The prompt is redacted before it enters the record via `flagged_samples.redact` groups (default `[pii, secrets]`); `trace_id` is taken from the detached context so the sample still correlates to its (already-ended) trace. Structured slog → when bridged to OTLP logs it lands in the operator's governed sink (Loki/Langfuse) whose retention enforces the sample TTL; no raw prompt is stored.
 
 - **Backend pools (`backend_pools`)**: a named, load-balancer-style group of member backends that several `services[]` entries can share via `backend_pool: <name>`, instead of each declaring its own `backends:`/`inference_url:`. Centralizes auth headers (precedence: service `inference_headers` → pool `headers` → member `headers`) and lets every service routed to the same pool share one rate-limit and concurrency budget — configurable at both pool level (`rate_limit`, `max_concurrent`, `priority_reserved_concurrent`) and member level (`rate_limit`, `max_concurrent`). `backend_pool` is mutually exclusive with `backends:`/`inference_url:` on the same service, validated at config load. Concurrency is acquired once per logical client request (shared with per-model semaphores' architecture, but a distinct Redis key namespace); rate limits are checked per backend attempt inside the existing retry loop, so a pool-rate-limited member is skipped in favor of the next one before falling back to an error. New metrics `gatewai_backend_pool_rate_limited_total{pool,member}`, `gatewai_backend_pool_concurrency_rejected_total{pool}`, `gatewai_backend_pool_rate_limit_errors_total{pool}`.
 
 #### Changed
 
+- **Top-consumer usage gauges now carry `user_type`**: `gatewai_usage_tokens_top`, `gatewai_usage_requests_top`, and `gatewai_usage_processing_time_top` gained a `user_type` label, joined from each consumer's last-recorded rate-limit tier for that service type (empty if never recorded), matching what `gatewai_llm_consumer_tokens_top` already exposed for the LLM proxy path — lets top-consumer dashboards break down by tier without a separate join.
 - **`GET /v1/models`'s `backend_model` now sources only the service-level `backend_model`**: a per-backend `backends[].model` override (canary/mixed-fleet) is no longer surfaced in the models listing — it still rewrites the outgoing request per backend, but is not exposed as `backend_model`. The `backend_models[]` array (introduced alongside `backend_model` in `v0.21.0`) is removed accordingly.
 
 ### [v0.22.0] — 2026-09-07
@@ -1044,6 +1053,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.23.1] — 2026-09-28
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.23.1`
+
+---
 
 ### [0.23.0] — 2026-09-15
 
