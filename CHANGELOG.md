@@ -16,7 +16,7 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [Unreleased]
+### [v0.23.1] — 2026-09-28
 
 #### Fixed
 
@@ -1053,6 +1053,13 @@ Version bump aligned with gateway v0.11.0 release. No relay code changes.
 ---
 
 ## Helm chart (gatewai-gateway)
+
+### [0.23.1] — 2026-09-28
+
+#### Changed
+- `appVersion` / `image.tag` → `v0.23.1`
+
+---
 
 ### [0.23.0] — 2026-09-15
 
