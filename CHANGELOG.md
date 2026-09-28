@@ -16,7 +16,11 @@ Versioning: each component is versioned independently — see tag conventions be
 
 ## Gateway
 
-### [v0.23.0] — 2026-09-15
+### [Unreleased]
+
+#### Fixed
+
+- **Streaming requests are now counted in per-consumer token usage.** Previously a streamed `/v1/*` response recorded the *request* but **zero tokens** for its consumer — `serveStream` fed only the Prometheus counter and the token rate-limiter, never the per-consumer stores (`usage:consumer:{type}:tokens:*` via `usageTracker.TrackTokens`, and the top-consumer metrics via `tracker.Track`). Non-streaming and cache-hit responses were counted, so any consumer that streams (e.g. OpenWebUI chat) was silently under-reported in the usage API and per-user dashboards, while the aggregate `gatewai_llm_tokens_total` metric (which does see streaming) has no consumer label to reconcile against. `serveStream` now records the streamed usage into both per-consumer trackers, mirroring the non-streaming path. Additionally, `stream_options.include_usage=true` is now injected whenever per-consumer usage tracking is enabled (previously only when a token limiter was configured), so the backend emits the usage chunk required to count streamed tokens even on deployments without `token_limits`.
 
 #### Added
 
