@@ -148,6 +148,7 @@ var reservedGatewayPaths = []string{
 	"/openapi.yaml",
 	"/jobs",
 	"/usage",
+	"/v1/models",
 	"/-",
 }
 
@@ -236,7 +237,7 @@ func buildRouter(
 		r.Post("/-/quota/reset", handler.NewQuotaHandler(limiter).ResetQuota)
 	}
 
-	if reg.HasSyncServices() {
+	if reg.HasSyncServices() || reg.HasRealtimeServices() {
 		// Backend health for degraded-model listing + cross-model fallback. Only
 		// set when a breaker is present so BackendHealth stays a nil interface
 		// (avoids a typed-nil wrapping a nil *CircuitBreaker).
@@ -274,7 +275,28 @@ func buildRouter(
 			}
 			r.Post(path, syncHandler.ServeHTTP)
 		}
-		slog.Info("sync proxy enabled", "paths", reg.SyncPaths())
+		if reg.HasSyncServices() {
+			slog.Info("sync proxy enabled", "paths", reg.SyncPaths())
+		}
+		// Realtime (WebSocket) streaming services are registered as GET (upgrade)
+		// routes on their WS path.
+		for _, path := range reg.RealtimePaths() {
+			if reservedGatewayPath(path) {
+				slog.Warn("skipping realtime path: conflicts with reserved gateway route", "path", path)
+				continue
+			}
+			r.Get(path, syncHandler.ServeRealtimeWS)
+		}
+		for _, path := range reg.RealtimeInfoPaths() {
+			if reservedGatewayPath(path) {
+				slog.Warn("skipping realtime info path: conflicts with reserved gateway route", "path", path)
+				continue
+			}
+			r.Get(path, syncHandler.ServeRealtimeInfo)
+		}
+		if reg.HasRealtimeServices() {
+			slog.Info("realtime websocket proxy enabled", "paths", reg.RealtimePaths())
+		}
 	}
 
 	return r
